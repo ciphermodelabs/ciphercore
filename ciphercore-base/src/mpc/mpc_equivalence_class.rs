@@ -1,0 +1,893 @@
+use crate::data_types::{get_types_vector, Type};
+use crate::errors::Result;
+use crate::graphs::{Context, Node, NodeAnnotation, Operation};
+use crate::mpc::mpc_compiler::IOStatus;
+use std::collections::HashMap;
+use std::sync::Arc;
+
+//The Vec<Vec<u64>> represents which party(ies) holds the same value/share,
+//e.g., [[0],[1],[2]] means each party holds a distinct share, [[0,1],[2]] means party 0 and party 1 are holding the same share while party 2 holds another one.
+#[derive(Clone, Debug)]
+pub(super) enum EquivalenceClasses {
+    Atomic(Vec<Vec<u64>>),
+    Vector(Vec<EquivalenceClassesPointer>),
+}
+
+type EquivalenceClassesPointer = Arc<EquivalenceClasses>;
+
+impl PartialEq for EquivalenceClasses {
+    /// Recursively checks equality of two EquivalenceClasses
+    fn eq(&self, other: &Self) -> bool {
+        match self {
+            EquivalenceClasses::Atomic(d) => {
+                if let EquivalenceClasses::Atomic(other_d) = other {
+                    compare_vector_of_vector((*d).clone(), (*other_d).clone())
+                        .expect("EquivalenceClasses comparison error!")
+                } else {
+                    false
+                }
+            }
+            EquivalenceClasses::Vector(v) => {
+                if let EquivalenceClasses::Vector(other_v) = other {
+                    if v.len() != other_v.len() {
+                        return false;
+                    }
+                    for i in 0..v.len() {
+                        if v[i] != other_v[i] {
+                            return false;
+                        }
+                    }
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+}
+
+fn compare_vector_of_vector(vector1: Vec<Vec<u64>>, vector2: Vec<Vec<u64>>) -> Result<bool> {
+    if vector1.len() != vector2.len() {
+        return Ok(false);
+    }
+    //Compare each element of vector1 with each element of vector2 until find a match. Use an bool vector to mark the matched elements in vector2. Return true if every element in vector2 has a match.
+    let mut matched = vec![false; vector1.len()];
+    let mut unmatched_count = vector1.len();
+    for sub_vec1 in vector1 {
+        for (index, sub_vec2) in vector2.iter().enumerate() {
+            if matched[index] {
+                continue;
+            }
+            if compare_vector(sub_vec1.clone(), sub_vec2.to_vec())? {
+                matched[index] = true;
+                unmatched_count -= 1;
+                continue;
+            }
+        }
+    }
+    Ok(unmatched_count == 0)
+}
+
+fn compare_vector(vector1: Vec<u64>, vector2: Vec<u64>) -> Result<bool> {
+    if vector1.len() != vector2.len() {
+        return Ok(false);
+    }
+    let mut matched = vec![false; vector1.len()];
+    let mut unmatched_count = vector1.len();
+    for element1 in vector1 {
+        for (index, element2) in vector2.iter().enumerate() {
+            if matched[index] {
+                continue;
+            }
+            if element1 == *element2 {
+                matched[index] = true;
+                unmatched_count -= 1;
+                continue;
+            }
+        }
+    }
+    Ok(unmatched_count == 0)
+}
+
+//This function generates equivalence classes for all nodes in the input compiled context.
+#[allow(dead_code)]
+pub(super) fn generate_equivalence_class(
+    context: Context,
+    input_party_map: Vec<Vec<IOStatus>>,
+) -> Result<HashMap<(u64, u64), EquivalenceClasses>> {
+    let mut equivalence_classes: HashMap<(u64, u64), EquivalenceClasses> = HashMap::new();
+    let mut input_count = 0;
+    let graphs = context.get_graphs();
+    for graph in graphs {
+        let nodes = graph.get_nodes();
+        for node in nodes {
+            let dependencies = node.get_node_dependencies();
+            let mut dependencies_class = vec![];
+            for dependence_node in &dependencies {
+                dependencies_class.push(Arc::new(
+                    equivalence_classes
+                        .get(&dependence_node.get_global_id())
+                        .expect("hashmap get error!")
+                        .clone(),
+                ));
+            }
+            match node.get_operation() {
+                Operation::Input(input_type) => {
+                    equivalence_classes.insert(
+                        node.get_global_id(),
+                        get_input_class(input_type, &input_party_map[0][input_count])?,
+                    );
+                    input_count += 1;
+                }
+                Operation::CreateTuple => {
+                    equivalence_classes.insert(
+                        node.get_global_id(),
+                        EquivalenceClasses::Vector(dependencies_class),
+                    );
+                }
+
+                Operation::TupleGet(field_id) => {
+                    let previous_class = (*dependencies_class[0]).clone();
+                    if let EquivalenceClasses::Vector(v) = previous_class {
+                        let target_class = v[field_id as usize].clone();
+                        equivalence_classes.insert(node.get_global_id(), (*target_class).clone());
+                    }
+                }
+
+                Operation::Random(t) => {
+                    equivalence_classes.insert(
+                        node.get_global_id(),
+                        recursive_class_filler(
+                            t,
+                            EquivalenceClasses::Atomic(vec![vec![0], vec![1], vec![2]]),
+                        )?,
+                    );
+                }
+
+                Operation::NOP => {
+                    let mut previous_class = (*dependencies_class[0]).clone();
+                    let annotation = context.get_node_annotations(node.clone())?;
+                    for single_communication in annotation {
+                        if let NodeAnnotation::Send(source_party, destination_party) =
+                            single_communication
+                        {
+                            previous_class =
+                                get_nop_class(previous_class, source_party, destination_party)?;
+                        }
+                    }
+                    equivalence_classes.insert(node.get_global_id(), previous_class);
+                }
+
+                Operation::PRF(_, t) => {
+                    equivalence_classes.insert(
+                        node.get_global_id(),
+                        recursive_class_filler(
+                            t,
+                            equivalence_classes
+                                .get(&dependencies[0].get_global_id())
+                                .expect("hashmap get error!")
+                                .clone(),
+                        )?,
+                    );
+                }
+
+                Operation::Add | Operation::Subtract | Operation::Multiply => {
+                    equivalence_classes.insert(
+                        node.get_global_id(),
+                        combine_class(
+                            (*dependencies_class[0]).clone(),
+                            (*dependencies_class[1]).clone(),
+                        )?,
+                    );
+                }
+
+                _ => return Err(runtime_error!("node not supported")),
+            }
+        }
+    }
+    Ok(equivalence_classes)
+}
+
+fn get_input_class(t: Type, input_party: &IOStatus) -> Result<EquivalenceClasses> {
+    match input_party {
+        IOStatus::Public => Ok(recursive_class_filler(
+            t,
+            EquivalenceClasses::Atomic(vec![vec![0, 1, 2]]),
+        )?),
+        IOStatus::Party(_) => Ok(recursive_class_filler(
+            t,
+            EquivalenceClasses::Atomic(vec![vec![0], vec![1], vec![2]]),
+        )?),
+        IOStatus::Shared => Ok(get_input_class_helper_shared(t)?),
+    }
+}
+
+fn recursive_class_filler(t: Type, sample_class: EquivalenceClasses) -> Result<EquivalenceClasses> {
+    match t {
+        Type::Scalar(_) | Type::Array(_, _) => Ok(sample_class),
+
+        Type::Tuple(_) | Type::Vector(_, _) | Type::NamedTuple(_) => {
+            let ts = get_types_vector(t)?;
+            let mut current_class = vec![];
+            for sub_t in ts {
+                current_class.push(Arc::new(recursive_class_filler(
+                    (*sub_t).clone(),
+                    sample_class.clone(),
+                )?));
+            }
+            Ok(EquivalenceClasses::Vector(current_class))
+        }
+    }
+}
+
+fn get_input_class_helper_shared(t: Type) -> Result<EquivalenceClasses> {
+    match t {
+        //The input should always be a tuple
+        Type::Scalar(_) | Type::Array(_, _) | Type::Vector(_, _) | Type::NamedTuple(_) => {
+            panic!("invalid input node");
+        }
+
+        //Check if the input is a tuple of size 3
+        //Check all elements in the tuple have the same type
+        Type::Tuple(_) => {
+            let ts = get_types_vector(t)?;
+            if ts.len() != 3 {
+                panic!("invalid input node");
+            }
+            let mut current_class = vec![];
+            let sample_class = vec![
+                EquivalenceClasses::Atomic(vec![vec![0], vec![1, 2]]),
+                EquivalenceClasses::Atomic(vec![vec![1], vec![0, 2]]),
+                EquivalenceClasses::Atomic(vec![vec![2], vec![0, 1]]),
+            ];
+            for (index, sub_t) in ts.iter().enumerate() {
+                if *sub_t != ts[0] {
+                    panic!("invalid input node");
+                }
+                current_class.push(Arc::new(recursive_class_filler(
+                    (**sub_t).clone(),
+                    sample_class[index].clone(),
+                )?));
+            }
+            Ok(EquivalenceClasses::Vector(current_class))
+        }
+    }
+}
+
+fn get_nop_class(
+    previous_class: EquivalenceClasses,
+    source_party: u64,
+    destination_party: u64,
+) -> Result<EquivalenceClasses> {
+    match previous_class {
+        EquivalenceClasses::Atomic(d) => {
+            let mut current_class = d;
+            for v in current_class.iter_mut() {
+                if v.contains(&source_party) && !v.contains(&destination_party) {
+                    v.push(destination_party);
+                } else if v.contains(&destination_party) && !v.contains(&source_party) {
+                    v.retain(|x| *x != destination_party);
+                }
+            }
+            current_class.retain(|x| !x.is_empty());
+            Ok(EquivalenceClasses::Atomic(current_class))
+        }
+        EquivalenceClasses::Vector(vd) => {
+            let mut current_class = vec![];
+            for e in vd {
+                current_class.push(EquivalenceClassesPointer::new(get_nop_class(
+                    (*e).clone(),
+                    source_party,
+                    destination_party,
+                )?));
+            }
+            Ok(EquivalenceClasses::Vector(current_class))
+        }
+    }
+}
+
+//combine_class is used in the following nodes for now: Add, Subtract, Multiplication.
+//Use the classes from two input nodes to generate the class for the result. The inputs must be Atomic.
+//The input might be Public, Private, or Shared. Only the following possible cases will occur:
+//0. Class1 op Class2 => If Class1 == Class2 => Class1 (or Class2), Otherwise:
+//1. Either one is Public => Another one
+//2. Either one is Private => Private i.e., [[0],[1],[2]]
+//3. Both are Shared => Private (this is because two different shared classes will result in a Private result)
+//Thus, the logic could be simplified: 1) if two inputs are equal, return either of them; 2) Otherwise, if anyone is public, return another one; 3) return Private;
+fn combine_class(
+    input1: EquivalenceClasses,
+    input2: EquivalenceClasses,
+) -> Result<EquivalenceClasses> {
+    if input1 == input2 {
+        return Ok(input1);
+    }
+    if input1 == EquivalenceClasses::Atomic(vec![vec![0, 1, 2]]) {
+        return Ok(input2);
+    }
+    if input2 == EquivalenceClasses::Atomic(vec![vec![0, 1, 2]]) {
+        Ok(input1)
+    } else {
+        Ok(EquivalenceClasses::Atomic(vec![vec![0], vec![1], vec![2]]))
+    }
+}
+
+//This function checks protocol invariant.
+//Only supports the NOP node up to now. If the sender and receiver already hold the same share, which means that this nop transmission should not be executed, this function will return false in this case.
+#[allow(dead_code)]
+pub(super) fn check_equivalence_class(
+    context: Context,
+    equivalence_classes: &HashMap<(u64, u64), EquivalenceClasses>,
+    node: Node,
+) -> Result<bool> {
+    let dependencies = node.get_node_dependencies();
+    let mut dependencies_class = vec![];
+    for dependence_node in &dependencies {
+        dependencies_class.push(
+            equivalence_classes
+                .get(&dependence_node.get_global_id())
+                .expect("hashmap get error!")
+                .clone(),
+        );
+    }
+    let mut result = true;
+    if node.get_operation() == Operation::NOP {
+        let annotation = context.get_node_annotations(node)?;
+        for single_communication in annotation {
+            if let NodeAnnotation::Send(source_party, destination_party) = single_communication {
+                result = check_equivalence_class_nop(
+                    &dependencies_class[0],
+                    source_party,
+                    destination_party,
+                )?;
+                if !result {
+                    break;
+                }
+            }
+        }
+    }
+    Ok(result)
+}
+
+fn check_equivalence_class_nop(
+    current_class: &EquivalenceClasses,
+    source_party: u64,
+    destination_party: u64,
+) -> Result<bool> {
+    match current_class {
+        EquivalenceClasses::Atomic(d) => {
+            let mut result = true;
+            for v in d {
+                if v.contains(&source_party) && v.contains(&destination_party) {
+                    result = false;
+                    break;
+                }
+            }
+            Ok(result)
+        }
+        EquivalenceClasses::Vector(vd) => {
+            let mut result = true;
+            for e in vd {
+                result = check_equivalence_class_nop(e, source_party, destination_party)?;
+                if !result {
+                    break;
+                }
+            }
+            Ok(result)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data_types::{array_type, scalar_type, tuple_type, vector_type, BIT, UINT64};
+    use crate::graphs::{create_context, create_unchecked_context};
+    use crate::inline::inline_common::DepthOptimizationLevel;
+    use crate::inline::inline_ops::{InlineConfig, InlineMode};
+    use crate::mpc::mpc_compiler::{prepare_for_mpc_evaluation, IOStatus};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    #[test]
+    fn eq_equivalence_class_test() {
+        let share0_12 = EquivalenceClasses::Atomic(vec![vec![0], vec![1, 2]]);
+        let share0_21 = EquivalenceClasses::Atomic(vec![vec![0], vec![2, 1]]);
+        let share12_0 = EquivalenceClasses::Atomic(vec![vec![0], vec![2, 1]]);
+        let share1_02 = EquivalenceClasses::Atomic(vec![vec![1], vec![0, 2]]);
+
+        let a = share0_12.clone();
+        let b = share0_12.clone();
+        assert_eq!(a, b);
+
+        let a = share0_12.clone();
+        let b = share0_21.clone();
+        assert_eq!(a, b);
+
+        let a = share0_12.clone();
+        let b = share12_0.clone();
+        assert_eq!(a, b);
+
+        let a = EquivalenceClasses::Vector(vec![EquivalenceClassesPointer::new(share0_12.clone())]);
+        let b = EquivalenceClasses::Vector(vec![EquivalenceClassesPointer::new(share0_12.clone())]);
+        assert_eq!(a, b);
+
+        let a = EquivalenceClasses::Vector(vec![EquivalenceClassesPointer::new(share0_12.clone())]);
+        let b = share0_12.clone();
+        assert!(a != b);
+
+        let a = EquivalenceClasses::Vector(vec![
+            EquivalenceClassesPointer::new(share0_12.clone()),
+            EquivalenceClassesPointer::new(share0_12.clone()),
+            EquivalenceClassesPointer::new(share0_12.clone()),
+        ]);
+        let b = a.clone();
+        assert_eq!(a, b);
+
+        let a = EquivalenceClasses::Vector(vec![
+            EquivalenceClassesPointer::new(share0_12.clone()),
+            EquivalenceClassesPointer::new(share0_12.clone()),
+            EquivalenceClassesPointer::new(share0_12.clone()),
+        ]);
+        let b = EquivalenceClasses::Vector(vec![
+            EquivalenceClassesPointer::new(share1_02.clone()),
+            EquivalenceClassesPointer::new(share0_12.clone()),
+            EquivalenceClassesPointer::new(share0_12.clone()),
+        ]);
+        assert!(a != b);
+    }
+
+    #[test]
+    fn test_combine_class() {
+        let public_class = EquivalenceClasses::Atomic(vec![vec![0, 1, 2]]);
+        let private_class = EquivalenceClasses::Atomic(vec![vec![0], vec![1], vec![2]]);
+        let share0_12 = EquivalenceClasses::Atomic(vec![vec![0], vec![1, 2]]);
+        let share1_02 = EquivalenceClasses::Atomic(vec![vec![1], vec![0, 2]]);
+
+        let a = private_class.clone();
+        let b = private_class.clone();
+        let ab = private_class.clone();
+        assert_eq!(ab, combine_class(a, b).unwrap());
+
+        let a = share0_12.clone();
+        let b = share0_12.clone();
+        let ab = share0_12.clone();
+        assert_eq!(ab, combine_class(a, b).unwrap());
+
+        let a = private_class.clone();
+        let b = share0_12.clone();
+        let ab = private_class.clone();
+        assert_eq!(ab, combine_class(a, b).unwrap());
+
+        let a = public_class.clone();
+        let b = share0_12.clone();
+        let ab = b.clone();
+        assert_eq!(ab, combine_class(a, b).unwrap());
+
+        let a = public_class.clone();
+        let b = public_class.clone();
+        let ab = public_class.clone();
+        assert_eq!(ab, combine_class(a, b).unwrap());
+
+        let a = share0_12.clone();
+        let b = share1_02.clone();
+        let ab = private_class.clone();
+        assert_eq!(ab, combine_class(a, b).unwrap());
+    }
+
+    #[test]
+    fn test_generate_equivalence_class() {
+        let context1 = || -> Result<Context> {
+            let context = create_unchecked_context()?;
+            let g = context.create_graph()?;
+            g.set_name("test_g1")?;
+            let i1 = g.input(tuple_type(vec![
+                scalar_type(BIT),
+                scalar_type(BIT),
+                scalar_type(BIT),
+            ]))?;
+            i1.set_name("i1")?;
+            let i2 = g.input(tuple_type(vec![
+                scalar_type(BIT),
+                scalar_type(BIT),
+                scalar_type(BIT),
+            ]))?;
+            i2.set_name("i2")?;
+            let i3 = g.input(scalar_type(BIT))?;
+            i3.set_name("i3")?;
+            let i4 = g.input(vector_type(4, array_type(vec![1, 1, 1, 1], BIT)))?;
+            i4.set_name("i4")?;
+            let i5 = g.input(tuple_type(vec![
+                scalar_type(BIT),
+                scalar_type(BIT),
+                scalar_type(BIT),
+            ]))?;
+            i5.set_name("i5")?;
+            let add_op1 = g.tuple_get(i1.clone(), 0)?;
+            add_op1.set_name("add_op1")?;
+            let add_op2 = g.tuple_get(i2.clone(), 1)?;
+            add_op2.set_name("add_op2")?;
+            let add1 = g.add(add_op1.clone(), add_op2.clone())?;
+            add1.set_name("add1")?;
+
+            let rand1 = g.random(scalar_type(BIT))?;
+            rand1.set_name("rand1")?;
+            let rand2 = g.random(tuple_type(vec![
+                scalar_type(BIT),
+                scalar_type(BIT),
+                array_type(vec![1, 1, 1, 1], BIT),
+            ]))?;
+            rand2.set_name("rand2")?;
+            let nop_node = g.nop(rand1.clone())?;
+            nop_node.set_name("nop_node")?;
+            nop_node.add_annotation(NodeAnnotation::Send(0, 1))?;
+            nop_node.add_annotation(NodeAnnotation::Send(0, 2))?;
+            let prf1 = g.prf(
+                nop_node,
+                1234,
+                vector_type(4, array_type(vec![1, 1, 1, 1], BIT)),
+            )?;
+            prf1.set_name("prf1")?;
+
+            let tuple_get1 = g.tuple_get(i5.clone(), 1)?;
+            tuple_get1.set_name("tuple_get1")?;
+            let tuple_get2 = g.tuple_get(rand2.clone(), 0)?;
+            tuple_get2.set_name("tuple_get2")?;
+            let create_tuple = g.create_tuple(vec![tuple_get1, tuple_get2])?;
+            create_tuple.set_name("create_tuple")?;
+            Ok(context)
+        }()
+        .unwrap();
+
+        let test_class1 = generate_equivalence_class(
+            context1.clone(),
+            vec![vec![
+                IOStatus::Shared,
+                IOStatus::Shared,
+                IOStatus::Public,
+                IOStatus::Party(0),
+                IOStatus::Shared,
+            ]],
+        )
+        .unwrap();
+        let public_class = EquivalenceClasses::Atomic(vec![vec![0, 1, 2]]);
+        let private_class = EquivalenceClasses::Atomic(vec![vec![0], vec![1], vec![2]]);
+        let share0_12 = EquivalenceClasses::Atomic(vec![vec![0], vec![1, 2]]);
+        let share1_02 = EquivalenceClasses::Atomic(vec![vec![1], vec![0, 2]]);
+        let share2_01 = EquivalenceClasses::Atomic(vec![vec![2], vec![0, 1]]);
+
+        let class_i1 = EquivalenceClasses::Vector(vec![
+            Arc::new(share0_12.clone()),
+            Arc::new(share1_02.clone()),
+            Arc::new(share2_01.clone()),
+        ]);
+        let class_i2 = class_i1.clone();
+        let class_i3 = public_class.clone();
+        let class_i4 = EquivalenceClasses::Vector(vec![
+            Arc::new(private_class.clone()),
+            Arc::new(private_class.clone()),
+            Arc::new(private_class.clone()),
+            Arc::new(private_class.clone()),
+        ]);
+        let class_i5 = class_i1.clone();
+        let class_add_op1 = share0_12.clone();
+        let class_add_op2 = share1_02.clone();
+        let class_add1 = private_class.clone();
+        let class_rand1 = private_class.clone();
+        let class_rand2 = EquivalenceClasses::Vector(vec![
+            Arc::new(private_class.clone()),
+            Arc::new(private_class.clone()),
+            Arc::new(private_class.clone()),
+        ]);
+        let class_nop = class_i3.clone();
+        let class_prf1 = EquivalenceClasses::Vector(vec![
+            Arc::new(public_class.clone()),
+            Arc::new(public_class.clone()),
+            Arc::new(public_class.clone()),
+            Arc::new(public_class.clone()),
+        ]);
+
+        let class_tuple_get1 = share1_02.clone();
+        let class_tuple_get2 = private_class.clone();
+        let class_create_tuple = EquivalenceClasses::Vector(vec![
+            Arc::new(share1_02.clone()),
+            Arc::new(private_class.clone()),
+        ]);
+
+        assert_eq!(
+            *test_class1
+                .get(
+                    &context1
+                        .retrieve_node(context1.retrieve_graph("test_g1").unwrap(), "i1")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class_i1
+        );
+        assert_eq!(
+            *test_class1
+                .get(
+                    &context1
+                        .retrieve_node(context1.retrieve_graph("test_g1").unwrap(), "i2")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class_i2
+        );
+        assert_eq!(
+            *test_class1
+                .get(
+                    &context1
+                        .retrieve_node(context1.retrieve_graph("test_g1").unwrap(), "i3")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class_i3
+        );
+        assert_eq!(
+            *test_class1
+                .get(
+                    &context1
+                        .retrieve_node(context1.retrieve_graph("test_g1").unwrap(), "i4")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class_i4
+        );
+        assert_eq!(
+            *test_class1
+                .get(
+                    &context1
+                        .retrieve_node(context1.retrieve_graph("test_g1").unwrap(), "i5")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class_i5
+        );
+        assert_eq!(
+            *test_class1
+                .get(
+                    &context1
+                        .retrieve_node(context1.retrieve_graph("test_g1").unwrap(), "add_op1")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class_add_op1
+        );
+        assert_eq!(
+            *test_class1
+                .get(
+                    &context1
+                        .retrieve_node(context1.retrieve_graph("test_g1").unwrap(), "add_op2")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class_add_op2
+        );
+        assert_eq!(
+            *test_class1
+                .get(
+                    &context1
+                        .retrieve_node(context1.retrieve_graph("test_g1").unwrap(), "add1")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class_add1
+        );
+        assert_eq!(
+            *test_class1
+                .get(
+                    &context1
+                        .retrieve_node(context1.retrieve_graph("test_g1").unwrap(), "rand1")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class_rand1
+        );
+        assert_eq!(
+            *test_class1
+                .get(
+                    &context1
+                        .retrieve_node(context1.retrieve_graph("test_g1").unwrap(), "rand2")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class_rand2
+        );
+        assert_eq!(
+            *test_class1
+                .get(
+                    &context1
+                        .retrieve_node(context1.retrieve_graph("test_g1").unwrap(), "nop_node")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class_nop
+        );
+        assert_eq!(
+            *test_class1
+                .get(
+                    &context1
+                        .retrieve_node(context1.retrieve_graph("test_g1").unwrap(), "prf1")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class_prf1
+        );
+        assert_eq!(
+            *test_class1
+                .get(
+                    &context1
+                        .retrieve_node(context1.retrieve_graph("test_g1").unwrap(), "tuple_get1")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class_tuple_get1
+        );
+        assert_eq!(
+            *test_class1
+                .get(
+                    &context1
+                        .retrieve_node(context1.retrieve_graph("test_g1").unwrap(), "tuple_get2")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class_tuple_get2
+        );
+        assert_eq!(
+            *test_class1
+                .get(
+                    &context1
+                        .retrieve_node(context1.retrieve_graph("test_g1").unwrap(), "create_tuple")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class_create_tuple
+        );
+    }
+
+    #[test]
+    fn test_class_compiled_graph() {
+        let c = create_context().unwrap();
+        let g = c.create_graph().unwrap();
+        g.input(scalar_type(UINT64))
+            .unwrap()
+            .multiply(g.input(scalar_type(UINT64)).unwrap())
+            .unwrap()
+            .set_as_output()
+            .unwrap();
+        g.finalize().unwrap();
+        c.set_main_graph(g).unwrap();
+        c.finalize().unwrap();
+        let compiled_c = prepare_for_mpc_evaluation(
+            c,
+            vec![vec![IOStatus::Shared, IOStatus::Public]],
+            vec![vec![]],
+            InlineConfig {
+                default_mode: InlineMode::DepthOptimized(DepthOptimizationLevel::Default),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let test_class1 = generate_equivalence_class(
+            compiled_c.clone(),
+            vec![vec![IOStatus::Shared, IOStatus::Public]],
+        )
+        .unwrap();
+
+        let public_class = EquivalenceClasses::Atomic(vec![vec![0, 1, 2]]);
+        let private_class = EquivalenceClasses::Atomic(vec![vec![0], vec![1], vec![2]]);
+        let share0_12 = EquivalenceClasses::Atomic(vec![vec![0], vec![1, 2]]);
+        let share1_02 = EquivalenceClasses::Atomic(vec![vec![1], vec![0, 2]]);
+        let share2_01 = EquivalenceClasses::Atomic(vec![vec![2], vec![0, 1]]);
+        let shared_input = EquivalenceClasses::Vector(vec![
+            Arc::new(share0_12.clone()),
+            Arc::new(share1_02.clone()),
+            Arc::new(share2_01.clone()),
+        ]);
+        let create_tuple = EquivalenceClasses::Vector(vec![
+            Arc::new(share1_02.clone()),
+            Arc::new(share2_01.clone()),
+            Arc::new(share0_12.clone()),
+        ]);
+        assert_eq!(*test_class1.get(&(0, 0)).unwrap(), private_class.clone());
+        assert_eq!(*test_class1.get(&(0, 1)).unwrap(), share1_02.clone());
+        assert_eq!(*test_class1.get(&(0, 2)).unwrap(), private_class.clone());
+        assert_eq!(*test_class1.get(&(0, 3)).unwrap(), share2_01.clone());
+        assert_eq!(*test_class1.get(&(0, 4)).unwrap(), private_class.clone());
+        assert_eq!(*test_class1.get(&(0, 5)).unwrap(), share0_12.clone());
+        assert_eq!(*test_class1.get(&(0, 6)).unwrap(), create_tuple.clone());
+        assert_eq!(*test_class1.get(&(0, 7)).unwrap(), shared_input.clone());
+        assert_eq!(*test_class1.get(&(0, 8)).unwrap(), public_class.clone());
+        assert_eq!(*test_class1.get(&(0, 9)).unwrap(), share0_12.clone());
+        assert_eq!(*test_class1.get(&(0, 10)).unwrap(), share0_12.clone());
+        assert_eq!(*test_class1.get(&(0, 11)).unwrap(), share1_02.clone());
+        assert_eq!(*test_class1.get(&(0, 12)).unwrap(), share1_02.clone());
+        assert_eq!(*test_class1.get(&(0, 13)).unwrap(), share2_01.clone());
+        assert_eq!(*test_class1.get(&(0, 14)).unwrap(), share2_01.clone());
+        assert_eq!(*test_class1.get(&(0, 15)).unwrap(), shared_input.clone());
+        assert_eq!(*test_class1.get(&(0, 16)).unwrap(), share0_12.clone());
+        assert_eq!(*test_class1.get(&(0, 17)).unwrap(), share1_02.clone());
+        assert_eq!(*test_class1.get(&(0, 18)).unwrap(), share2_01.clone());
+        assert_eq!(*test_class1.get(&(0, 19)).unwrap(), shared_input.clone());
+    }
+
+    #[test]
+    fn test_check_equivalence_class() {
+        //following will only test nop node
+        let context1 = || -> Result<Context> {
+            let context = create_unchecked_context()?;
+            let g = context.create_graph()?;
+            let i1 = g.input(tuple_type(vec![
+                scalar_type(BIT),
+                scalar_type(BIT),
+                scalar_type(BIT),
+            ]))?;
+            let nop_node = g.nop(i1.clone())?;
+            nop_node.add_annotation(NodeAnnotation::Send(0, 1))?;
+            Ok(context)
+        }()
+        .unwrap();
+        let test_class1 = generate_equivalence_class(
+            context1.clone(),
+            vec![vec![IOStatus::Shared, IOStatus::Shared]],
+        )
+        .unwrap();
+
+        let context2 = || -> Result<Context> {
+            let context = create_unchecked_context()?;
+            let g = context.create_graph()?;
+            let i1 = g.random(scalar_type(BIT))?;
+            let nop_node = g.nop(i1.clone())?;
+            nop_node.add_annotation(NodeAnnotation::Send(0, 1))?;
+            Ok(context)
+        }()
+        .unwrap();
+        let test_class2 = generate_equivalence_class(
+            context2.clone(),
+            vec![vec![IOStatus::Shared, IOStatus::Shared]],
+        )
+        .unwrap();
+
+        assert_eq!(
+            helper_equivalence_class(context1.clone(), &test_class1).unwrap(),
+            false
+        );
+        assert_eq!(
+            helper_equivalence_class(context2.clone(), &test_class2).unwrap(),
+            true
+        );
+    }
+
+    fn helper_equivalence_class(
+        context: Context,
+        equivalence_classes: &HashMap<(u64, u64), EquivalenceClasses>,
+    ) -> Result<bool> {
+        let mut result = true;
+        let graphs = context.get_graphs();
+        for graph in graphs {
+            let nodes = graph.get_nodes();
+            for node in nodes {
+                result = check_equivalence_class(context.clone(), equivalence_classes, node)?;
+                if !result {
+                    break;
+                }
+            }
+        }
+        Ok(result)
+    }
+}

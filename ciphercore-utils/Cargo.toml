@@ -1,0 +1,15 @@
+[package]
+name = "ciphercore-utils"
+version = "0.1.0"
+authors = ["CipherMode Labs, Inc."]
+edition = "2021"
+
+[dependencies]
+serde = { version = "1.0.130", features = ["derive", "rc"] }
+serde_json = "1.0.68"
+log = "0.4.14"
+chrono = "0.4.19"
+
+[features]
+default = []
+nightly-features = []
