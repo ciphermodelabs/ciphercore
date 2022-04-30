@@ -1,0 +1,6 @@
+[workspace]
+
+members = [
+    "ciphercore-utils",
+    "ciphercore-base",
+]
