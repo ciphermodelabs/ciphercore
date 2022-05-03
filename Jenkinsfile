@@ -31,63 +31,77 @@ pipeline {
            agent any
            steps {
              prepare()
-             sh './run_code_formatting_docker.sh'
+             dir('private') {
+               sh './run_code_formatting_docker.sh'
+             }
            }
          }
          stage('Clippy') {
            agent any
            steps {
              prepare()
-             sh './run_clippy_docker.sh'
+             dir('private') {
+               sh './run_clippy_docker.sh'
+             }
            }
          }
          stage('Tests') {
            agent any
            steps {
              prepare()
-             sh './run_tests_docker.sh'
+             dir('private') {
+               sh './run_tests_docker.sh'
+             }
            }
          }
          stage('Docs') {
            agent any
            steps {
              prepare()
-             sh './run_docs_docker.sh'
-             publishHTML(target: [
-               allowMissing: false,
-               alwaysLinkToLastBuild: true,
-               keepAll: true,
-               reportDir: 'doc',
-               reportFiles: 'ciphercore_utils/index.html,ciphercore_base/index.html,ciphercore_evaluators/index.html,ciphercore_runtime/index.html',
-               reportName: 'Documentation'])
+             dir('private') {
+               sh './run_docs_docker.sh'
+               publishHTML(target: [
+                 allowMissing: false,
+                 alwaysLinkToLastBuild: true,
+                 keepAll: true,
+                 reportDir: 'doc',
+                 reportFiles: 'ciphercore_utils/index.html,ciphercore_base/index.html,ciphercore_evaluators/index.html,ciphercore_runtime/index.html',
+                 reportName: 'Documentation'])
+             }
            }
          }
          stage('Coverage') {
            agent any
            steps {
              prepare()
-             sh './run_coverage_docker.sh'
-             publishHTML(target: [
-               allowMissing: false,
-               alwaysLinkToLastBuild: true,
-               keepAll: true,
-               reportDir: 'coverage_output',
-               reportFiles: 'coverage_summary_ciphercore-utils.html,coverage_report_ciphercore-utils.html,coverage_summary_ciphercore-base.html,coverage_report_ciphercore-base.html,coverage_summary_ciphercore-evaluators.html,coverage_report_ciphercore-evaluators.html,coverage_summary_ciphercore-runtime.html,coverage_report_ciphercore-runtime.html',
-               reportName: 'Code Coverage'])
+             dir('private') {
+               sh './run_coverage_docker.sh'
+               publishHTML(target: [
+                 allowMissing: false,
+                 alwaysLinkToLastBuild: true,
+                 keepAll: true,
+                 reportDir: 'coverage_output',
+                 reportFiles: 'coverage_summary_ciphercore-utils.html,coverage_report_ciphercore-utils.html,coverage_summary_ciphercore-base.html,coverage_report_ciphercore-base.html,coverage_summary_ciphercore-evaluators.html,coverage_report_ciphercore-evaluators.html,coverage_summary_ciphercore-runtime.html,coverage_report_ciphercore-runtime.html',
+                 reportName: 'Code Coverage'])
+             }
            }
          }
          stage('Address Sanitizer') {
            agent any
            steps {
              prepare()
-             sh './run_address_sanitizer_docker.sh'
+             dir('private') {
+               sh './run_address_sanitizer_docker.sh'
+             }
            }
          }
          stage('Thread Sanitizer') {
            agent any
            steps {
              prepare()
-             sh './run_thread_sanitizer_docker.sh'
+             dir('private') {
+               sh './run_thread_sanitizer_docker.sh'
+             }
            }
          }
        } 
@@ -96,7 +110,9 @@ pipeline {
       agent any
       steps {
         prepare()
-        sh './run_benchmarks_docker.sh'
+        dir('private') {
+          sh './run_benchmarks_docker.sh'
+        }
       }
     }
   }
