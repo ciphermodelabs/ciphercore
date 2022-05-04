@@ -292,7 +292,10 @@ fn get_inline_mode(mode_val: Option<InlineModeArg>) -> InlineMode {
 }
 
 fn main() {
+    // Initialize a logger that collects information about errors and panics within CipherCore.
+    // This information can be accessed via RUST_LOG.
     env_logger::init();
+    // Execute CipherCore code such that all the internal errors are properly formatted and logged.
     execute_main(|| -> Result<()> {
         let args = Args::parse();
         let buffer = fs::read_to_string(&args.input_path)?;

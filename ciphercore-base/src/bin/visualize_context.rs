@@ -205,7 +205,10 @@ struct Args {
 ///         dot -Tpdf <context_dot_code_file_name>.gv -o sample_graph.pdf
 ///     (See manual entry for dot i.e. 'man dot' for more details)
 fn main() {
+    // Initialize a logger that collects information about errors and panics within CipherCore.
+    // This information can be accessed via RUST_LOG.
     env_logger::init();
+    // Execute CipherCore code such that all the internal errors are properly formatted and logged.
     execute_main(|| -> Result<()> {
         let args = Args::parse();
         let serialized_context = fs::read_to_string(&args.context_path)?;

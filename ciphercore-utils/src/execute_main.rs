@@ -13,7 +13,7 @@ where
     let result = std::panic::catch_unwind(|| {
         let result = f();
         if let Err(e) = result {
-            error!("Ciphercore Error: {}", e);
+            error!("CipherCore Error: {}", e);
             #[cfg(feature = "nightly-features")]
             info!("error backtrace: \n{}", e.get_body().backtrace);
         }

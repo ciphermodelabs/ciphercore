@@ -18,7 +18,10 @@ use ciphercore_utils::execute_main::execute_main;
 ///     b: Number of bits used for representing individual the array element
 /// - Usage: ./<this_binary> <k> <b>
 fn main() {
+    // Initialize a logger that collects information about errors and panics within CipherCore.
+    // This information can be accessed via RUST_LOG.
     env_logger::init();
+    // Execute CipherCore code such that all the internal errors are properly formatted and logged.
     execute_main(|| -> Result<()> {
         let args: Vec<String> = env::args().collect();
         if args.len() != 3 {
