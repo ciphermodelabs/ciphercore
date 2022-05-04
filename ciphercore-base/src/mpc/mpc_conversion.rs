@@ -544,58 +544,47 @@ mod tests {
         let output = random_evaluate(mpc_graph.clone(), inputs)?;
         let st = t.get_scalar_type();
         if is_output_private {
-            output.access_vector(|v| {
-                if output_parties.is_empty() {
-                    let out = {
-                        let modulus = st.get_modulus();
-                        let mut res = vec![0; expected.len()];
-                        for val in v {
-                            let arr = match t.clone() {
-                                Type::Scalar(_) => {
-                                    vec![val.to_u64(st.clone())?]
-                                }
-                                Type::Array(_, _) => val.to_flattened_array_u64(t.clone())?,
-                                _ => {
-                                    panic!("Shouldn't be here");
-                                }
-                            };
-                            for i in 0..expected.len() {
-                                if op == Operation::A2B {
-                                    res[i] ^= arr[i];
+            if output_parties.is_empty() {
+                let out = output.access_vector(|v| {
+                    let modulus = st.get_modulus();
+                    let mut res = vec![0; expected.len()];
+                    for val in v {
+                        let arr = match t.clone() {
+                            Type::Scalar(_) => {
+                                vec![val.to_u64(st.clone())?]
+                            }
+                            Type::Array(_, _) => val.to_flattened_array_u64(t.clone())?,
+                            _ => {
+                                panic!("Shouldn't be here");
+                            }
+                        };
+                        for i in 0..expected.len() {
+                            if op == Operation::A2B {
+                                res[i] ^= arr[i];
+                            } else {
+                                res[i] = if let Some(m) = modulus {
+                                    (res[i] + arr[i]) % m
                                 } else {
-                                    res[i] = if let Some(m) = modulus {
-                                        (res[i] + arr[i]) % m
-                                    } else {
-                                        res[i] + arr[i]
-                                    };
-                                }
+                                    res[i] + arr[i]
+                                };
                             }
                         }
-                        res
-                    };
-                    assert_eq!(out, expected);
-                }
-                for i in 0..PARTIES {
-                    // check that MPC output is a tuple
-                    assert!(output.check_type(tuple_type(vec![t.clone(); PARTIES]))?);
-                    let value_vec = output.to_vector()?;
-                    let out = match t.clone() {
-                        Type::Scalar(_) => vec![value_vec[i].to_u64(st.clone())?],
-                        Type::Array(_, _) => value_vec[i].to_flattened_array_u64(t.clone())?,
-                        _ => {
-                            panic!("Shouldn't be here");
-                        }
-                    };
-                    if output_parties.contains(&IOStatus::Party(i as u64)) {
-                        // check that the value revealed to party i is equal to expected
-                        assert_eq!(out, expected);
-                    } else {
-                        // check that the value not revealed to party i isn't equal to expected (random)
-                        assert_ne!(out, expected);
                     }
-                }
-                Ok(())
-            })?;
+                    Ok(res)
+                })?;
+                assert_eq!(out, expected);
+            } else {
+                assert!(output.check_type(t.clone())?);
+                let out = match t.clone() {
+                    Type::Scalar(_) => vec![output.to_u64(st.clone())?],
+                    Type::Array(_, _) => output.to_flattened_array_u64(t.clone())?,
+                    _ => {
+                        panic!("Shouldn't be here");
+                    }
+                };
+                assert_eq!(out, expected);
+            }
+            Ok(())
         } else {
             let array_output = match t.clone() {
                 Type::Scalar(_) => Value::from_scalar(expected[0], st)?,
@@ -605,8 +594,8 @@ mod tests {
                 }
             };
             assert_eq!(output, array_output);
+            Ok(())
         }
-        Ok(())
     }
 
     fn conversion_test(op: Operation, st: ScalarType) -> Result<()> {
@@ -654,6 +643,13 @@ mod tests {
                 inputs.clone(),
                 IOStatus::Party(2),
                 vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
+                inline_config_simple.clone(),
+                t.clone(),
+            )?;
+            helper(
+                inputs.clone(),
+                IOStatus::Party(2),
+                vec![IOStatus::Party(0), IOStatus::Party(1)],
                 inline_config_simple.clone(),
                 t.clone(),
             )?;

@@ -711,28 +711,45 @@ fn recursively_sum_shares(g: Graph, shares: Vec<Node>) -> Result<Node> {
 
 /// Output parties ids must be in the range 0..PARTIES.
 fn reveal_output(g: Graph, out_node: Node, output_parties: Vec<IOStatus>) -> Result<Node> {
+    // If there are no parties obtaining revealed output, return output in the shared form
+    if output_parties.is_empty() {
+        return Ok(out_node);
+    }
+    // Extract output shares
     let mut shares = vec![];
     for i in 0..PARTIES as u64 {
         let share = out_node.tuple_get(i)?;
         shares.push(share);
     }
-    let mut revealed_shares = vec![];
-    for party_id in 0..PARTIES {
-        let node = if output_parties.contains(&IOStatus::Party(party_id as u64)) {
-            let mut shares_to_reveal = shares.clone();
-            // networking to obtain missing shares
-            let prev_party_id = (party_id + PARTIES - 1) % PARTIES;
-            let node = shares_to_reveal[prev_party_id].nop()?;
-            shares_to_reveal[prev_party_id] =
-                node.add_annotation(NodeAnnotation::Send(prev_party_id as u64, party_id as u64))?;
-            // sum shares
-            recursively_sum_shares(g.clone(), shares_to_reveal)?
+    if let IOStatus::Party(id) = output_parties[0] {
+        let party_id = id as usize;
+        let mut shares_to_reveal = shares.clone();
+        // Networking to obtain missing shares
+        let prev_party_id = (party_id + PARTIES - 1) % PARTIES;
+        let missing_share = shares_to_reveal[prev_party_id].nop()?;
+        shares_to_reveal[prev_party_id] = missing_share
+            .add_annotation(NodeAnnotation::Send(prev_party_id as u64, party_id as u64))?;
+        // Sum shares
+        let revealed_node = recursively_sum_shares(g, shares_to_reveal)?;
+        // If there are other parties waiting for a revealed value, send it to them
+        let result_node = if output_parties.len() > 1 {
+            let send_node = revealed_node.nop()?;
+            for i in 1..PARTIES {
+                let party_to_send_id = (party_id + i) % PARTIES;
+                if output_parties.contains(&IOStatus::Party(party_to_send_id as u64)) {
+                    send_node.add_annotation(NodeAnnotation::Send(
+                        party_id as u64,
+                        party_to_send_id as u64,
+                    ))?;
+                }
+            }
+            send_node
         } else {
-            shares[party_id].clone()
+            revealed_node
         };
-        revealed_shares.push(node);
+        return Ok(result_node);
     }
-    g.create_tuple(revealed_shares)
+    panic!("Shouldn't be here");
 }
 
 /// Compiles all the graphs of an already inlined context into graphs for secure computation and add it to another context.
@@ -1137,19 +1154,12 @@ mod tests {
                     // check that output is a sharing of expected
                     if output_parties.is_empty() {
                         let revealed_output = reveal_private_value(output.clone(), t.clone())?;
+                        assert!(output.check_type(tuple_type(vec![t.clone(); PARTIES]))?);
                         assert_eq!(revealed_output, expected);
-                    }
-                    // check that output is a tuple of the right shape
-                    assert!(output.check_type(tuple_type(vec![t.clone(); PARTIES]))?);
-                    let value_vec = output.to_vector()?;
-                    for i in 0..PARTIES {
-                        if output_parties.contains(&IOStatus::Party(i as u64)) {
-                            // check that the value revealed to party i is equal to plain_output
-                            assert_eq!(value_vec[i], expected.clone());
-                        } else {
-                            // check that the value not revealed to party i isn't equal to plain_output (random)
-                            assert_ne!(value_vec[i], expected.clone());
-                        }
+                    } else {
+                        // check that output is of the right type
+                        assert!(output.check_type(t.clone())?);
+                        assert_eq!(output, expected.clone());
                     }
                     assert!(output_annotations.contains(&NodeAnnotation::Private));
                 } else {
@@ -1282,20 +1292,12 @@ mod tests {
         if is_output_private {
             if output_parties.is_empty() {
                 // check that mpc_output is a sharing of plain_output
+                assert!(mpc_output.check_type(tuple_type(vec![t.clone(); PARTIES]))?);
                 let value_revealed = reveal_private_value(mpc_output.clone(), t.clone())?;
                 assert_eq!(value_revealed, plain_output);
-            }
-            for i in 0..PARTIES {
-                // check that MPC output is a tuple
-                assert!(mpc_output.check_type(tuple_type(vec![t.clone(); PARTIES]))?);
-                let value_vec = mpc_output.to_vector()?;
-                if output_parties.contains(&IOStatus::Party(i as u64)) {
-                    // check that the value revealed to party i is equal to plain_output
-                    assert_eq!(value_vec[i], plain_output);
-                } else {
-                    // check that the value not revealed to party i isn't equal to plain_output (random)
-                    assert_ne!(value_vec[i], plain_output);
-                }
+            } else {
+                assert!(mpc_output.check_type(t.clone())?);
+                assert_eq!(mpc_output, plain_output.clone());
             }
         } else {
             assert_eq!(mpc_output, plain_output);
@@ -1396,7 +1398,7 @@ mod tests {
             vec![input_type.clone()],
             op.clone(),
             vec![IOStatus::Shared],
-            vec![IOStatus::Party(1)],
+            vec![IOStatus::Party(0), IOStatus::Party(1)],
             true,
         )?;
         helper_one_input(vec![input_type], op, vec![IOStatus::Party(0)], vec![], true)?;
@@ -1660,7 +1662,7 @@ mod tests {
             input_types.clone(),
             op.clone(),
             vec![IOStatus::Shared, IOStatus::Shared, IOStatus::Party(0)],
-            vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
+            vec![IOStatus::Party(0), IOStatus::Party(1)],
             true,
             true,
         )?;

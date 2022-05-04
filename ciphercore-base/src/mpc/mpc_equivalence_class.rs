@@ -236,9 +236,9 @@ fn get_input_class_helper_shared(t: Type) -> Result<EquivalenceClasses> {
             }
             let mut current_class = vec![];
             let sample_class = vec![
-                EquivalenceClasses::Atomic(vec![vec![0], vec![1, 2]]),
                 EquivalenceClasses::Atomic(vec![vec![1], vec![0, 2]]),
                 EquivalenceClasses::Atomic(vec![vec![2], vec![0, 1]]),
+                EquivalenceClasses::Atomic(vec![vec![0], vec![1, 2]]),
             ];
             for (index, sub_t) in ts.iter().enumerate() {
                 if *sub_t != ts[0] {
@@ -556,9 +556,9 @@ mod tests {
         let share2_01 = EquivalenceClasses::Atomic(vec![vec![2], vec![0, 1]]);
 
         let class_i1 = EquivalenceClasses::Vector(vec![
-            Arc::new(share0_12.clone()),
             Arc::new(share1_02.clone()),
             Arc::new(share2_01.clone()),
+            Arc::new(share0_12.clone()),
         ]);
         let class_i2 = class_i1.clone();
         let class_i3 = public_class.clone();
@@ -569,8 +569,8 @@ mod tests {
             Arc::new(private_class.clone()),
         ]);
         let class_i5 = class_i1.clone();
-        let class_add_op1 = share0_12.clone();
-        let class_add_op2 = share1_02.clone();
+        let class_add_op1 = share1_02.clone();
+        let class_add_op2 = share2_01.clone();
         let class_add1 = private_class.clone();
         let class_rand1 = private_class.clone();
         let class_rand2 = EquivalenceClasses::Vector(vec![
@@ -586,10 +586,10 @@ mod tests {
             Arc::new(public_class.clone()),
         ]);
 
-        let class_tuple_get1 = share1_02.clone();
+        let class_tuple_get1 = share2_01.clone();
         let class_tuple_get2 = private_class.clone();
         let class_create_tuple = EquivalenceClasses::Vector(vec![
-            Arc::new(share1_02.clone()),
+            Arc::new(share2_01.clone()),
             Arc::new(private_class.clone()),
         ]);
 
@@ -773,57 +773,189 @@ mod tests {
         g.finalize().unwrap();
         c.set_main_graph(g).unwrap();
         c.finalize().unwrap();
-        let compiled_c = prepare_for_mpc_evaluation(
-            c,
-            vec![vec![IOStatus::Shared, IOStatus::Public]],
-            vec![vec![]],
-            InlineConfig {
-                default_mode: InlineMode::DepthOptimized(DepthOptimizationLevel::Default),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let test_class1 = generate_equivalence_class(
-            compiled_c.clone(),
-            vec![vec![IOStatus::Shared, IOStatus::Public]],
-        )
-        .unwrap();
+        {
+            let compiled_c = prepare_for_mpc_evaluation(
+                c.clone(),
+                vec![vec![IOStatus::Shared, IOStatus::Public]],
+                vec![vec![]],
+                InlineConfig {
+                    default_mode: InlineMode::DepthOptimized(DepthOptimizationLevel::Default),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let test_class1 = generate_equivalence_class(
+                compiled_c.clone(),
+                vec![vec![IOStatus::Shared, IOStatus::Public]],
+            )
+            .unwrap();
 
-        let public_class = EquivalenceClasses::Atomic(vec![vec![0, 1, 2]]);
-        let private_class = EquivalenceClasses::Atomic(vec![vec![0], vec![1], vec![2]]);
-        let share0_12 = EquivalenceClasses::Atomic(vec![vec![0], vec![1, 2]]);
-        let share1_02 = EquivalenceClasses::Atomic(vec![vec![1], vec![0, 2]]);
-        let share2_01 = EquivalenceClasses::Atomic(vec![vec![2], vec![0, 1]]);
-        let shared_input = EquivalenceClasses::Vector(vec![
-            Arc::new(share0_12.clone()),
-            Arc::new(share1_02.clone()),
-            Arc::new(share2_01.clone()),
-        ]);
-        let create_tuple = EquivalenceClasses::Vector(vec![
-            Arc::new(share1_02.clone()),
-            Arc::new(share2_01.clone()),
-            Arc::new(share0_12.clone()),
-        ]);
-        assert_eq!(*test_class1.get(&(0, 0)).unwrap(), private_class.clone());
-        assert_eq!(*test_class1.get(&(0, 1)).unwrap(), share1_02.clone());
-        assert_eq!(*test_class1.get(&(0, 2)).unwrap(), private_class.clone());
-        assert_eq!(*test_class1.get(&(0, 3)).unwrap(), share2_01.clone());
-        assert_eq!(*test_class1.get(&(0, 4)).unwrap(), private_class.clone());
-        assert_eq!(*test_class1.get(&(0, 5)).unwrap(), share0_12.clone());
-        assert_eq!(*test_class1.get(&(0, 6)).unwrap(), create_tuple.clone());
-        assert_eq!(*test_class1.get(&(0, 7)).unwrap(), shared_input.clone());
-        assert_eq!(*test_class1.get(&(0, 8)).unwrap(), public_class.clone());
-        assert_eq!(*test_class1.get(&(0, 9)).unwrap(), share0_12.clone());
-        assert_eq!(*test_class1.get(&(0, 10)).unwrap(), share0_12.clone());
-        assert_eq!(*test_class1.get(&(0, 11)).unwrap(), share1_02.clone());
-        assert_eq!(*test_class1.get(&(0, 12)).unwrap(), share1_02.clone());
-        assert_eq!(*test_class1.get(&(0, 13)).unwrap(), share2_01.clone());
-        assert_eq!(*test_class1.get(&(0, 14)).unwrap(), share2_01.clone());
-        assert_eq!(*test_class1.get(&(0, 15)).unwrap(), shared_input.clone());
-        assert_eq!(*test_class1.get(&(0, 16)).unwrap(), share0_12.clone());
-        assert_eq!(*test_class1.get(&(0, 17)).unwrap(), share1_02.clone());
-        assert_eq!(*test_class1.get(&(0, 18)).unwrap(), share2_01.clone());
-        assert_eq!(*test_class1.get(&(0, 19)).unwrap(), shared_input.clone());
+            let public_class = EquivalenceClasses::Atomic(vec![vec![0, 1, 2]]);
+            let private_class = EquivalenceClasses::Atomic(vec![vec![0], vec![1], vec![2]]);
+            let share0_12 = EquivalenceClasses::Atomic(vec![vec![0], vec![1, 2]]);
+            let share1_02 = EquivalenceClasses::Atomic(vec![vec![1], vec![0, 2]]);
+            let share2_01 = EquivalenceClasses::Atomic(vec![vec![2], vec![0, 1]]);
+            let shared = EquivalenceClasses::Vector(vec![
+                Arc::new(share1_02.clone()),
+                Arc::new(share2_01.clone()),
+                Arc::new(share0_12.clone()),
+            ]);
+            assert_eq!(*test_class1.get(&(0, 0)).unwrap(), private_class.clone());
+            assert_eq!(*test_class1.get(&(0, 1)).unwrap(), share1_02.clone());
+            assert_eq!(*test_class1.get(&(0, 2)).unwrap(), private_class.clone());
+            assert_eq!(*test_class1.get(&(0, 3)).unwrap(), share2_01.clone());
+            assert_eq!(*test_class1.get(&(0, 4)).unwrap(), private_class.clone());
+            assert_eq!(*test_class1.get(&(0, 5)).unwrap(), share0_12.clone());
+            assert_eq!(*test_class1.get(&(0, 6)).unwrap(), shared.clone());
+            assert_eq!(*test_class1.get(&(0, 7)).unwrap(), shared.clone());
+            assert_eq!(*test_class1.get(&(0, 8)).unwrap(), public_class.clone());
+            assert_eq!(*test_class1.get(&(0, 9)).unwrap(), share1_02.clone());
+            assert_eq!(*test_class1.get(&(0, 10)).unwrap(), share1_02.clone());
+            assert_eq!(*test_class1.get(&(0, 11)).unwrap(), share2_01.clone());
+            assert_eq!(*test_class1.get(&(0, 12)).unwrap(), share2_01.clone());
+            assert_eq!(*test_class1.get(&(0, 13)).unwrap(), share0_12.clone());
+            assert_eq!(*test_class1.get(&(0, 14)).unwrap(), share0_12.clone());
+            assert_eq!(*test_class1.get(&(0, 15)).unwrap(), shared.clone());
+        }
+        {
+            let compiled_c = prepare_for_mpc_evaluation(
+                c.clone(),
+                vec![vec![IOStatus::Shared, IOStatus::Public]],
+                vec![vec![IOStatus::Party(0)]],
+                InlineConfig {
+                    default_mode: InlineMode::DepthOptimized(DepthOptimizationLevel::Default),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let test_class1 = generate_equivalence_class(
+                compiled_c.clone(),
+                vec![vec![IOStatus::Shared, IOStatus::Public]],
+            )
+            .unwrap();
+
+            let public_class = EquivalenceClasses::Atomic(vec![vec![0, 1, 2]]);
+            let private_class = EquivalenceClasses::Atomic(vec![vec![0], vec![1], vec![2]]);
+            let share0_12 = EquivalenceClasses::Atomic(vec![vec![0], vec![1, 2]]);
+            let share1_02 = EquivalenceClasses::Atomic(vec![vec![1], vec![0, 2]]);
+            let share2_01 = EquivalenceClasses::Atomic(vec![vec![2], vec![0, 1]]);
+            let shared = EquivalenceClasses::Vector(vec![
+                Arc::new(share1_02.clone()),
+                Arc::new(share2_01.clone()),
+                Arc::new(share0_12.clone()),
+            ]);
+            // PRF keys
+            assert_eq!(*test_class1.get(&(0, 0)).unwrap(), private_class.clone());
+            assert_eq!(*test_class1.get(&(0, 1)).unwrap(), share1_02.clone());
+            assert_eq!(*test_class1.get(&(0, 2)).unwrap(), private_class.clone());
+            assert_eq!(*test_class1.get(&(0, 3)).unwrap(), share2_01.clone());
+            assert_eq!(*test_class1.get(&(0, 4)).unwrap(), private_class.clone());
+            assert_eq!(*test_class1.get(&(0, 5)).unwrap(), share0_12.clone());
+            // Create PRF triple
+            assert_eq!(*test_class1.get(&(0, 6)).unwrap(), shared.clone());
+            // Shared input
+            assert_eq!(*test_class1.get(&(0, 7)).unwrap(), shared.clone());
+            // Public input
+            assert_eq!(*test_class1.get(&(0, 8)).unwrap(), public_class.clone());
+            // Extract share 0
+            assert_eq!(*test_class1.get(&(0, 9)).unwrap(), share1_02.clone());
+            // Multiply share 0 by the public value
+            assert_eq!(*test_class1.get(&(0, 10)).unwrap(), share1_02.clone());
+            // Extract share 1
+            assert_eq!(*test_class1.get(&(0, 11)).unwrap(), share2_01.clone());
+            // Multiply share 1 by the public value
+            assert_eq!(*test_class1.get(&(0, 12)).unwrap(), share2_01.clone());
+            // Extract share 2
+            assert_eq!(*test_class1.get(&(0, 13)).unwrap(), share0_12.clone());
+            // Multiply share 2 by the public value
+            assert_eq!(*test_class1.get(&(0, 14)).unwrap(), share0_12.clone());
+            // Shared product
+            assert_eq!(*test_class1.get(&(0, 15)).unwrap(), shared.clone());
+            // Extract shares
+            assert_eq!(*test_class1.get(&(0, 16)).unwrap(), share1_02.clone());
+            assert_eq!(*test_class1.get(&(0, 17)).unwrap(), share2_01.clone());
+            assert_eq!(*test_class1.get(&(0, 18)).unwrap(), share0_12.clone());
+            // Revealing
+            // Share 2 is sent to party 0, thus becoming public
+            assert_eq!(*test_class1.get(&(0, 19)).unwrap(), public_class.clone());
+            // Sum of shares 0 and 1 must be private (party 0 has the correct sum)
+            assert_eq!(*test_class1.get(&(0, 20)).unwrap(), private_class.clone());
+            // Sum of shares 0, 1 and 2 must be private (party 0 has the correct sum)
+            assert_eq!(*test_class1.get(&(0, 21)).unwrap(), private_class.clone());
+            // There should be no other nodes
+            assert!(test_class1.get(&(0, 22)).is_none());
+            // assert_eq!(*test_class1.get(&(0, 19)).unwrap(), share2_01.clone());
+        }
+        {
+            let compiled_c = prepare_for_mpc_evaluation(
+                c.clone(),
+                vec![vec![IOStatus::Shared, IOStatus::Public]],
+                vec![vec![IOStatus::Party(0), IOStatus::Party(2)]],
+                InlineConfig {
+                    default_mode: InlineMode::DepthOptimized(DepthOptimizationLevel::Default),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let test_class1 = generate_equivalence_class(
+                compiled_c.clone(),
+                vec![vec![IOStatus::Shared, IOStatus::Public]],
+            )
+            .unwrap();
+
+            let public_class = EquivalenceClasses::Atomic(vec![vec![0, 1, 2]]);
+            let private_class = EquivalenceClasses::Atomic(vec![vec![0], vec![1], vec![2]]);
+            let share0_12 = EquivalenceClasses::Atomic(vec![vec![0], vec![1, 2]]);
+            let share1_02 = EquivalenceClasses::Atomic(vec![vec![1], vec![0, 2]]);
+            let share2_01 = EquivalenceClasses::Atomic(vec![vec![2], vec![0, 1]]);
+            let shared = EquivalenceClasses::Vector(vec![
+                Arc::new(share1_02.clone()),
+                Arc::new(share2_01.clone()),
+                Arc::new(share0_12.clone()),
+            ]);
+            // PRF keys
+            assert_eq!(*test_class1.get(&(0, 0)).unwrap(), private_class.clone());
+            assert_eq!(*test_class1.get(&(0, 1)).unwrap(), share1_02.clone());
+            assert_eq!(*test_class1.get(&(0, 2)).unwrap(), private_class.clone());
+            assert_eq!(*test_class1.get(&(0, 3)).unwrap(), share2_01.clone());
+            assert_eq!(*test_class1.get(&(0, 4)).unwrap(), private_class.clone());
+            assert_eq!(*test_class1.get(&(0, 5)).unwrap(), share0_12.clone());
+            // Create PRF triple
+            assert_eq!(*test_class1.get(&(0, 6)).unwrap(), shared.clone());
+            // Shared input
+            assert_eq!(*test_class1.get(&(0, 7)).unwrap(), shared.clone());
+            // Public input
+            assert_eq!(*test_class1.get(&(0, 8)).unwrap(), public_class.clone());
+            // Extract share 0
+            assert_eq!(*test_class1.get(&(0, 9)).unwrap(), share1_02.clone());
+            // Multiply share 0 by the public value
+            assert_eq!(*test_class1.get(&(0, 10)).unwrap(), share1_02.clone());
+            // Extract share 1
+            assert_eq!(*test_class1.get(&(0, 11)).unwrap(), share2_01.clone());
+            // Multiply share 1 by the public value
+            assert_eq!(*test_class1.get(&(0, 12)).unwrap(), share2_01.clone());
+            // Extract share 2
+            assert_eq!(*test_class1.get(&(0, 13)).unwrap(), share0_12.clone());
+            // Multiply share 2 by the public value
+            assert_eq!(*test_class1.get(&(0, 14)).unwrap(), share0_12.clone());
+            // Shared product
+            assert_eq!(*test_class1.get(&(0, 15)).unwrap(), shared.clone());
+            // Extract shares
+            assert_eq!(*test_class1.get(&(0, 16)).unwrap(), share1_02.clone());
+            assert_eq!(*test_class1.get(&(0, 17)).unwrap(), share2_01.clone());
+            assert_eq!(*test_class1.get(&(0, 18)).unwrap(), share0_12.clone());
+            // Revealing
+            // Share 2 is sent to party 0, thus becoming public
+            assert_eq!(*test_class1.get(&(0, 19)).unwrap(), public_class.clone());
+            // Sum of shares 0 and 1 must be private (party 0 has the correct sum)
+            assert_eq!(*test_class1.get(&(0, 20)).unwrap(), private_class.clone());
+            // Sum of shares 0, 1 and 2 must be private (party 0 has the correct sum)
+            assert_eq!(*test_class1.get(&(0, 21)).unwrap(), private_class.clone());
+            // Send the revealed value to another party
+            assert_eq!(*test_class1.get(&(0, 22)).unwrap(), share1_02.clone());
+            // There should be no other nodes
+            assert!(test_class1.get(&(0, 23)).is_none());
+        }
     }
 
     #[test]

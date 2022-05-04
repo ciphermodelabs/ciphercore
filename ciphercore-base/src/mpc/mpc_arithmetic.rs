@@ -464,6 +464,8 @@ mod tests {
         let output_type = array_type(dims.clone(), st.clone());
         if is_output_private {
             if output_parties.is_empty() {
+                // check that mpc_output is a sharing of plain_output
+                assert!(output.check_type(tuple_type(vec![output_type.clone(); PARTIES]))?);
                 // check that output is a sharing of expected
                 let out = output.access_vector(|v| {
                     let flat_dims: u64 = dims.iter().product();
@@ -481,19 +483,9 @@ mod tests {
                     }
                 })?;
                 assert_eq!(out, expected)
-            }
-            for i in 0..PARTIES {
-                // check that MPC output is a tuple
-                assert!(output.check_type(tuple_type(vec![output_type.clone(); PARTIES]))?);
-                let value_vec = output.to_vector()?;
-                let out = value_vec[i].to_flattened_array_u64(output_type.clone())?;
-                if output_parties.contains(&IOStatus::Party(i as u64)) {
-                    // check that the value revealed to party i is equal to expected
-                    assert_eq!(out, expected);
-                } else {
-                    // check that the value not revealed to party i isn't equal to expected (random)
-                    assert_ne!(out, expected);
-                }
+            } else {
+                assert!(output.check_type(output_type.clone())?);
+                assert_eq!(output.to_flattened_array_u64(output_type)?, expected);
             }
         } else {
             let array_output = Value::from_flattened_array(&expected, st.clone())?;
@@ -548,7 +540,7 @@ mod tests {
             input.clone(),
             expected.clone(),
             vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
-            vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
+            vec![IOStatus::Party(0)],
             true,
         )?;
         helper(
@@ -566,7 +558,7 @@ mod tests {
             input.clone(),
             expected.clone(),
             vec![IOStatus::Public, IOStatus::Public, IOStatus::Party(0)],
-            vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
+            vec![IOStatus::Party(0), IOStatus::Party(1)],
             true,
         )?;
         helper(
@@ -741,7 +733,7 @@ mod tests {
         bilinear_product_helper(
             op.clone(),
             vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
-            vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
+            vec![IOStatus::Party(0)],
             true,
             vec![2],
         )
@@ -757,7 +749,7 @@ mod tests {
         bilinear_product_helper(
             op.clone(),
             vec![IOStatus::Public, IOStatus::Public, IOStatus::Party(0)],
-            vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
+            vec![IOStatus::Party(0), IOStatus::Party(1)],
             true,
             vec![2],
         )
@@ -786,7 +778,7 @@ mod tests {
         bilinear_product_helper(
             op.clone(),
             vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
-            vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
+            vec![IOStatus::Party(0)],
             true,
             vec![2],
         )
@@ -802,7 +794,7 @@ mod tests {
         bilinear_product_helper(
             op.clone(),
             vec![IOStatus::Public, IOStatus::Public, IOStatus::Party(0)],
-            vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
+            vec![IOStatus::Party(0), IOStatus::Party(1)],
             true,
             vec![2],
         )
@@ -831,7 +823,7 @@ mod tests {
         bilinear_product_helper(
             op.clone(),
             vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
-            vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
+            vec![IOStatus::Party(0)],
             true,
             vec![2, 2],
         )
@@ -847,7 +839,7 @@ mod tests {
         bilinear_product_helper(
             op.clone(),
             vec![IOStatus::Public, IOStatus::Public, IOStatus::Party(0)],
-            vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
+            vec![IOStatus::Party(0), IOStatus::Party(1)],
             true,
             vec![2, 2],
         )

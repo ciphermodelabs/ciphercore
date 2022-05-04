@@ -136,7 +136,7 @@ impl CustomOperationBody for TruncateMPC {
 mod tests {
     use super::*;
     use crate::bytes::subtract_vectors_u64;
-    use crate::data_types::{array_type, scalar_type, tuple_type, ScalarType, INT32, UINT32};
+    use crate::data_types::{array_type, scalar_type, ScalarType, INT32, UINT32};
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
     use crate::graphs::create_context;
@@ -245,58 +245,42 @@ mod tests {
         let output = random_evaluate(mpc_graph.clone(), inputs)?;
         let st = t.get_scalar_type();
         if is_output_private {
-            output.access_vector(|v| {
-                if output_parties.is_empty() {
-                    let out = {
-                        let modulus = st.get_modulus();
-                        let mut res = vec![0; expected.len()];
-                        for val in v {
-                            let arr = match t.clone() {
-                                Type::Scalar(_) => {
-                                    vec![val.to_u64(st.clone())?]
-                                }
-                                Type::Array(_, _) => val.to_flattened_array_u64(t.clone())?,
-                                _ => {
-                                    panic!("Shouldn't be here");
-                                }
-                            };
-                            for i in 0..expected.len() {
-                                res[i] = if let Some(m) = modulus {
-                                    (res[i] + arr[i]) % m
-                                } else {
-                                    res[i] + arr[i]
-                                };
+            if output_parties.is_empty() {
+                let out = output.access_vector(|v| {
+                    let modulus = st.get_modulus();
+                    let mut res = vec![0; expected.len()];
+                    for val in v {
+                        let arr = match t.clone() {
+                            Type::Scalar(_) => {
+                                vec![val.to_u64(st.clone())?]
                             }
+                            Type::Array(_, _) => val.to_flattened_array_u64(t.clone())?,
+                            _ => {
+                                panic!("Shouldn't be here");
+                            }
+                        };
+                        for i in 0..expected.len() {
+                            res[i] = if let Some(m) = modulus {
+                                (res[i] + arr[i]) % m
+                            } else {
+                                res[i] + arr[i]
+                            };
                         }
-                        res
-                    };
-                    compare_truncate_output(&out, &expected, true, st.clone())?;
-                }
-                for i in 0..PARTIES {
-                    // check that MPC output is a tuple
-                    assert!(output.check_type(tuple_type(vec![t.clone(); PARTIES]))?);
-                    let value_vec = output.to_vector()?;
-                    let out = match t.clone() {
-                        Type::Scalar(_) => vec![value_vec[i].to_u64(st.clone())?],
-                        Type::Array(_, _) => value_vec[i].to_flattened_array_u64(t.clone())?,
-                        _ => {
-                            panic!("Shouldn't be here");
-                        }
-                    };
-                    if output_parties.contains(&IOStatus::Party(i as u64)) {
-                        // check that the value revealed to party i is equal to expected
-                        compare_truncate_output(&out, &expected, true, st.clone())?;
-                    } else {
-                        // first share might be very close to the expected output especially for large scales
-                        if i == 0 {
-                            continue;
-                        }
-                        // check that the value not revealed to party i isn't equal to expected (random)
-                        compare_truncate_output(&out, &expected, false, st.clone())?;
                     }
-                }
-                Ok(())
-            })?;
+                    Ok(res)
+                })?;
+                compare_truncate_output(&out, &expected, true, st.clone())?;
+            } else {
+                assert!(output.check_type(t.clone())?);
+                let out = match t.clone() {
+                    Type::Scalar(_) => vec![output.to_u64(st.clone())?],
+                    Type::Array(_, _) => output.to_flattened_array_u64(t.clone())?,
+                    _ => {
+                        panic!("Shouldn't be here");
+                    }
+                };
+                compare_truncate_output(&out, &expected, true, st.clone())?;
+            }
         } else {
             let array_output = match t.clone() {
                 Type::Scalar(_) => Value::from_scalar(expected[0], st)?,
