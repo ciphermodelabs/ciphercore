@@ -1,6 +1,7 @@
 use ciphercore_base::errors::Result;
 use ciphercore_base::graphs::*;
-use std::io::{self, Read};
+use clap::Parser;
+use std::fs;
 
 fn get_graphviz_node_ref(node: Node) -> String {
     return format!(
@@ -182,6 +183,13 @@ fn generate_graphviz_context_code(context: Context, viz_str: &mut String) -> Res
 
 use ciphercore_utils::execute_main::execute_main;
 
+#[derive(Parser, Debug)]
+#[clap(author, version, about, long_about=None)]
+struct Args {
+    /// Path to file that contains the serialized Context
+    context_path: String,
+}
+
 /// - Command to generate this binary:
 ///     cargo build --release
 ///     (This generates the binary `visualize_context` at ./target/release/visualize_context)
@@ -199,9 +207,9 @@ use ciphercore_utils::execute_main::execute_main;
 fn main() {
     env_logger::init();
     execute_main(|| -> Result<()> {
-        let mut buffer = String::new();
-        io::stdin().read_to_string(&mut buffer)?;
-        let context: Context = serde_json::from_str(&buffer)?;
+        let args = Args::parse();
+        let serialized_context = fs::read_to_string(&args.context_path)?;
+        let context: Context = serde_json::from_str::<Context>(&serialized_context)?;
         let mut viz_code = String::from("");
         generate_graphviz_context_code(context, &mut viz_code)?;
         println!("{}", viz_code);
