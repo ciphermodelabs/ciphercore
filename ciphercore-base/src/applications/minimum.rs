@@ -24,7 +24,7 @@ pub fn create_minimum_graph(context: Context, n: u64, st: ScalarType) -> Result<
     let input_type = if st == BIT {
         array_type(vec![1 << n], BIT)
     } else {
-        let st_size = scalar_size_in_bits(st);
+        let st_size = scalar_size_in_bits(st.clone());
         array_type(vec![1 << n, st_size], BIT)
     };
 
@@ -51,10 +51,15 @@ pub fn create_minimum_graph(context: Context, n: u64, st: ScalarType) -> Result<
         // This is done via the custom operation Min (see ops.rs).
         binary_array = g.custom_op(CustomOperation::new(Min {}), vec![half1, half2])?;
     }
-
+    // Convert output from the binary form to the arithmetic form
+    let output = if st != BIT {
+        binary_array.b2a(st)?
+    } else {
+        binary_array
+    };
     // Before computation every graph should be finalized, which means that it should have a designated output node.
     // This can be done by calling `g.set_output_node(output)?` or as below.
-    binary_array.set_as_output()?;
+    output.set_as_output()?;
     // Finalization checks that the output node of the graph g is set. After finalization the graph can't be changed.
     g.finalize()?;
 

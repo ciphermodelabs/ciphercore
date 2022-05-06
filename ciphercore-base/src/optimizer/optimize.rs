@@ -84,7 +84,6 @@ pub fn stress_test<T: Evaluator>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::applications::kmeans::inference_graph;
     use crate::applications::sorting::create_batchers_sorting_graph;
     use crate::custom_ops::run_instantiation_pass;
     use crate::data_types::{scalar_type, UINT64};
@@ -120,42 +119,10 @@ mod tests {
     }
 
     #[test]
-    fn test_optimizing_kmeans_graph() {
-        || -> Result<()> {
-            let c = create_context()?;
-            let g = inference_graph(c.clone(), 10, 100)?;
-            g.set_as_main()?;
-            c.finalize()?;
-
-            let c1 = run_instantiation_pass(c)?.get_context();
-            let c2 = inline_operations(
-                c1,
-                InlineConfig {
-                    default_mode: InlineMode::Simple,
-                    ..Default::default()
-                },
-            )?;
-            let optimized_c = optimize_context(c2.clone(), SimpleEvaluator::new(None)?)?;
-            assert!(
-                optimized_c.get_main_graph()?.get_nodes().len()
-                    < c2.get_main_graph()?.get_nodes().len()
-            );
-            stress_test(
-                c2,
-                optimized_c,
-                SimpleEvaluator::new(None).unwrap(),
-                SimpleEvaluator::new(None).unwrap(),
-            )?;
-            Ok(())
-        }()
-        .unwrap();
-    }
-
-    #[test]
     fn test_optimizing_sorting_graph() {
         || -> Result<()> {
             let c = create_context()?;
-            let g = create_batchers_sorting_graph(c.clone(), 4, 64)?;
+            let g = create_batchers_sorting_graph(c.clone(), 4, UINT64)?;
             g.set_as_main()?;
             c.finalize()?;
 
