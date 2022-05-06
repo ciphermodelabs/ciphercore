@@ -26,6 +26,7 @@ pipeline {
   }
   stages {
     stage('CI') {
+      failFast true
       parallel {
          stage('Code Formatting') {
            agent any
@@ -86,24 +87,25 @@ pipeline {
              }
            }
          }
-         stage('Address Sanitizer') {
-           agent any
-           steps {
-             prepare()
-             dir('private') {
-               sh './run_address_sanitizer_docker.sh'
-             }
-           }
-         }
-         stage('Thread Sanitizer') {
-           agent any
-           steps {
-             prepare()
-             dir('private') {
-               sh './run_thread_sanitizer_docker.sh'
-             }
-           }
-         }
+         // These should be re-enabled once performance issues are resolved.
+         //stage('Address Sanitizer') {
+         //  agent any
+         //  steps {
+         //    prepare()
+         //    dir('private') {
+         //      sh './run_address_sanitizer_docker.sh'
+         //    }
+         //  }
+         //}
+         //stage('Thread Sanitizer') {
+         //  agent any
+         //  steps {
+         //    prepare()
+         //    dir('private') {
+         //      sh './run_thread_sanitizer_docker.sh'
+         //    }
+         //  }
+         //}
        } 
     }
     stage('Benchmarks') {
