@@ -5,20 +5,12 @@ use ciphercore_base::data_types::{
     get_size_in_bits, Type, BIT, INT16, INT32, INT64, INT8, UINT16, UINT32, UINT64, UINT8,
 };
 use ciphercore_base::errors::Result;
-#[cfg(not(feature = "misc_evaluators"))]
 use ciphercore_base::evaluators::simple_evaluator::SimpleEvaluator;
 use ciphercore_base::graphs::{Context, Graph, Node, NodeAnnotation, Operation};
 use ciphercore_base::inline::inline_common::DepthOptimizationLevel;
 use ciphercore_base::inline::inline_ops::{InlineConfig, InlineMode};
 use ciphercore_base::mpc::mpc_compiler::prepare_context;
-#[cfg(feature = "misc_evaluators")]
-use ciphercore_evaluators::evaluators::{
-    onnx_evaluator::{create_onnx_environment, OnnxEvaluator},
-    precomputed_memory_move_evaluator::PrecomputedMemoryMoveEvaluator,
-};
 use ciphercore_utils::execute_main::execute_main;
-#[cfg(feature = "misc_evaluators")]
-use onnxruntime::environment::Environment;
 use std::fs;
 
 use std::collections::HashMap;
@@ -264,14 +256,6 @@ struct Args {
     inline_mode: Option<InlineModeArg>,
 }
 
-#[cfg(feature = "misc_evaluators")]
-fn get_evaluator() -> Result<OnnxEvaluator<'static, PrecomputedMemoryMoveEvaluator>> {
-    let onnx_env: &'static Environment = Box::leak(Box::new(create_onnx_environment()?));
-    let evaluator = PrecomputedMemoryMoveEvaluator::new(None)?;
-    Ok(OnnxEvaluator::new(evaluator, &onnx_env))
-}
-
-#[cfg(not(feature = "misc_evaluators"))]
 fn get_evaluator() -> Result<SimpleEvaluator> {
     SimpleEvaluator::new(None)
 }
