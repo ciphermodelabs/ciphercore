@@ -1,4 +1,6 @@
 def prepare() {
+  // Clean up the directory before the checkout.
+  cleanWs()
   // Checkout the parent repository. 
   checkout([
      $class: 'GitSCM',
