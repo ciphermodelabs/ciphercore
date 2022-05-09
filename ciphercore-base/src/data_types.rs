@@ -1030,6 +1030,25 @@ impl fmt::Display for Type {
     }
 }
 
+/// Returns the size of a given scalar type in bits.
+///
+/// # Arguments
+///
+/// `t` - scalar type
+///
+/// # Returns
+///
+/// Size of a scalar type
+///
+/// # Example
+///
+/// ```
+/// # use ciphercore_base::data_types::{scalar_size_in_bits, BIT, UINT8, INT64, UINT64};
+/// assert_eq!(scalar_size_in_bits(BIT), 1);
+/// assert_eq!(scalar_size_in_bits(UINT8), 8);
+/// assert_eq!(scalar_size_in_bits(INT64), 64);
+/// assert_eq!(scalar_size_in_bits(UINT64), 64);
+/// ```
 pub fn scalar_size_in_bits(t: ScalarType) -> u64 {
     let modulus = t.get_modulus();
     match modulus {
@@ -1054,7 +1073,30 @@ pub(crate) fn scalar_size_in_bytes(t: ScalarType) -> u64 {
     (scalar_size_in_bits(t) + 7) / 8
 }
 
-/// Returns the size of the storage for `t` in bits.
+/// Returns the size of a given type in bits.
+///
+/// Returns a runtime error if `t` is not valid.
+///
+/// Within named tuple types, the bit size of name strings is omitted.
+///
+/// # Arguments
+///
+/// `t` - type
+///
+/// # Returns
+///
+/// Type size in bits
+///
+/// # Example
+///
+/// ```
+/// # use ciphercore_base::data_types::{Type, UINT64, get_size_in_bits, scalar_type, array_type, vector_type, tuple_type, named_tuple_type};
+/// assert_eq!(get_size_in_bits(Type::Scalar(UINT64)).unwrap(), 64);
+/// assert_eq!(get_size_in_bits(array_type(vec![10], UINT64)).unwrap(), 640);
+/// assert_eq!(get_size_in_bits(vector_type(2, array_type(vec![2, 2], UINT64))).unwrap(), 512);
+/// assert_eq!(get_size_in_bits(tuple_type(vec![Type::Scalar(UINT64), array_type(vec![2], UINT64)])).unwrap(), 192);
+/// assert_eq!(get_size_in_bits(named_tuple_type(vec![("ID".to_owned(), scalar_type(UINT64)), ("Worth".to_owned(), scalar_type(UINT64))])).unwrap(), 128);
+/// ```
 pub fn get_size_in_bits(t: Type) -> Result<u64> {
     if !t.is_valid() {
         return Err(runtime_error!("Invalid type!"));
@@ -1161,6 +1203,50 @@ pub(super) fn get_size_estimation_in_bits(t: Type) -> Result<u64> {
         .ok_or_else(|| runtime_error!("add overflow!"))
 }
 
+/// Returns a vector of types contained in a given type.
+///
+/// Types supported are vector, tuple and named tuple.
+///
+/// Number of types contained in the given type should be less than or equal to
+/// `TYPES_VECTOR_LENGTH_LIMIT`.
+///
+/// This function is provided for internal requirements.
+///
+/// # Arguments
+///
+/// `t` - type
+///
+/// # Returns
+///
+/// Vector of types
+///
+/// # Example
+///
+/// ```
+/// # use ciphercore_base::data_types::{Type, UINT64, get_types_vector, scalar_type, array_type, vector_type, tuple_type, named_tuple_type};
+/// let v = get_types_vector(vector_type(4, scalar_type(UINT64))).unwrap();
+/// let v_v = vec![scalar_type(UINT64); 4];
+/// assert_eq!(v.len(), v_v.len());
+/// for (x, y) in v.iter().zip(v_v.iter()) {
+///     assert_eq!(*x.clone(), *y);
+/// }
+///
+/// let types_vec = vec![array_type(vec![2, 2], UINT64), vector_type(2, array_type(vec![3, 3], UINT64))];
+/// let tuple_types = get_types_vector(tuple_type(types_vec.clone())).unwrap();
+/// assert_eq!(types_vec.len(), tuple_types.len());
+/// for (x, y) in tuple_types.iter().zip(types_vec.iter()) {
+///     assert_eq!(*x.clone(), *y);
+/// }
+///
+/// let sc_type = scalar_type(UINT64);
+/// let n_tuples_vec = vec![("ID".to_owned(), sc_type.clone()), ("Worth".to_owned(), sc_type.clone())];
+/// let n_tuples_type_vec = vec![sc_type.clone(); 2];
+/// let n_tuple_type = get_types_vector(named_tuple_type(n_tuples_vec.clone())).unwrap();
+/// assert_eq!(n_tuples_vec.len(), n_tuple_type.len());
+/// for (x, y) in n_tuple_type.iter().zip(n_tuples_type_vec.iter()) {
+///     assert_eq!(*x.clone(), *y);
+/// }
+/// ```
 pub fn get_types_vector(t: Type) -> Result<Vec<TypePointer>> {
     match t {
         Type::Vector(length, element_type) => {
