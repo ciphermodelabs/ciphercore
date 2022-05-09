@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 #[derive(Debug, Serialize, PartialEq, Eq, Clone, Deserialize)]
+#[repr(C)]
 pub enum CiphercoreErrorKind {
     RuntimeError,
 }

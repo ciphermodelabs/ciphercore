@@ -69,6 +69,17 @@ impl From<JsonError> for CiphercoreBaseError {
     }
 }
 
+impl From<std::ffi::NulError> for CiphercoreBaseError {
+    fn from(err: std::ffi::NulError) -> CiphercoreBaseError {
+        runtime_error!("Null error: {}", err)
+    }
+}
+
+impl From<std::str::Utf8Error> for CiphercoreBaseError {
+    fn from(err: std::str::Utf8Error) -> CiphercoreBaseError {
+        runtime_error!("Utf8Error: {}", err)
+    }
+}
 pub type Result<T> = std::result::Result<T, CiphercoreBaseError>;
 
 #[cfg(test)]

@@ -1,0 +1,8 @@
+language = "C"
+documentation = false
+include_guard = "CIPHERCORE_ADAPTER_H"
+[parse]
+# Whether to parse dependent crates and include their types in the output
+# default: false
+parse_deps = true
+include = ["ciphercore-base", "ciphercore-utils"]
