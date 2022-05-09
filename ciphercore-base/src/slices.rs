@@ -73,6 +73,7 @@ fn slice_1d_index(dimension: u64, slice_element: SliceElement, index: u64) -> Re
     }
 }
 
+#[doc(hidden)]
 pub fn get_clean_slice(shape: ArrayShape, slice: Slice) -> Result<Slice> {
     let mut num_ellipsis = 0;
     for x in &slice {

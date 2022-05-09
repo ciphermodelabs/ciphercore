@@ -1,3 +1,4 @@
+//! Crucial structs, enums, functions and types to create computation graphs.
 use atomic_refcell::AtomicRefCell;
 use std::collections::HashMap;
 use std::fmt;

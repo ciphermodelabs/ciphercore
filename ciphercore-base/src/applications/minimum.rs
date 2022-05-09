@@ -1,3 +1,4 @@
+//! Minimum of an integer array
 use crate::custom_ops::CustomOperation;
 use crate::data_types::{array_type, scalar_size_in_bits, ScalarType, BIT};
 use crate::errors::Result;

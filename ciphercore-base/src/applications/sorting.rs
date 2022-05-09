@@ -1,3 +1,4 @@
+//! Sorting of an array
 use crate::custom_ops::CustomOperation;
 use crate::data_types::{array_type, scalar_size_in_bits, vector_type, ScalarType, Type, BIT};
 use crate::errors::Result;

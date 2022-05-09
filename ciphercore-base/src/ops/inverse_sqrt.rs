@@ -1,3 +1,4 @@
+//! Inverse square root approximation via [the Newton-Raphson method](https://en.wikipedia.org/wiki/Newton%27s_method#Square_root).
 use crate::custom_ops::{CustomOperation, CustomOperationBody, Or};
 use crate::data_types::{array_type, scalar_type, Type, BIT, UINT64};
 use crate::data_values::Value;
@@ -48,7 +49,9 @@ use serde::{Deserialize, Serialize};
 // TODO: generalize to other types.
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub struct InverseSqrt {
+    /// Number of iterations of the Newton-Raphson algorithm
     pub iterations: u64,
+    /// Number of output bits that are approximated
     pub denominator_cap_2k: u64,
 }
 

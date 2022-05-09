@@ -1,3 +1,4 @@
+//! Types used within CipherCore and related functions.
 use crate::constants;
 use crate::errors::CiphercoreBaseError;
 use crate::errors::Result;

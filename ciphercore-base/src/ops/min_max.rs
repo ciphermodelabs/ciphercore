@@ -1,3 +1,4 @@
+//! Minimum and maximum operations.
 use crate::custom_ops::{CustomOperation, CustomOperationBody};
 use crate::data_types::{array_type, Type};
 use crate::errors::Result;

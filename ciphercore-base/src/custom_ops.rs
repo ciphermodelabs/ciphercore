@@ -1,3 +1,6 @@
+//! Structs and traits necessary to implement custom operations.
+//! A custom operation can be thought of as a polymorphic function, i.e., where the number of inputs and their types can vary.
+//! Two basic examples of custom operations are provided: [Not] and [Or].
 use crate::data_types::{scalar_type, Type, BIT};
 use crate::data_values::Value;
 use crate::errors::Result;
@@ -14,6 +17,7 @@ use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
+#[doc(hidden)]
 /// This trait can be used to compare and hash trait objects.
 /// Based on
 /// <https://stackoverflow.com/questions/25339603/how-to-test-for-equality-between-trait-objects>
@@ -542,6 +546,7 @@ fn process_instantiation(
     Ok(())
 }
 
+#[doc(hidden)]
 /// In order to instantiate all the custom operations in a given context,
 /// we do the following. First, we build a graph of instantiations as follows.
 /// As a seed set, we use the instantiated custom operations in the original context.

@@ -18,12 +18,14 @@ fn get_node_global_id(node: Node) -> (u64, u64) {
     (graph_id, node_id)
 }
 
+#[doc(hidden)]
 pub struct TypeInferenceWorker {
     context: WeakContext,
     cached_results: CachedResults,
     cached_instantiations: CachedInstantiations,
 }
 
+#[doc(hidden)]
 pub fn create_type_inference_worker(context: Context) -> TypeInferenceWorker {
     TypeInferenceWorker {
         context: context.downgrade(),

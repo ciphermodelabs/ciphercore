@@ -1,3 +1,4 @@
+//! Multiplicative inversion via [the Newton-Raphson method](https://en.wikipedia.org/wiki/Newton%27s_method#Multiplicative_inverses_of_numbers_and_power_series).
 use crate::custom_ops::{CustomOperation, CustomOperationBody, Or};
 use crate::data_types::{array_type, scalar_type, Type, BIT, UINT64};
 use crate::data_values::Value;

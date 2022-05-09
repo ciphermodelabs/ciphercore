@@ -8,6 +8,7 @@ use crate::errors::Result;
 use crate::random::PRNG;
 use json::{object, object::Object, JsonValue};
 
+#[doc(hidden)]
 #[derive(Debug, PartialEq, Eq)]
 pub struct TypedValue {
     pub value: Value,
@@ -15,6 +16,7 @@ pub struct TypedValue {
 }
 
 impl TypedValue {
+    #[doc(hidden)]
     pub fn new(t: Type, value: Value) -> Result<Self> {
         if !value.check_type(t.clone())? {
             return Err(runtime_error!("Can't create a typed value"));

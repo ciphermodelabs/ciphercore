@@ -1,3 +1,4 @@
+//! Various comparison functions for signed and unsigned integers including greater-than, less-than, greater-than-equal-to, less-than-equal-to, equal, not-equal.
 use crate::broadcast::broadcast_shapes;
 use crate::custom_ops::{CustomOperation, CustomOperationBody, Not, Or};
 use crate::data_types::{array_type, scalar_type, tuple_type, vector_type, ArrayShape, Type, BIT};

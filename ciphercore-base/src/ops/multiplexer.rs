@@ -1,3 +1,4 @@
+//! Multiplexer (Mux) operation that takes three inputs a, b, c and returns b if a is 1 or c if a is 0.
 use crate::custom_ops::CustomOperationBody;
 use crate::data_types::{Type, BIT};
 use crate::errors::Result;

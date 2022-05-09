@@ -1,3 +1,4 @@
+//! Code example of a binary creating the serialization of a sorting context via [Batcher's algorithm](https://math.mit.edu/~shor/18.310/batcher.pdf).
 #![cfg_attr(feature = "nightly-features", feature(backtrace))]
 extern crate ciphercore_base;
 

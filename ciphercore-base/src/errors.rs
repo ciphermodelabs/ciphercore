@@ -30,6 +30,7 @@ impl fmt::Display for CiphercoreBaseError {
     }
 }
 
+#[doc(hidden)]
 #[macro_export]
 macro_rules! runtime_error {
     ($($x:tt)*) => {

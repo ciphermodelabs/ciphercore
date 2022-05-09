@@ -1,3 +1,4 @@
+//! Code example of a binary creating the serialization of a minimum context.
 #![cfg_attr(feature = "nightly-features", feature(backtrace))]
 extern crate ciphercore_base;
 

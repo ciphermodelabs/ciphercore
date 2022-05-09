@@ -1,3 +1,4 @@
+//! Code of a binary that visualize serialized contexts via [Graphviz](https://graphviz.org/).
 use ciphercore_base::errors::Result;
 use ciphercore_base::graphs::*;
 use clap::Parser;
@@ -190,20 +191,34 @@ struct Args {
     context_path: String,
 }
 
-/// - Command to generate this binary:
-///     cargo build --release
-///     (This generates the binary `visualize_context` at ./target/release/visualize_context)
-/// - Command to generate the graphviz graph-based context DOT code
-///     ./<prog_to_print_some_string_of serialized_context> | ./target/release/visualize_context  > <context_dot_code_file_name>.gv
-///     (.gv file contains the DOT-based graphviz code)
-/// - Command to generate the diagram of the serialized context from the .gv file
-///     For jpeg file:
-///         dot -Tjpeg <context_dot_code_file_name>.gv -o sample_graph.jpeg
-///     For png file:
-///         dot -Tpng <context_dot_code_file_name>.gv -o sample_graph.png
-///     For pdf file:
-///         dot -Tpdf <context_dot_code_file_name>.gv -o sample_graph.pdf
-///     (See manual entry for dot i.e. 'man dot' for more details)
+/// This binary generates a [Graphviz](https://graphviz.org/) DOT code on a given serialized context.
+/// To create images from this code, generate a graphviz file
+///
+/// ```bash
+/// ./< this_binary > <input_path> > <output_name>.gv
+/// ```
+///
+/// and use one of the following commands to convert this file to other media types.
+///  
+/// ```bash
+/// dot -Tjpeg <file_name>.gv -o sample_graph.jpeg
+/// ```
+/// ```bash
+/// dot -Tpng <file_name>.gv -o sample_graph.png
+/// ```
+/// ```bash
+/// dot -Tpdf <file_name>.gv -o sample_graph.pdf
+/// ```
+///
+/// See manual entry for dot, i.e., 'man dot' for more details.
+///
+/// # Arguments
+///
+/// * `input_path` - path to a serialized context.
+///
+/// # Usage
+///
+/// ./< this_binary > <input_path>
 fn main() {
     // Initialize a logger that collects information about errors and panics within CipherCore.
     // This information can be accessed via RUST_LOG.

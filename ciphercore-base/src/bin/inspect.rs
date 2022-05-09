@@ -1,3 +1,4 @@
+//! Code of a binary printing statistics on a given serialized context.
 #![cfg_attr(feature = "nightly-features", feature(backtrace))]
 extern crate ciphercore_base;
 
@@ -246,13 +247,15 @@ enum InlineModeArg {
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about=None)]
 struct Args {
-    ///Provide path to a file with serialized context
+    ///Path to a file with a serialized context
     input_path: String,
-    ///For uncompiled graphs pass prepare and an inlining mode to inline, instantiate and optimize the graph, for compiled graphs do not pass anything
+    ///Optional flag to inline, instantiate custom operations and optimize graphs within a given context
     #[clap(parse(from_flag))]
     prepare: bool,
     #[clap(arg_enum)]
-    ///Selects mode for inlining Call and Iterate nodes, default value is simple
+    /// Mode of inlining that unrolls operation nodes in graphs.
+    /// Possible values are `simple`, `depth-optimized-default`, `depth-optimized-extreme`.
+    /// The default value is simple.
     inline_mode: Option<InlineModeArg>,
 }
 
@@ -275,6 +278,19 @@ fn get_inline_mode(mode_val: Option<InlineModeArg>) -> InlineMode {
     }
 }
 
+/// This binary prints statistics of a given serialized context.
+///
+/// # Arguments
+///
+/// * `input_path` - path to a serialized context
+/// * `prepare` - (optional) flag to inline, instantiate custom operations and optimize graphs in a given context
+/// * `inline_mode` - (optional) mode of inlining that unrolls operation nodes in graphs.
+///    Possible values are `simple`, `depth-optimized-default`, `depth-optimized-extreme`.
+///    The default value is `simple`.
+///
+/// # Usage
+///
+/// ./< this_binary > <input_path> <prepare> <inline_mode>
 fn main() {
     // Initialize a logger that collects information about errors and panics within CipherCore.
     // This information can be accessed via RUST_LOG.

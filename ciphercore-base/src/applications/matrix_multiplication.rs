@@ -1,3 +1,4 @@
+//! Multiplication of two matrices
 use crate::data_types::{array_type, ScalarType};
 use crate::errors::Result;
 use crate::graphs::{Context, Graph};

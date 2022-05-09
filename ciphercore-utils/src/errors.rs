@@ -61,6 +61,7 @@ pub trait ErrorWithBody {
     fn get_body(&self) -> CiphercoreErrorBody;
 }
 
+#[doc(hidden)]
 #[macro_export]
 macro_rules! runtime_error_body {
     ($($x: expr),*) => {

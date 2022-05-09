@@ -1,3 +1,4 @@
+//! Clip function that returns a given value if it is inside of the interval [0,2<sup>k</sup>] and clips values outside this interval to its edges.
 use crate::custom_ops::{CustomOperation, CustomOperationBody, Or};
 use crate::data_types::{array_type, get_size_in_bits, scalar_type, vector_type, Type, BIT};
 use crate::data_values::Value;

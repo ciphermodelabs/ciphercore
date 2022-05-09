@@ -1,3 +1,4 @@
+//! Binary adder that adds two bitstrings.
 use crate::broadcast::broadcast_shapes;
 use crate::custom_ops::CustomOperationBody;
 use crate::data_types::{array_type, scalar_type, tuple_type, Type, BIT};
