@@ -26,3 +26,27 @@ serde_test = "1.0.130"
 [features]
 default = []
 nightly-features = []
+
+[[bin]]
+name = "ciphercore_compile"
+path = "src/bin/ciphercore_compile.rs"
+
+[[bin]]
+name = "ciphercore_inspect"
+path = "src/bin/ciphercore_inspect.rs"
+
+[[bin]]
+name = "ciphercore_matrix_multiplication"
+path = "src/bin/ciphercore_matrix_multiplication.rs"
+
+[[bin]]
+name = "ciphercore_minimum"
+path = "src/bin/ciphercore_minimum.rs"
+
+[[bin]]
+name = "ciphercore_sorting"
+path = "src/bin/ciphercore_sorting.rs"
+
+[[bin]]
+name = "ciphercore_visualize_context"
+path = "src/bin/ciphercore_visualize_context.rs"
