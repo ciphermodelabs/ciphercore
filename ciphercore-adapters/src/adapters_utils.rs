@@ -154,7 +154,7 @@ pub(crate) fn unsafe_ref<T>(x: T) -> *mut T {
     Box::into_raw(Box::new(x))
 }
 
-pub(crate) fn destroy_helper<T>(ptr: *mut T) -> () {
+pub(crate) fn destroy_helper<T>(ptr: *mut T) {
     unsafe {
         Box::from_raw(ptr);
     }
@@ -185,12 +185,12 @@ pub struct CStr {
     pub ptr: *const u8,
 }
 impl CStr {
-    pub(crate) fn to_str_slice(&self) -> Result<&str> {
+    pub(crate) fn to_str_slice(self) -> Result<&'static str> {
         let cs = unsafe { std::ffi::CStr::from_ptr(self.ptr as *const i8) };
         let str_slice = cs.to_str()?;
         Ok(str_slice)
     }
-    pub(crate) fn to_string(&self) -> Result<String> {
+    pub(crate) fn to_string(self) -> Result<String> {
         let str_slice = self.to_str_slice()?;
         Ok(str_slice.to_owned())
     }
@@ -391,7 +391,7 @@ impl CSlice {
 
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
-pub extern "C" fn c_slice_destroy(cslice_ptr: *mut CSlice) -> () {
+pub extern "C" fn c_slice_destroy(cslice_ptr: *mut CSlice) {
     unsafe {
         let cslice_ref = Box::from_raw(cslice_ptr);
         let elements = cslice_ref.elements;
@@ -555,6 +555,6 @@ impl COperation {
 }
 
 #[no_mangle]
-pub extern "C" fn c_operation_destroy(cop_ptr: *mut COperation) -> () {
+pub extern "C" fn c_operation_destroy(cop_ptr: *mut COperation) {
     destroy_helper(cop_ptr);
 }

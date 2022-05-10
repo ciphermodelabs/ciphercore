@@ -65,9 +65,7 @@ pub extern "C" fn scalar_type_get_signed(st_ptr: *const ScalarType) -> CResultVa
 #[no_mangle]
 pub extern "C" fn scalar_type_get_modulus(st_ptr: *const ScalarType) -> CResultVal<u64> {
     scalar_type_method_helper(st_ptr, |st| {
-        Ok(st
-            .get_modulus()
-            .ok_or_else(|| runtime_error!("no modulu"))?)
+        st.get_modulus().ok_or_else(|| runtime_error!("no modulu"))
     })
 }
 
@@ -77,11 +75,11 @@ pub extern "C" fn scalar_type_to_string(st_ptr: *const ScalarType) -> CResultVal
 }
 
 #[no_mangle]
-pub extern "C" fn scalar_type_destroy(st_ptr: *mut ScalarType) -> () {
+pub extern "C" fn scalar_type_destroy(st_ptr: *mut ScalarType) {
     destroy_helper(st_ptr);
 }
 #[no_mangle]
-pub extern "C" fn type_destroy(t_ptr: *mut Type) -> () {
+pub extern "C" fn type_destroy(t_ptr: *mut Type) {
     destroy_helper(t_ptr);
 }
 
@@ -182,7 +180,7 @@ pub extern "C" fn scalar_size_in_bits(st_ptr: *const ScalarType) -> CResultVal<u
 }
 #[no_mangle]
 pub extern "C" fn get_size_in_bits(t_ptr: *mut Type) -> CResultVal<u64> {
-    type_method_helper(t_ptr, |t| data_types::get_size_in_bits(t))
+    type_method_helper(t_ptr, data_types::get_size_in_bits)
 }
 
 #[no_mangle]

@@ -584,16 +584,16 @@ pub extern "C" fn context_retrieve_node(
 }
 
 #[no_mangle]
-pub extern "C" fn context_destroy(context_ptr: *mut Context) -> () {
+pub extern "C" fn context_destroy(context_ptr: *mut Context) {
     destroy_helper(context_ptr);
 }
 #[no_mangle]
-pub extern "C" fn graph_destroy(graph_ptr: *mut Graph) -> () {
+pub extern "C" fn graph_destroy(graph_ptr: *mut Graph) {
     destroy_helper(graph_ptr);
 }
 
 #[no_mangle]
-pub extern "C" fn node_destroy(node_ptr: *mut Node) -> () {
+pub extern "C" fn node_destroy(node_ptr: *mut Node) {
     destroy_helper(node_ptr);
 }
 
