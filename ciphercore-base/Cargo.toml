@@ -50,3 +50,7 @@ path = "src/bin/ciphercore_sorting.rs"
 [[bin]]
 name = "ciphercore_visualize_context"
 path = "src/bin/ciphercore_visualize_context.rs"
+
+[[bin]]
+name = "ciphercore_evaluate"
+path = "src/bin/ciphercore_evaluate.rs"
