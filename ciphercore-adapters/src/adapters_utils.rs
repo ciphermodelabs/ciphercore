@@ -12,7 +12,6 @@ use ciphercore_utils::errors::CiphercoreErrorBody;
 use ciphercore_utils::errors::CiphercoreErrorKind;
 use ciphercore_utils::errors::ErrorWithBody;
 
-
 //CVecVal stores an array of values of a vector's elements
 #[repr(C)]
 #[derive(Clone)]
@@ -21,7 +20,7 @@ pub struct CVecVal<T> {
     pub len: usize,
 }
 
-impl <T:Copy> CVecVal<T> {
+impl<T: Copy> CVecVal<T> {
     pub(crate) fn to_vec(&self) -> Result<Vec<T>> {
         let mut v = Vec::<T>::new();
         unsafe {
@@ -62,7 +61,7 @@ fn cvec_val_destroy_helper<T>(cvec_ptr: *mut CVecVal<T>) -> CResultVal<bool> {
 }
 
 #[allow(dead_code)]
-fn vector_from_unsafe_cvec_val <T:Copy> (cvec_ptr: *mut CVecVal<T>) -> Result<Vec<T>> {
+fn vector_from_unsafe_cvec_val<T: Copy>(cvec_ptr: *mut CVecVal<T>) -> Result<Vec<T>> {
     unsafe_deref(cvec_ptr)?.to_vec()
 }
 
@@ -116,7 +115,7 @@ impl<T: Clone> CVec<T> {
     }
 }
 
-fn _vector_from_unsafe_cvec <T: Clone> (cvec_ptr: *mut CVec<T>) -> Result<Vec<T>> {
+fn _vector_from_unsafe_cvec<T: Clone>(cvec_ptr: *mut CVec<T>) -> Result<Vec<T>> {
     unsafe_deref(cvec_ptr)?.to_vec()
 }
 
@@ -145,7 +144,9 @@ pub extern "C" fn cvec_graph_destroy(cvec_ptr: *mut CVec<Graph>) -> CResultVal<b
     cvec_destroy_helper(cvec_ptr)
 }
 #[no_mangle]
-pub extern "C" fn cvec_cslice_element_destroy(cvec_ptr: *mut CVec<CSliceElement>) -> CResultVal<bool> {
+pub extern "C" fn cvec_cslice_element_destroy(
+    cvec_ptr: *mut CVec<CSliceElement>,
+) -> CResultVal<bool> {
     cvec_destroy_helper(cvec_ptr)
 }
 
@@ -179,7 +180,7 @@ pub(crate) fn unsafe_deref_const<T: Clone>(ptr: *const T) -> Result<T> {
     }
 }
 #[repr(C)]
-#[derive(Clone,Copy)]
+#[derive(Clone, Copy)]
 pub struct CStr {
     pub ptr: *const u8,
 }
@@ -387,15 +388,17 @@ impl CSlice {
         }
     }
 }
+
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn c_slice_destroy(cslice_ptr: *mut CSlice) -> () {
-    unsafe{
-       let cslice_ref = Box::from_raw(cslice_ptr);
-       let elements = cslice_ref.elements;
-       let vec_elements = Vec::from_raw_parts(elements.ptr, elements.len, elements.len);
-       for elem in vec_elements {
-            Box::from_raw(elem);           
-       }
+    unsafe {
+        let cslice_ref = Box::from_raw(cslice_ptr);
+        let elements = cslice_ref.elements;
+        let vec_elements = Vec::from_raw_parts(elements.ptr, elements.len, elements.len);
+        for elem in vec_elements {
+            Box::from_raw(elem);
+        }
     }
 }
 
@@ -420,8 +423,8 @@ pub enum COperation {
     Dot,
     Matmul,
     Truncate(u64),
-    Sum( *mut CVecVal<u64>),
-    PermuteAxes( *mut CVecVal<u64>),
+    Sum(*mut CVecVal<u64>),
+    PermuteAxes(*mut CVecVal<u64>),
     Get(*mut CVecVal<u64>),
     GetSlice(*mut CSlice),
     Reshape(*mut Type),
@@ -466,7 +469,7 @@ impl COperation {
             Self::PRF(tuple) => {
                 let tuple_safe = unsafe_deref(*tuple)?;
                 Operation::PRF(tuple_safe.iv, unsafe_deref(tuple_safe.type_ptr)?)
-            },
+            }
             Self::Stack(cvec) => Operation::Stack(vector_from_unsafe_cvec_val(*cvec)?),
             Self::A2B => Operation::A2B,
             Self::B2A(st_ptr) => Operation::B2A(unsafe_deref(*st_ptr)?),
@@ -492,7 +495,10 @@ impl COperation {
             Self::Custom(c_cust_op) => Operation::Custom((*c_cust_op).to_custom_op()?),
             Self::Constant(c_val) => {
                 let c_val_safe = unsafe_deref(*c_val)?;
-                Operation::Constant((c_val_safe).to_type_value()?.0, (c_val_safe).to_type_value()?.1)
+                Operation::Constant(
+                    (c_val_safe).to_type_value()?.0,
+                    (c_val_safe).to_type_value()?.1,
+                )
             }
         };
         Ok(op)
@@ -540,7 +546,9 @@ impl COperation {
             Operation::ArrayToVector => Self::ArrayToVector,
             Operation::VectorToArray => Self::VectorToArray,
             Operation::Custom(cust_op) => Self::Custom(CCustomOperation::from_custom_op(cust_op)?),
-            Operation::Constant(t, v) => Self::Constant(unsafe_ref(CTypedValue::from_type_and_value(t, v)?)),
+            Operation::Constant(t, v) => {
+                Self::Constant(unsafe_ref(CTypedValue::from_type_and_value(t, v)?))
+            }
         };
         Ok(cop)
     }

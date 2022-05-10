@@ -1,7 +1,7 @@
 extern crate ciphercore_base;
 use crate::adapters_utils::{
     destroy_helper, unsafe_deref, unsafe_deref_const, CResult, CResultTrait, CResultVal, CStr,
-    CVec, CVecVal
+    CVec, CVecVal,
 };
 use ciphercore_base::data_types::{ScalarType, Type};
 use ciphercore_base::errors::Result;
@@ -73,7 +73,7 @@ pub extern "C" fn scalar_type_get_modulus(st_ptr: *const ScalarType) -> CResultV
 
 #[no_mangle]
 pub extern "C" fn scalar_type_to_string(st_ptr: *const ScalarType) -> CResultVal<CStr> {
-    scalar_type_method_helper(st_ptr, |st| CStr::from_string(format!("{}",st)))
+    scalar_type_method_helper(st_ptr, |st| CStr::from_string(format!("{}", st)))
 }
 
 #[no_mangle]
@@ -117,7 +117,7 @@ pub extern "C" fn type_get_scalar_type(type_ptr: *mut Type) -> CResult<ScalarTyp
 
 #[no_mangle]
 pub extern "C" fn type_to_string(type_ptr: *mut Type) -> CResultVal<CStr> {
-    type_method_helper(type_ptr, |t| CStr::from_string(format!("{}",t)))
+    type_method_helper(type_ptr, |t| CStr::from_string(format!("{}", t)))
 }
 
 #[no_mangle]

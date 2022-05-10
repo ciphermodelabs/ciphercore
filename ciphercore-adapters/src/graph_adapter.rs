@@ -2,7 +2,7 @@ extern crate ciphercore_base;
 
 use crate::adapters_utils::{
     destroy_helper, unsafe_deref, CCustomOperation, COperation, CResult, CResultTrait, CResultVal,
-    CSlice, CStr, CTypedValue, CVec, CVecVal
+    CSlice, CStr, CTypedValue, CVec, CVecVal,
 };
 use ciphercore_base::data_types::{ScalarType, Type};
 use ciphercore_base::errors::Result;
