@@ -62,6 +62,11 @@ struct ScalarType {
     return CStr_to_string(extract_ok(result));
   }
 
+  uint64_t size_in_bits() const {
+    auto result = CCipherCore::scalar_size_in_bits(body->st);
+    return extract_ok(result);
+  }
+
   std::shared_ptr<ScalarTypeRaw> body;
 };
 
@@ -1211,7 +1216,8 @@ Node Node::set_as_output() const {
 PYBIND11_MODULE(ciphercore_native, m) {
   pybind11::class_<PyCipherCore::ScalarType>(m, "ScalarType")
       .def("to_string", &PyCipherCore::ScalarType::to_string)
-      .def("__repr__", &PyCipherCore::ScalarType::to_string);
+      .def("__repr__", &PyCipherCore::ScalarType::to_string)
+      .def("size_in_bits", &PyCipherCore::ScalarType::size_in_bits);
   m.attr("BIT") = &PyCipherCore::BIT;
   m.attr("INT8") = &PyCipherCore::INT8;
   m.attr("UINT8") = &PyCipherCore::UINT8;
