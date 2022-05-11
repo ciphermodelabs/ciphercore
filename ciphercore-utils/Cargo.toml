@@ -7,7 +7,7 @@ description = "Convenience functions and wrappers used by CipherCore crates"
 license = "Apache-2.0"
 repository = "https://github.com/ciphermodelabs/ciphercore/"
 readme = "../README.md"
-keywords = ["data-sharing", "cryptography", "secure-computation", "secure-mpc", "privacy-enhancing-technologies"]
+keywords = ["data-sharing", "cryptography", "secure-computation", "secure-mpc", "privacy-enhancing"]
 categories = ["cryptography"]
 homepage = "https://www.ciphermode.com/"
 
