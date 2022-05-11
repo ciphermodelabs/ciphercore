@@ -1,4 +1,4 @@
 [submodule "ciphercore-wrappers/python/external/pybind11"]
 	path = ciphercore-wrappers/python/external/pybind11
 	url = ../pybind11
-	branch = v2.6
+	branch = v2.9
