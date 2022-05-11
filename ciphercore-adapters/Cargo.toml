@@ -3,6 +3,13 @@ name = "ciphercore-adapters"
 version = "0.1.0"
 authors = ["CipherMode Labs, Inc."]
 edition = "2021"
+description = "An auxiliary crate to bridge CipherCore with its C bindings"
+license = "Apache-2.0"
+repository = "https://github.com/ciphermodelabs/ciphercore/"
+readme = "../README.md"
+keywords = ["data-sharing", "cryptography", "secure-computation", "secure-mpc", "privacy-enhancing-technologies"]
+categories = ["cryptography"]
+homepage = "https://www.ciphermode.com/"
 
 [dependencies]
 ciphercore-base = { path = "../ciphercore-base" }

@@ -3,6 +3,13 @@ name = "ciphercore-utils"
 version = "0.1.0"
 authors = ["CipherMode Labs, Inc."]
 edition = "2021"
+description = "Convenience functions and wrappers used by CipherCore crates"
+license = "Apache-2.0"
+repository = "https://github.com/ciphermodelabs/ciphercore/"
+readme = "../README.md"
+keywords = ["data-sharing", "cryptography", "secure-computation", "secure-mpc", "privacy-enhancing-technologies"]
+categories = ["cryptography"]
+homepage = "https://www.ciphermode.com/"
 
 [dependencies]
 serde = { version = "1.0.130", features = ["derive", "rc"] }
