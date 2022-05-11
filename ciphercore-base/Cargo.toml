@@ -47,6 +47,10 @@ name = "ciphercore_matrix_multiplication"
 path = "src/bin/ciphercore_matrix_multiplication.rs"
 
 [[bin]]
+name = "ciphercore_millionaires"
+path = "src/bin/ciphercore_millionaires.rs"
+
+[[bin]]
 name = "ciphercore_minimum"
 path = "src/bin/ciphercore_minimum.rs"
 

@@ -1,0 +1,12 @@
+[
+    {
+        "kind": "scalar",
+        "type": "u32",
+        "value": 1000
+    },
+    {
+        "kind": "scalar",
+        "type": "u32",
+        "value": 2000
+    }
+]

@@ -218,7 +218,7 @@ struct Args {
 ///
 /// # Usage
 ///
-/// ./< this_binary > <input_path>
+/// < this_binary > <input_path>
 fn main() {
     // Initialize a logger that collects information about errors and panics within CipherCore.
     // This information can be accessed via RUST_LOG.

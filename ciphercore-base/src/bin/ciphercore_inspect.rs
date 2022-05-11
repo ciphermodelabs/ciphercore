@@ -290,7 +290,7 @@ fn get_inline_mode(mode_val: Option<InlineModeArg>) -> InlineMode {
 ///
 /// # Usage
 ///
-/// ./< this_binary > <input_path> <prepare> <inline_mode>
+/// < this_binary > <input_path> <prepare> <inline_mode>
 fn main() {
     // Initialize a logger that collects information about errors and panics within CipherCore.
     // This information can be accessed via RUST_LOG.
