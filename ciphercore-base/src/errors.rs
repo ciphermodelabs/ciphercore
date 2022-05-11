@@ -1,3 +1,4 @@
+//! Wrapper of the Rust [Result](https://doc.rust-lang.org/std/result/) type within CipherCore used for error handling.
 use ciphercore_utils::errors::{CiphercoreErrorBody, ErrorWithBody};
 use json::JsonError;
 use ndarray::ShapeError;
@@ -7,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use std::fmt;
 
+#[doc(hidden)]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CiphercoreBaseError {
     body: CiphercoreErrorBody,
@@ -81,6 +83,9 @@ impl From<std::str::Utf8Error> for CiphercoreBaseError {
         runtime_error!("Utf8Error: {}", err)
     }
 }
+/// Result type within CipherCore that is used for error handling.
+///
+/// This is a wrapper of the Rust [Result](https://doc.rust-lang.org/std/result/) type that is effectively an enum with the variants, `Ok(T)` and `Err(E)`, where `E` is a CipherCore error containing lots of useful information.
 pub type Result<T> = std::result::Result<T, CiphercoreBaseError>;
 
 #[cfg(test)]

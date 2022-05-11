@@ -2,7 +2,6 @@
 #![cfg_attr(feature = "nightly-features", feature(backtrace))]
 
 #[macro_use]
-#[doc(hidden)]
 pub mod errors;
 pub mod applications;
 #[doc(hidden)]
