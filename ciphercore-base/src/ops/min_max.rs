@@ -1,4 +1,4 @@
-//! Minimum and maximum operations.
+//! Minimum and maximum operations. They operate on unsigned integers represented as bitstrings.
 use crate::custom_ops::{CustomOperation, CustomOperationBody};
 use crate::data_types::{array_type, Type};
 use crate::errors::Result;
@@ -10,6 +10,8 @@ use super::multiplexer::Mux;
 use serde::{Deserialize, Serialize};
 
 /// A structure that defines the custom operation Min that computes the minimum of length-n bitstring arrays elementwise.
+///
+/// Note that input bitstrings should represent unsigned integers.
 ///
 /// The last dimension of both inputs must be the same; it defines the length of input bitstrings.
 /// If input shapes are different, the broadcasting rules are applied (see [the NumPy broadcasting rules](https://numpy.org/doc/stable/user/basics.broadcasting.html)).
@@ -89,6 +91,8 @@ impl CustomOperationBody for Min {
 }
 
 /// A structure that defines the custom operation Max that computes the maximum of length-n bitstring arrays elementwise.
+///
+/// Note that input bitstrings should represent unsigned integers.
 ///
 /// The last dimension of both inputs must be the same; it defines the length of input bitstrings.
 /// If input shapes are different, the broadcasting rules are applied (see [the NumPy broadcasting rules](https://numpy.org/doc/stable/user/basics.broadcasting.html)).
