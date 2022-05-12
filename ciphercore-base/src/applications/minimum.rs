@@ -7,6 +7,8 @@ use crate::ops::min_max::Min;
 
 /// Creates a graph that finds the minimum of an array.
 ///
+/// Minimum works only for arrays with unsigned scalar values.
+///
 /// # Arguments
 ///
 /// * `context` - context where a minimum graph should be created
@@ -17,6 +19,11 @@ use crate::ops::min_max::Min;
 ///
 /// Graph that finds the minimum of an array
 pub fn create_minimum_graph(context: Context, n: u64, st: ScalarType) -> Result<Graph> {
+    // First, check that the input scalar type is unsigned
+    if st.get_signed() {
+        return Err(runtime_error!("Sorting doesn't accept signed scalar types"));
+    }
+
     // Create a graph in a given context that will be used for finding the minimum
     let g = context.create_graph()?;
 
@@ -33,7 +40,7 @@ pub fn create_minimum_graph(context: Context, n: u64, st: ScalarType) -> Result<
     // This input node requires the input array type generated previously.
     let mut binary_array = g.input(input_type)?;
 
-    // We find the minimum using the tournament method.
+    // We find the minimum using the tournament method. This allows to reduce the graph size to O(n) from O(2<sup>n</sup>) nodes.
     // Namely, we split the input array into pairs, find a minimum within each pair and create a new array from these minima.
     // Then, we repeat this procedure for the new array.
     // For example, let [2,7,0,3,11,5,0,4] be an input array.
@@ -70,7 +77,7 @@ pub fn create_minimum_graph(context: Context, n: u64, st: ScalarType) -> Result<
 #[cfg(test)]
 mod tests {
     use crate::custom_ops::run_instantiation_pass;
-    use crate::data_types::INT32;
+    use crate::data_types::UINT32;
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
     use crate::graphs::create_context;
@@ -105,8 +112,8 @@ mod tests {
                 test_minimum_helper(
                     &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
                     4,
-                    INT32
-                ) == Value::from_flattened_array(&[1], INT32)?
+                    UINT32
+                ) == Value::from_flattened_array(&[1], UINT32)?
             );
             Ok(())
         }()

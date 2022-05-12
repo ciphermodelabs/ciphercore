@@ -8,9 +8,9 @@ use crate::graphs::{Context, Graph};
 /// # Arguments
 ///
 /// * `context` - context where a matrix multiplication graph should be created
-/// * `n` - number of rows of the left matrix,
-/// * `m` - number of columns of the left matrix (and number of rows of the right matrix)
-/// * `k` - number of columns of the right matrix
+/// * `n` - number of rows of the first matrix,
+/// * `m` - number of columns of the first matrix (and number of rows of the second matrix)
+/// * `k` - number of columns of the first matrix
 /// * `st` - scalar type of matrix elements
 ///
 /// # Returns
@@ -28,18 +28,18 @@ pub fn create_matrix_multiplication_graph(
 
     // Create types of input matrices.
     // Matrices can be represented as arrays with two 2-dimensional shapes.
-    // First, create the array type of a left matrix with shape `[n, m]`, which corresponds to a (n x m)-matrix.
-    let left_matrix_type = array_type(vec![n, m], st.clone());
-    // Second, create the array type of a right matrix with shape `[m, k]`, which corresponds to a (m x k)-matrix.
-    let right_matrix_type = array_type(vec![m, k], st);
+    // First, create the array type of a first matrix with shape `[n, m]`, which corresponds to a (n x m)-matrix.
+    let first_matrix_type = array_type(vec![n, m], st.clone());
+    // Second, create the array type of a second matrix with shape `[m, k]`, which corresponds to a (m x k)-matrix.
+    let second_matrix_type = array_type(vec![m, k], st);
 
     // For each input matrix, add input nodes to the empty graph g created above.
     // Input nodes require the types of input matrices generated in previous lines.
-    let left_matrix_input = g.input(left_matrix_type)?;
-    let right_matrix_input = g.input(right_matrix_type)?;
+    let first_matrix_input = g.input(first_matrix_type)?;
+    let second_matrix_input = g.input(second_matrix_type)?;
 
     // Matrix multiplication is a built-in function of CipherCore, so it can be computed by a single computational node.
-    let output = left_matrix_input.matmul(right_matrix_input)?;
+    let output = first_matrix_input.matmul(second_matrix_input)?;
 
     // Before computation, every graph should be finalized, which means that it should have a designated output node.
     // This can be done by calling `g.set_output_node(output)?` or as below.

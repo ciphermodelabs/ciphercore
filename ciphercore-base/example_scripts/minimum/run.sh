@@ -2,4 +2,4 @@
 
 set -xe
 export LD_LIBRARY_PATH=$(./onnx.sh)
-ciphercore_evaluate ciphercore-base/example_scripts/minimum/mpc_graph.json ciphercore-base/example_scripts/minimum/inputs.json
+ciphercore_evaluate mpc_graph.json inputs.json
