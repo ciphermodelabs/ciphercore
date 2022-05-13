@@ -1,0 +1,13 @@
+[tool.cibuildwheel]
+#before-all = "yum install -y openssl openssl-devel"
+before-all = "/bin/bash ciphercore-wrappers/python/prepare.sh"
+skip = "*-musllinux*"
+
+[build-system]
+requires = [
+    "setuptools>=42",
+    "wheel",
+    "pybind11>=2.8.0",
+]
+
+build-backend = "setuptools.build_meta"
