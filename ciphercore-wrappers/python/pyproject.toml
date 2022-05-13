@@ -1,6 +1,5 @@
 [tool.cibuildwheel]
-#before-all = "yum install -y openssl openssl-devel"
-before-all = "/bin/bash ciphercore-wrappers/python/prepare.sh"
+before-all = "/bin/sh ciphercore-wrappers/python/prepare.sh"
 skip = "*-musllinux*"
 
 [build-system]

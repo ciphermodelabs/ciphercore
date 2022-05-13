@@ -1,4 +1,4 @@
-name: Build
+name: Build Wheels
 
 on:
   workflow_dispatch:
@@ -22,7 +22,7 @@ jobs:
 
       - name: Build wheels
         run: python -m cibuildwheel --output-dir wheelhouse ciphercore-wrappers/python
-        # Uncomments for faster testing.
+        # Uncomment for faster testing.
         #env:
         #  CIBW_BUILD: cp310-*
         #  CIBW_ARCHS: auto64
