@@ -18,7 +18,7 @@ Secure Multi-Party Computation (SMPC) is a cutting-edge subfield of cryptography
 
 CipherCore’s ease of use is due to introducing a new intermediate representation layer of _computation graphs_ between the application layer and the protocol layer. Applications are mapped to a computation graph first and then to an SMPC protocol. This architecture allows for rapid integration of various SMPC protocols as new cryptographic backends. If you are familiar with ML frameworks such as [PyTorch](https://pytorch.org/), [TensorFlow](https://www.tensorflow.org/) or [JAX](https://github.com/google/jax) (or [MLIR](https://mlir.llvm.org/) on a lower level), then you likely know what computation graphs are.
 
-![CipherCore architecture](reference/images/ciphercore_architecture.png)
+![CipherCore architecture](https://github.com/ciphermodelabs/ciphercore/blob/main/reference/images/ciphercore_architecture.png)
 
 ## Bird's eye view of SMPC
 
@@ -42,4 +42,4 @@ There are four natural stages when working with CipherCore:
   1. Formulate a computation one wishes to run securely as a computation graph using graph building API;
   2. **Compile** the graph into a new, typically larger, computation graph that corresponds to an SMPC protocol that performs the same computation but, at the same time, preserves the privacy of inputs and outputs. This step can be done using the CipherCore **compiler** that is part of the repository. Currently, we only support the ABY3 SMPC protocol for three non-colluding parties, but this will likely change in the future.
   3. Check that the resulting secure protocol works correctly. This can be done by running it on sample inputs using a **local evaluator**. This repository contains a reference implementation of an evaluator, which is simple, but not efficient. We also provide access to a Docker image that contains a binary of a **fast evaluator**, which is typically several orders of magnitude more efficient. The performance of the fast evaluator is a strong predictor (modulo network interactions) of actual end-to-end secure protocol execution done by three distributed parties;
-  4. Execute the secure protocol end-to-end by three actual distributed parties that interact over the network. This can be done using the CipherCore **runtime**. We provide the trial access to the runtime on request. (see [here](reference/main.md#system-requirements-installation-and-licensing) for details).
+  4. Execute the secure protocol end-to-end by three actual distributed parties that interact over the network. This can be done using the CipherCore **runtime**. We provide the trial access to the runtime on request. (see [here](https://github.com/ciphermodelabs/ciphercore/blob/main/reference/main.md#system-requirements-installation-and-licensing) for details).
