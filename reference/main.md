@@ -356,7 +356,7 @@ The following examples are provided:
 ## Matrix multiplication
 
 Given two matrices in the form of 2-dimensional arrays, their product is computed.
-The serialization binary generates the following simple graph as matrix multiplication is a built-in operation of CipherCore.
+The serialization binary generates the following simple graph, as matrix multiplication is a built-in operation of CipherCore.
 
 <p align = "center">
   <img src="images/matmul.svg" alt="Multiplication Graph" width="30%"/>
@@ -366,7 +366,7 @@ The serialization binary generates the following simple graph as matrix multipli
 
 Two millionaires want to find out who is richer without revealing their wealth.
 This is [a classic SMPC problem](https://en.wikipedia.org/wiki/Yao%27s_Millionaires%27_problem).
-The serialization binary generates the following simple graph as the greater-than operation is a built-in custom operation of CipherCore.
+The serialization binary generates the following simple graph, as the greater-than operation is a built-in custom operation of CipherCore.
 
 <p align = "center">
   <img src="images/millionaires.svg" alt="Millionaires' Problem Graph" width="30%"/>
@@ -420,7 +420,7 @@ There are only two input integers of the same type, which is defined below.
 let t = scalar_type(INT32);
 ```
 
-Here, we create a type containing only one integer (i.e. a [*scalar*](https://docs.rs/ciphercore-base/latest/ciphercore_base/data_types/enum.Type.html#variant.Scalar)) of scalar type [INT32](https://docs.rs/ciphercore-base/latest/ciphercore_base/data_types/constant.INT32.html).
+Here, we create a type containing only one integer (i.e., a [*scalar*](https://docs.rs/ciphercore-base/latest/ciphercore_base/data_types/enum.Type.html#variant.Scalar)) of scalar type [INT32](https://docs.rs/ciphercore-base/latest/ciphercore_base/data_types/constant.INT32.html).
 Similarly, one can create arrays, vectors, tuples and named tuples; see the documentation on [data types](https://docs.rs/ciphercore-base/latest/ciphercore_base/data_types/index.html) for more details.
 
 Now, we can add two input nodes to the graph corresponding to two input integers.
@@ -496,7 +496,7 @@ with c:
       t = cc.scalar_type(cc.INT32)
       i1 = g.input(t)
       i2 = g.input(t)
-      a = g.add(i1, i2)
+      a = i1 + i2
       a.set_as_output()
   g.set_as_main()
 print(c)
@@ -624,7 +624,7 @@ compiles the graph `a.json` using simple inlining (optimizes for compute rather 
 
 One can run a computation graph (compiled or not) on a given data locally via a reference evaluator, using a binary `ciphercore_evaluate`.
 In order to use the fast evaluator, please use the binary `ciphercore_evaluate_fast` from within the CipherCore [Docker image](#docker-image), which is fully-compatible with `ciphercore_evaluate`.
-This is a good way to test the functionality as well as--if we use the fast evaluator--get a decent idea about the end-to-end performance of the actual protocol when executed within the CipherCore runtime (modulo networking interactions).
+This is a good way to test the functionality as well as -- if we use the fast evaluator -- get a decent idea about the end-to-end performance of the actual protocol when executed within the CipherCore runtime (modulo networking interactions).
 Either evaluator takes two mandatory parameters: path to a serialized context which main graph we'd like to evaluate and a file with inputs given in the JSON format.
 
 ### Secret-shared input
