@@ -374,7 +374,7 @@ The serialization binary generates the following simple graph as the greater-tha
 
 ## Minimum of an array
 
-Given an array of integers, their minimum is computed.
+Given an array of unsigned integers, their minimum is computed.
 The serialization binary generates the following graph corresponding to the tournament method.
 Note that each `Min` operation is performed elementwise on arrays of 32-bit elements.
 
@@ -384,7 +384,7 @@ Note that each `Min` operation is performed elementwise on arrays of 32-bit elem
 
 ## Sorting
 
-Given an array of integers, this example sorts them in the ascending order.
+Given an array of unsigned integers, this example sorts them in the ascending order.
 The serialization binary generates the following graph corresponding to the Batcher's sorting network.
 
 <p align = "center">
