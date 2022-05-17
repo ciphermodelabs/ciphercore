@@ -142,7 +142,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-ciphercore-base = "0.1.0"
+ciphercore-base = "0.1.1"
 serde_json = "1.0.81"
 ```
 
