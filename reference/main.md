@@ -142,7 +142,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-ciphercore-base = "0.1.0"
+ciphercore-base = "0.1.1"
 serde_json = "1.0.81"
 ```
 
@@ -341,9 +341,9 @@ This tutorial just scratches the surface what one can accomplish using CipherCor
 
 The repository contains several examples of how non-trivial algorithms can be created and executed within CipherCore.
 These examples are structured in a similar way as the [Quick start](#quick-start) example and include:
-* a documented Rust code creating a computation graph for a specific task (this file is located in `ciphercore_base/src/applications`). To understand the logic and core concepts of this code, please consult [Graph creation and management](#graph-creation-and-management). This construction logic is covered by unit tests. For some examples, we also provide Python scripts generating computation graphs (see [here](#creating-computation-graph-in-python) how to install and use the Python wrapper).
-* a documented Rust code of a binary in `src/bin` that creates a context with the aforementioned graph and returns its serialization into JSON. This serialization can be later used for converting the graph to its secure computation counterpart, visualization and inspection as was shown in [Quick start](#quick-start).
-* two scripts `build_graph.sh` and `run.sh` in `example_scripts`
+* a documented Rust code creating a computation graph for a specific task (this file is located in `ciphercore-base/src/applications`). To understand the logic and core concepts of this code, please consult [Graph creation and management](#graph-creation-and-management). This construction logic is covered by unit tests. For some examples, we also provide Python scripts generating computation graphs (see [here](#creating-computation-graph-in-python) how to install and use the Python wrapper).
+* a documented Rust code of a binary in `ciphercore-base/src/bin` that creates a context with the aforementioned graph and returns its serialization into JSON. This serialization can be later used for converting the graph to its secure computation counterpart, visualization and inspection as was shown in [Quick start](#quick-start).
+* two scripts `build_graph.sh` and `run.sh` in `ciphercore-base/example_scripts`
    * `build_graph.sh` creates a computation graph of a secure protocol for a specific task and saves its JSON-serializes it in `mpc_graph.json`.
    * `run.sh` takes the graph serialization and runs it on inputs provided in `inputs.json` as in [Quick start](#quick-start).
 
@@ -356,7 +356,7 @@ The following examples are provided:
 ## Matrix multiplication
 
 Given two matrices in the form of 2-dimensional arrays, their product is computed.
-The serialization binary generates the following simple graph as matrix multiplication is a built-in operation of CipherCore.
+The serialization binary generates the following simple graph, as matrix multiplication is a built-in operation of CipherCore.
 
 <p align = "center">
   <img src="images/matmul.svg" alt="Multiplication Graph" width="30%"/>
@@ -366,7 +366,7 @@ The serialization binary generates the following simple graph as matrix multipli
 
 Two millionaires want to find out who is richer without revealing their wealth.
 This is [a classic SMPC problem](https://en.wikipedia.org/wiki/Yao%27s_Millionaires%27_problem).
-The serialization binary generates the following simple graph as the greater-than operation is a built-in custom operation of CipherCore.
+The serialization binary generates the following simple graph, as the greater-than operation is a built-in custom operation of CipherCore.
 
 <p align = "center">
   <img src="images/millionaires.svg" alt="Millionaires' Problem Graph" width="30%"/>
@@ -374,7 +374,7 @@ The serialization binary generates the following simple graph as the greater-tha
 
 ## Minimum of an array
 
-Given an array of integers, their minimum is computed.
+Given an array of unsigned integers, their minimum is computed.
 The serialization binary generates the following graph corresponding to the tournament method.
 Note that each `Min` operation is performed elementwise on arrays of 32-bit elements.
 
@@ -384,7 +384,7 @@ Note that each `Min` operation is performed elementwise on arrays of 32-bit elem
 
 ## Sorting
 
-Given an array of integers, this example sorts them in the ascending order.
+Given an array of unsigned integers, this example sorts them in the ascending order.
 The serialization binary generates the following graph corresponding to the Batcher's sorting network.
 
 <p align = "center">
@@ -420,7 +420,7 @@ There are only two input integers of the same type, which is defined below.
 let t = scalar_type(INT32);
 ```
 
-Here, we create a type containing only one integer (i.e. a [*scalar*](https://docs.rs/ciphercore-base/latest/ciphercore_base/data_types/enum.Type.html#variant.Scalar)) of scalar type [INT32](https://docs.rs/ciphercore-base/latest/ciphercore_base/data_types/constant.INT32.html).
+Here, we create a type containing only one integer (i.e., a [*scalar*](https://docs.rs/ciphercore-base/latest/ciphercore_base/data_types/enum.Type.html#variant.Scalar)) of scalar type [INT32](https://docs.rs/ciphercore-base/latest/ciphercore_base/data_types/constant.INT32.html).
 Similarly, one can create arrays, vectors, tuples and named tuples; see the documentation on [data types](https://docs.rs/ciphercore-base/latest/ciphercore_base/data_types/index.html) for more details.
 
 Now, we can add two input nodes to the graph corresponding to two input integers.
@@ -496,7 +496,7 @@ with c:
       t = cc.scalar_type(cc.INT32)
       i1 = g.input(t)
       i2 = g.input(t)
-      a = g.add(i1, i2)
+      a = i1 + i2
       a.set_as_output()
   g.set_as_main()
 print(c)
@@ -624,7 +624,7 @@ compiles the graph `a.json` using simple inlining (optimizes for compute rather 
 
 One can run a computation graph (compiled or not) on a given data locally via a reference evaluator, using a binary `ciphercore_evaluate`.
 In order to use the fast evaluator, please use the binary `ciphercore_evaluate_fast` from within the CipherCore [Docker image](#docker-image), which is fully-compatible with `ciphercore_evaluate`.
-This is a good way to test the functionality as well as--if we use the fast evaluator--get a decent idea about the end-to-end performance of the actual protocol when executed within the CipherCore runtime (modulo networking interactions).
+This is a good way to test the functionality as well as -- if we use the fast evaluator -- get a decent idea about the end-to-end performance of the actual protocol when executed within the CipherCore runtime (modulo networking interactions).
 Either evaluator takes two mandatory parameters: path to a serialized context which main graph we'd like to evaluate and a file with inputs given in the JSON format.
 
 ### Secret-shared input
@@ -655,39 +655,46 @@ instructions for GraphViz to draw all the graphs and their associated nodes from
 For instance, if we create the following context:
 
 ```rust
-let c = create_context()?;
-let mul = {
-    let g = c.create_graph()?;
-    let i0 = g.input(array_type(vec![2, 2], UINT64))?;
-    i0.set_name("MultIp0")?;
-    let i1 = g.input(array_type(vec![2, 2, 2], UINT64))?;
-    i1.set_name("MultIp1")?;
-    let op_mul = g.multiply(i0, i1)?;
-    op_mul.set_name("Product")?;
-    g.set_output_node(op_mul)?;
-    g.finalize()?;
-    g
-};
-let sum_g = c.create_graph()?;
-let i0 = sum_g.input(array_type(vec![2], UINT64))?;
-i0.set_name("Input a")?;
-let i1 = sum_g.input(array_type(vec![2, 2], UINT64))?;
-i1.set_name("Input b")?;
-let i2 = sum_g.input(array_type(vec![2, 2, 2], UINT64))?;
-i2.set_name("Input c")?;
-let prod = sum_g.call(mul, vec![i1, i2])?;
-let op = sum_g.add(i0, prod)?;
-op.set_name("Output")?;
-sum_g.set_output_node(op)?;
-sum_g.finalize()?;
-c.set_main_graph(sum_g)?;
-c.finalize()?;
-println!(
-    "{}",
-    serde_json::to_string(&c).map_err(|_| runtime_error!("Can't serialize"))?
-);
+use ciphercore_base::data_types::{array_type, UINT64};
+use ciphercore_base::errors::Result;
+use ciphercore_base::graphs::create_context;
+
+fn main() {
+    || -> Result<()> {
+        let c = create_context()?;
+        let mul = {
+            let g = c.create_graph()?;
+            let i0 = g.input(array_type(vec![2, 2], UINT64))?;
+            i0.set_name("MultIp0")?;
+            let i1 = g.input(array_type(vec![2, 2, 2], UINT64))?;
+            i1.set_name("MultIp1")?;
+            let op_mul = g.multiply(i0, i1)?;
+            op_mul.set_name("Product")?;
+            g.set_output_node(op_mul)?;
+            g.finalize()?;
+            g
+        };
+        let sum_g = c.create_graph()?;
+        let i0 = sum_g.input(array_type(vec![2], UINT64))?;
+        i0.set_name("Input a")?;
+        let i1 = sum_g.input(array_type(vec![2, 2], UINT64))?;
+        i1.set_name("Input b")?;
+        let i2 = sum_g.input(array_type(vec![2, 2, 2], UINT64))?;
+        i2.set_name("Input c")?;
+        let prod = sum_g.call(mul, vec![i1, i2])?;
+        let op = sum_g.add(i0, prod)?;
+        op.set_name("Output")?;
+        sum_g.set_output_node(op)?;
+        sum_g.finalize()?;
+        c.set_main_graph(sum_g)?;
+        c.finalize()?;
+        println!("{}", serde_json::to_string(&c)?);
+        Ok(())
+    }()
+    .unwrap();
+}
 ```
-save it file `context.json`, and visualize it as follows:
+save the output to file `context.json`, and visualize it as follows:
 ```
 ciphercore_visualize_context context.json | dot -Tsvg -o vis.svg
 ```
@@ -784,6 +791,8 @@ To use the image, please make sure that Docker is installed for your system, and
 ```bash
 sh run_ciphercore_docker.sh <binary name> <parameters>
 ```
+To avoid using sudo in using the docker image, you can add your user to the docker group. Please visit [here](https://docs.docker.com/engine/install/linux-postinstall/) for instructions. 
+
 If a binary reads data from a file, the file needs to be in the same directory as the script `run_ciphercore_docker.sh`.
 For example, you can run:
 ```bash

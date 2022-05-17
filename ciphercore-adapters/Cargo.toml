@@ -1,6 +1,6 @@
 [package]
 name = "ciphercore-adapters"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["CipherMode Labs, Inc."]
 edition = "2021"
 description = "An auxiliary crate to bridge CipherCore with its C bindings"

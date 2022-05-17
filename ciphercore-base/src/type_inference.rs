@@ -1405,7 +1405,7 @@ mod tests {
         test_reshape_worker_unsuccessful(tuple_type(vec![]), array_type(vec![], BIT));
         test_reshape_worker_unsuccessful(
             tuple_type(vec![]),
-            vector_type(1234567890123, tuple_type(vec![])),
+            vector_type(u64::MAX, tuple_type(vec![])),
         );
     }
 
