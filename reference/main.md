@@ -655,39 +655,46 @@ instructions for GraphViz to draw all the graphs and their associated nodes from
 For instance, if we create the following context:
 
 ```rust
-let c = create_context()?;
-let mul = {
-    let g = c.create_graph()?;
-    let i0 = g.input(array_type(vec![2, 2], UINT64))?;
-    i0.set_name("MultIp0")?;
-    let i1 = g.input(array_type(vec![2, 2, 2], UINT64))?;
-    i1.set_name("MultIp1")?;
-    let op_mul = g.multiply(i0, i1)?;
-    op_mul.set_name("Product")?;
-    g.set_output_node(op_mul)?;
-    g.finalize()?;
-    g
-};
-let sum_g = c.create_graph()?;
-let i0 = sum_g.input(array_type(vec![2], UINT64))?;
-i0.set_name("Input a")?;
-let i1 = sum_g.input(array_type(vec![2, 2], UINT64))?;
-i1.set_name("Input b")?;
-let i2 = sum_g.input(array_type(vec![2, 2, 2], UINT64))?;
-i2.set_name("Input c")?;
-let prod = sum_g.call(mul, vec![i1, i2])?;
-let op = sum_g.add(i0, prod)?;
-op.set_name("Output")?;
-sum_g.set_output_node(op)?;
-sum_g.finalize()?;
-c.set_main_graph(sum_g)?;
-c.finalize()?;
-println!(
-    "{}",
-    serde_json::to_string(&c).map_err(|_| runtime_error!("Can't serialize"))?
-);
+use ciphercore_base::data_types::{array_type, UINT64};
+use ciphercore_base::errors::Result;
+use ciphercore_base::graphs::create_context;
+
+fn main() {
+    || -> Result<()> {
+        let c = create_context()?;
+        let mul = {
+            let g = c.create_graph()?;
+            let i0 = g.input(array_type(vec![2, 2], UINT64))?;
+            i0.set_name("MultIp0")?;
+            let i1 = g.input(array_type(vec![2, 2, 2], UINT64))?;
+            i1.set_name("MultIp1")?;
+            let op_mul = g.multiply(i0, i1)?;
+            op_mul.set_name("Product")?;
+            g.set_output_node(op_mul)?;
+            g.finalize()?;
+            g
+        };
+        let sum_g = c.create_graph()?;
+        let i0 = sum_g.input(array_type(vec![2], UINT64))?;
+        i0.set_name("Input a")?;
+        let i1 = sum_g.input(array_type(vec![2, 2], UINT64))?;
+        i1.set_name("Input b")?;
+        let i2 = sum_g.input(array_type(vec![2, 2, 2], UINT64))?;
+        i2.set_name("Input c")?;
+        let prod = sum_g.call(mul, vec![i1, i2])?;
+        let op = sum_g.add(i0, prod)?;
+        op.set_name("Output")?;
+        sum_g.set_output_node(op)?;
+        sum_g.finalize()?;
+        c.set_main_graph(sum_g)?;
+        c.finalize()?;
+        println!("{}", serde_json::to_string(&c)?);
+        Ok(())
+    }()
+    .unwrap();
+}
 ```
-save it file `context.json`, and visualize it as follows:
+save the output to file `context.json`, and visualize it as follows:
 ```
 ciphercore_visualize_context context.json | dot -Tsvg -o vis.svg
 ```
