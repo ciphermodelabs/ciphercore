@@ -341,9 +341,9 @@ This tutorial just scratches the surface what one can accomplish using CipherCor
 
 The repository contains several examples of how non-trivial algorithms can be created and executed within CipherCore.
 These examples are structured in a similar way as the [Quick start](#quick-start) example and include:
-* a documented Rust code creating a computation graph for a specific task (this file is located in `ciphercore_base/src/applications`). To understand the logic and core concepts of this code, please consult [Graph creation and management](#graph-creation-and-management). This construction logic is covered by unit tests. For some examples, we also provide Python scripts generating computation graphs (see [here](#creating-computation-graph-in-python) how to install and use the Python wrapper).
-* a documented Rust code of a binary in `src/bin` that creates a context with the aforementioned graph and returns its serialization into JSON. This serialization can be later used for converting the graph to its secure computation counterpart, visualization and inspection as was shown in [Quick start](#quick-start).
-* two scripts `build_graph.sh` and `run.sh` in `example_scripts`
+* a documented Rust code creating a computation graph for a specific task (this file is located in `ciphercore-base/src/applications`). To understand the logic and core concepts of this code, please consult [Graph creation and management](#graph-creation-and-management). This construction logic is covered by unit tests. For some examples, we also provide Python scripts generating computation graphs (see [here](#creating-computation-graph-in-python) how to install and use the Python wrapper).
+* a documented Rust code of a binary in `ciphercore-base/src/bin` that creates a context with the aforementioned graph and returns its serialization into JSON. This serialization can be later used for converting the graph to its secure computation counterpart, visualization and inspection as was shown in [Quick start](#quick-start).
+* two scripts `build_graph.sh` and `run.sh` in `ciphercore-base/example_scripts`
    * `build_graph.sh` creates a computation graph of a secure protocol for a specific task and saves its JSON-serializes it in `mpc_graph.json`.
    * `run.sh` takes the graph serialization and runs it on inputs provided in `inputs.json` as in [Quick start](#quick-start).
 
@@ -784,6 +784,8 @@ To use the image, please make sure that Docker is installed for your system, and
 ```bash
 sh run_ciphercore_docker.sh <binary name> <parameters>
 ```
+To avoid using sudo in using the docker image, you can add your user to the docker group. Please visit [here](https://docs.docker.com/engine/install/linux-postinstall/) for instructions. 
+
 If a binary reads data from a file, the file needs to be in the same directory as the script `run_ciphercore_docker.sh`.
 For example, you can run:
 ```bash
