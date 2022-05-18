@@ -18,14 +18,14 @@
 <title>Input0_0</title>
 <polygon fill="royalblue" stroke="royalblue" points="188.5,-128 111.5,-128 111.5,-90 188.5,-90 188.5,-128"/>
 <text text-anchor="middle" x="150" y="-112.8" font-family="Times,serif" font-size="14.00">Input</text>
-<text text-anchor="middle" x="150" y="-97.8" font-family="Times,serif" font-size="14.00">i64[5, 5]</text>
+<text text-anchor="middle" x="150" y="-97.8" font-family="Times,serif" font-size="14.00">i32[2, 3]</text>
 </g>
 <!-- Matmul2_0 -->
 <g id="node3" class="node">
 <title>Matmul2_0</title>
 <polygon fill="crimson" stroke="crimson" points="140.5,-54 63.5,-54 63.5,-16 140.5,-16 140.5,-54"/>
 <text text-anchor="middle" x="102" y="-38.8" font-family="Times,serif" font-size="14.00">Matmul</text>
-<text text-anchor="middle" x="102" y="-23.8" font-family="Times,serif" font-size="14.00">i64[5, 5]</text>
+<text text-anchor="middle" x="102" y="-23.8" font-family="Times,serif" font-size="14.00">i32[2, 4]</text>
 </g>
 <!-- Input0_0&#45;&gt;Matmul2_0 -->
 <g id="edge1" class="edge">
@@ -38,7 +38,7 @@
 <title>Input1_0</title>
 <polygon fill="royalblue" stroke="royalblue" points="93.5,-128 16.5,-128 16.5,-90 93.5,-90 93.5,-128"/>
 <text text-anchor="middle" x="55" y="-112.8" font-family="Times,serif" font-size="14.00">Input</text>
-<text text-anchor="middle" x="55" y="-97.8" font-family="Times,serif" font-size="14.00">i64[5, 5]</text>
+<text text-anchor="middle" x="55" y="-97.8" font-family="Times,serif" font-size="14.00">i32[3, 4]</text>
 </g>
 <!-- Input1_0&#45;&gt;Matmul2_0 -->
 <g id="edge2" class="edge">
