@@ -1,6 +1,6 @@
 //! Inverse square root approximation via [the Newton-Raphson method](https://en.wikipedia.org/wiki/Newton%27s_method#Square_root).
 use crate::custom_ops::{CustomOperation, CustomOperationBody, Or};
-use crate::data_types::{array_type, scalar_type, Type, BIT, UINT64};
+use crate::data_types::{array_type, scalar_type, Type, BIT, UINT64, INT64};
 use crate::data_values::Value;
 use crate::errors::Result;
 use crate::graphs::{Context, Graph, GraphAnnotation};
@@ -12,9 +12,10 @@ use serde::{Deserialize, Serialize};
 ///
 /// In particular, this operation computes an approximation of 2<sup>denominator_cap_2k</sup> / sqrt(input).
 ///
-/// Input must be of the scalar type UINT64 and be in (0, 2<sup>2 * denominator_cap_2k - 1</sup>) range.
+/// Input must be of the scalar type UINT64/INT64 and be in (0, 2<sup>2 * denominator_cap_2k - 1</sup>) range.
 /// The input is also assumed to be small enough (less than 2<sup>21</sup>), otherwise integer overflows
 /// are possible, yielding incorrect results.
+/// In case of INT64 type, negative inputs yield undefined behavior.
 ///
 /// Optionally, an initial approximation for the Newton iterations can be provided.
 /// In this case, the operation might be faster and of lower depth, however, it must be guaranteed that
@@ -69,9 +70,10 @@ impl CustomOperationBody for InverseSqrt {
                 "Divisor in InverseSqrt must be a scalar or an array"
             ));
         }
-        if t.get_scalar_type() != UINT64 {
+        let sc = t.get_scalar_type();
+        if sc != UINT64 && sc != INT64 {
             return Err(runtime_error!(
-                "Divisor in InverseSqrt must consist of UINT64's"
+                "Divisor in InverseSqrt must consist of UINT64's or INT64's"
             ));
         }
         let has_initial_approximation = arguments_types.len() == 2;
@@ -159,14 +161,14 @@ impl CustomOperationBody for InverseSqrt {
                 g.create_vector(bit_type, first_approximation_bits)?
                     .vector_to_array()?,
             )?
-            .b2a(UINT64)?
+            .b2a(sc.clone())?
         };
         // Now, we do Newton approximation for computing 1 / sqrt(x), where x = divisor / (2 ** cap).
         // We use F(t) = 1 / (t ** 2) - d;
         // The formula for the Newton method is x_{i + 1} = x_i * (3 / 2 - d / 2 * x_i * x_i).
         let three_halves = g.constant(
-            scalar_type(UINT64),
-            Value::from_scalar(3 << (self.denominator_cap_2k - 1), UINT64)?,
+            scalar_type(sc.clone()),
+            Value::from_scalar(3 << (self.denominator_cap_2k - 1), sc)?,
         )?;
         for _ in 0..self.iterations {
             let x = approximation;
@@ -198,16 +200,17 @@ mod tests {
 
     use crate::custom_ops::run_instantiation_pass;
     use crate::custom_ops::CustomOperation;
+    use crate::data_types::ScalarType;
     use crate::evaluators::random_evaluate;
     use crate::graphs::create_context;
 
-    fn scalar_helper(divisor: u64, initial_approximation: Option<u64>) -> Result<u64> {
+    fn scalar_helper(divisor: u64, initial_approximation: Option<u64>, sc: ScalarType) -> Result<u64> {
         let c = create_context()?;
         let g = c.create_graph()?;
-        let i = g.input(scalar_type(UINT64))?;
+        let i = g.input(scalar_type(sc.clone()))?;
         let o = if let Some(approx) = initial_approximation {
             let approx_const =
-                g.constant(scalar_type(UINT64), Value::from_scalar(approx, UINT64)?)?;
+                g.constant(scalar_type(sc.clone()), Value::from_scalar(approx, sc.clone())?)?;
             g.custom_op(
                 CustomOperation::new(InverseSqrt {
                     iterations: 5,
@@ -231,15 +234,21 @@ mod tests {
         let mapped_c = run_instantiation_pass(c)?;
         let result = random_evaluate(
             mapped_c.get_context().get_main_graph()?,
-            vec![Value::from_scalar(divisor, UINT64)?],
+            vec![Value::from_scalar(divisor, sc.clone())?],
         )?;
-        result.to_u64(UINT64)
+        if sc == UINT64 {
+            result.to_u64(sc.clone())
+        } else {
+            let res = result.to_i64(sc.clone())?;
+            assert!(res >= 0);
+            Ok(res as u64)
+        }
     }
 
-    fn array_helper(divisor: Vec<u64>) -> Result<Vec<u64>> {
+    fn array_helper(divisor: Vec<u64>, sc: ScalarType) -> Result<Vec<u64>> {
         let c = create_context()?;
         let g = c.create_graph()?;
-        let array_t = array_type(vec![divisor.len() as u64], UINT64);
+        let array_t = array_type(vec![divisor.len() as u64], sc.clone());
         let i = g.input(array_t.clone())?;
         let o = g.custom_op(
             CustomOperation::new(InverseSqrt {
@@ -255,7 +264,7 @@ mod tests {
         let mapped_c = run_instantiation_pass(c)?;
         let result = random_evaluate(
             mapped_c.get_context().get_main_graph()?,
-            vec![Value::from_flattened_array(&divisor, UINT64)?],
+            vec![Value::from_flattened_array(&divisor, sc.clone())?],
         )?;
         result.to_flattened_array_u64(array_t)
     }
@@ -264,17 +273,20 @@ mod tests {
     fn test_inverse_sqrt_scalar() {
         for i in vec![1, 2, 3, 123, 300, 500, 700] {
             let expected = (1024.0 / (i as f64).powf(0.5)) as i64;
-            assert!((scalar_helper(i, None).unwrap() as i64 - expected).abs() <= 1);
+            assert!((scalar_helper(i, None, UINT64).unwrap() as i64 - expected).abs() <= 1);
+            assert!((scalar_helper(i, None, INT64).unwrap() as i64 - expected).abs() <= 1);
         }
     }
 
     #[test]
     fn test_inverse_sqrt_array() {
         let arr = vec![23, 32, 57, 71, 183, 555];
-        let div = array_helper(arr.clone()).unwrap();
+        let div1 = array_helper(arr.clone(), UINT64).unwrap();
+        let div2 = array_helper(arr.clone(), INT64).unwrap();
         for i in 0..arr.len() {
             let expected = (1024.0 / (arr[i] as f64).powf(0.5)) as i64;
-            assert!((div[i] as i64 - expected).abs() <= 1);
+            assert!((div1[i] as i64 - expected).abs() <= 1);
+            assert!((div2[i] as i64 - expected).abs() <= 1);
         }
     }
 
@@ -286,7 +298,15 @@ mod tests {
                 initial_guess *= 2;
             }
             let expected = (1024.0 / (i as f64).powf(0.5)) as i64;
-            assert!((scalar_helper(i, Some(initial_guess)).unwrap() as i64 - expected).abs() <= 1);
+            assert!((scalar_helper(i, Some(initial_guess), UINT64).unwrap() as i64 - expected).abs() <= 1);
+            assert!((scalar_helper(i, Some(initial_guess), INT64).unwrap() as i64 - expected).abs() <= 1);
+        }
+    }
+
+    #[test]
+    fn test_inverse_sqrt_negative_values_nothing_bad() {
+        for i in vec![-1, -100, -1000] {
+            scalar_helper(i as u64, None, INT64).unwrap();
         }
     }
 }
