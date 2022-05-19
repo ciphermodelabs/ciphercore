@@ -7,7 +7,6 @@ use crate::inline::data_structures::{log_depth_sum, CombineOp};
 use crate::inline::inline_common::{
     pick_prefix_sum_algorithm, DepthOptimizationLevel, InlineState,
 };
-use crate::ops::utils::{pull_out_bits, put_in_bits};
 
 const MAX_ALLOWED_STATE_BITS: u64 = 4;
 
@@ -109,42 +108,47 @@ pub(super) fn inline_iterate_small_state(
     // Precompute the transformation of initial_state, which is needed to
     // extract states from the transformation matrices. See extract_state_from_mapping()
     // for more detailed explanation.
-    let mut initial_state_one_hot = one_hot_encode(
-        initial_state.clone(),
-        num_masks,
-        mask_constants.clone(),
-        inliner.output_graph(),
-        state_type.clone(),
-        single_bit,
-    )?;
-    let mut new_shape = initial_state_one_hot.get_type()?.get_shape();
-    new_shape.insert(0, 1);
-    initial_state_one_hot = initial_state_one_hot.reshape(array_type(new_shape.clone(), BIT))?;
-    let mut permutation: Vec<u64> = (0..new_shape.len()).map(|x| x as u64).collect();
-    permutation.rotate_left(2);
-    initial_state_one_hot = initial_state_one_hot.permute_axes(permutation)?; // ...1i
+    let unused_node = inliner
+        .output_graph()
+        .constant(scalar_type(BIT), Value::zero_of_type(scalar_type(BIT)))?;
+    let initial_state_one_hot = if single_bit {
+        unused_node.clone()
+    } else {
+        let mut initial_state_one_hot = one_hot_encode(
+            initial_state.clone(),
+            num_masks,
+            mask_constants.clone(),
+            inliner.output_graph(),
+            state_type.clone(),
+            single_bit,
+        )?;
+        let mut new_shape = initial_state_one_hot.get_type()?.get_shape();
+        new_shape.insert(0, 1);
+        initial_state_one_hot =
+            initial_state_one_hot.reshape(array_type(new_shape.clone(), BIT))?;
+        let mut permutation: Vec<u64> = (0..new_shape.len()).map(|x| x as u64).collect();
+        permutation.rotate_left(2);
+        initial_state_one_hot = initial_state_one_hot.permute_axes(permutation)?; // ...1i
+        initial_state_one_hot
+    };
 
     // Precompute the mask array, needed for extracting states. See extract_state_from_mapping()
     // for more detailed explanation.
-    let mut masks_arr = inliner
-        .output_graph()
-        .create_vector(mask_constants[0].get_type()?, mask_constants)?
-        .vector_to_array()?;
-    let mut masks_arr_shape = masks_arr.get_type()?.get_shape();
-    if single_bit {
-        masks_arr_shape.insert(1, 1);
-        masks_arr = masks_arr.reshape(array_type(masks_arr_shape.clone(), BIT))?;
-    }
-    let mut masks_arr_permutation: Vec<u64> =
-        (0..masks_arr_shape.len()).map(|x| x as u64).collect();
-    if single_bit {
-        masks_arr_permutation.rotate_left(2);
+    let masks_arr = if single_bit {
+        unused_node
     } else {
+        let masks_arr = inliner
+            .output_graph()
+            .create_vector(mask_constants[0].get_type()?, mask_constants)?
+            .vector_to_array()?;
+        let masks_arr_shape = masks_arr.get_type()?.get_shape();
+        let mut masks_arr_permutation: Vec<u64> =
+            (0..masks_arr_shape.len()).map(|x| x as u64).collect();
         masks_arr_permutation.rotate_left(1);
         let rank = masks_arr_permutation.len();
-        masks_arr_permutation.swap(rank - 2, rank - 1)
-    }
-    masks_arr = masks_arr.permute_axes(masks_arr_permutation)?;
+        masks_arr_permutation.swap(rank - 2, rank - 1);
+        masks_arr.permute_axes(masks_arr_permutation)?
+    };
 
     let mut combiner = MappingCombiner {};
     let mut bit_combiner = MappingCombiner1Bit {};
@@ -228,20 +232,18 @@ struct MappingCombiner1Bit {}
 
 impl CombineOp<Node> for MappingCombiner1Bit {
     fn combine(&mut self, arg1: Node, arg2: Node) -> Result<Node> {
-        // Mappings are in the form [bit_0, bit_1], so we extract
+        // Mappings are in the form tuple(bit_0, bit_1), so we extract
         // both bits from the 2nd mapping, and combine mappings as follows:
         // output_0 = bit_10 * (bit20 + bit21) + bit_20;
         // output_1 = bit_11 * (bit20 + bit21) + bit_20.
-        let bit20 = arg2.get_slice(vec![
-            SliceElement::Ellipsis,
-            SliceElement::SubArray(Some(0), Some(1), None),
-        ])?;
-        let bit21 = arg2.get_slice(vec![
-            SliceElement::Ellipsis,
-            SliceElement::SubArray(Some(1), None, None),
-        ])?;
+        let bit10 = arg1.tuple_get(0)?;
+        let bit11 = arg1.tuple_get(1)?;
+        let bit20 = arg2.tuple_get(0)?;
+        let bit21 = arg2.tuple_get(1)?;
         let distinct = bit20.add(bit21)?;
-        arg1.multiply(distinct)?.add(bit20)
+        let bit0 = bit10.multiply(distinct.clone())?.add(bit20.clone())?;
+        let bit1 = bit11.multiply(distinct)?.add(bit20)?;
+        arg1.get_graph().create_tuple(vec![bit0, bit1])
     }
 }
 
@@ -254,13 +256,10 @@ fn extract_state_from_mapping(
     state_type: Type,
 ) -> Result<Node> {
     if single_bit {
-        // Optimized 1-bit case. The mapping is an array with 2 bits (0->bit_0, 1->bit_1).
+        // Optimized 1-bit case. The mapping is a tuple with 2 bits (0->bit_0, 1->bit_1).
         let g = mapping.get_graph();
-        let m_vec = pull_out_bits(mapping)?.array_to_vector()?;
-        let out0 =
-            m_vec.vector_get(g.constant(scalar_type(UINT64), Value::from_scalar(0, UINT64)?)?)?;
-        let out1 =
-            m_vec.vector_get(g.constant(scalar_type(UINT64), Value::from_scalar(1, UINT64)?)?)?;
+        let out0 = mapping.tuple_get(0)?;
+        let out1 = mapping.tuple_get(1)?;
         let one = g.constant(scalar_type(BIT), Value::from_scalar(1, BIT)?)?;
         let not_initial_state = initial_state.add(one)?;
         out0.multiply(not_initial_state)?
@@ -389,8 +388,7 @@ fn create_mapping_matrix(
 ) -> Result<Node> {
     if single_bit {
         // Single-bit optimization: we don't need to one-hot encode the mapping in this case.
-        let combined_mapping = output.create_vector(mapping[0].get_type()?, mapping)?;
-        return put_in_bits(combined_mapping.vector_to_array()?);
+        return output.create_tuple(mapping);
     }
     // We're given 2 ** K mappings, where each mapping is a state. We want to produce
     // the transition matrix of shape (2 ** K, 2 ** K), by one-hot-encoding every state.
@@ -409,15 +407,7 @@ fn create_mapping_matrix(
         )?);
     }
     let matrix = output.vector_to_array(output.create_vector(result[0].get_type()?, result)?)?;
-    // Our shape is [input state, output state, ...]. Let's move the matrix to the last two dims.
-    let other_shape_len = match state_type {
-        Type::Scalar(_) => 0,
-        Type::Array(shape, _) => shape.len() - 1,
-        _ => panic!("Cannot be here"),
-    };
-    let mut permutation: Vec<u64> = (0..(other_shape_len + 2)).map(|x| x as u64).collect();
-    permutation.rotate_left(2);
-    matrix.permute_axes(permutation)
+    Ok(matrix)
 }
 
 /// Creates mappings and one-hot-encoded initial state.  
@@ -465,7 +455,23 @@ fn create_mappings(
         )?);
     }
 
-    Ok(mappings)
+    if single_bit {
+        return Ok(mappings);
+    }
+    let mut mappings_arr = inliner
+        .output_graph()
+        .create_vector(mappings[0].get_type()?, mappings)?
+        .vector_to_array()?;
+    let shape_len = mappings_arr.get_type()?.get_dimensions().len();
+    let mut permutation: Vec<u64> = (1..shape_len).map(|x| x as u64).collect();
+    permutation.rotate_left(2);
+    permutation.insert(0, 0);
+    mappings_arr = mappings_arr.permute_axes(permutation)?;
+    let mut final_mappings = vec![];
+    for i in 0..inputs_len {
+        final_mappings.push(mappings_arr.get(vec![i])?);
+    }
+    Ok(final_mappings)
 }
 
 #[cfg(test)]
