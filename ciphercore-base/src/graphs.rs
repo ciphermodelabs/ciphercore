@@ -1672,6 +1672,7 @@ pub enum NodeAnnotation {
     Send(u64, u64), // (sender_index, receiver_index); indices belong to the set 0..PARTIES
     PRFMultiplication,
     PRFB2A,
+    PRFTruncate,
 }
 
 #[doc(hidden)]

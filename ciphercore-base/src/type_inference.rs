@@ -409,7 +409,7 @@ impl TypeInferenceWorker {
                 if !t.is_array() && !t.is_scalar() {
                     return Err(runtime_error!("Can't truncate this type"));
                 }
-                if d > i64::MAX as u64 {
+                if t.get_scalar_type().get_signed() && d > i64::MAX as u64 {
                     return Err(runtime_error!("Scale for truncation is too large"));
                 }
                 self.register_result(node, t.clone())?;
@@ -1112,6 +1112,7 @@ mod tests {
         test_truncate_worker(array_type(vec![10, 20], INT32), 1000);
         test_truncate_worker(scalar_type(INT32), 1000);
         test_truncate_worker(scalar_type(INT32), i64::MAX as u64);
+        test_truncate_worker(scalar_type(UINT64), 1u64 << 32);
         test_truncate_worker_fail(array_type(vec![10, 20], INT32), 0);
         test_truncate_worker_fail(scalar_type(INT32), 0);
         test_truncate_worker_fail(tuple_type(vec![]), 1000);
