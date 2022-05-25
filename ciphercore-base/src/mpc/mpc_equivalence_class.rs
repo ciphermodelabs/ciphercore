@@ -90,6 +90,7 @@ fn compare_vector(vector1: Vec<u64>, vector2: Vec<u64>) -> Result<bool> {
 }
 
 //This function generates equivalence classes for all nodes in the input compiled context.
+//As the index of VectorGet depends on the input data, we cannot return a correct EquivalenceClasses without the knowledge of the input data. Thus, we restrict that all elements in the input Vector should have a same EquivalenceClasses.
 #[allow(dead_code)]
 pub(super) fn generate_equivalence_class(
     context: Context,
@@ -119,7 +120,9 @@ pub(super) fn generate_equivalence_class(
                     );
                     input_count += 1;
                 }
-                Operation::CreateTuple => {
+                Operation::CreateTuple
+                | Operation::CreateNamedTuple(_)
+                | Operation::CreateVector(_) => {
                     equivalence_classes.insert(
                         node.get_global_id(),
                         EquivalenceClasses::Vector(dependencies_class),
@@ -131,6 +134,25 @@ pub(super) fn generate_equivalence_class(
                     if let EquivalenceClasses::Vector(v) = previous_class {
                         let target_class = v[field_id as usize].clone();
                         equivalence_classes.insert(node.get_global_id(), (*target_class).clone());
+                    }
+                }
+
+                Operation::NamedTupleGet(ref field_name) => {
+                    let tuple_type = dependencies[0].get_type()?;
+                    let mut field_id: Option<u64> = None;
+                    if let Type::NamedTuple(ref v) = tuple_type {
+                        for (id, (current_field_name, _)) in v.iter().enumerate() {
+                            if current_field_name.eq(field_name) {
+                                field_id = Some(id as u64);
+                                break;
+                            }
+                        }
+                    }
+                    let field_id_raw = field_id.unwrap();
+                    let namedtuple = (*dependencies_class[0]).clone();
+                    if let EquivalenceClasses::Vector(v) = namedtuple {
+                        equivalence_classes
+                            .insert(node.get_global_id(), (*v[field_id_raw as usize]).clone());
                     }
                 }
 
@@ -171,7 +193,11 @@ pub(super) fn generate_equivalence_class(
                     );
                 }
 
-                Operation::Add | Operation::Subtract | Operation::Multiply => {
+                Operation::Add
+                | Operation::Subtract
+                | Operation::Multiply
+                | Operation::Dot
+                | Operation::Matmul => {
                     equivalence_classes.insert(
                         node.get_global_id(),
                         combine_class(
@@ -179,6 +205,116 @@ pub(super) fn generate_equivalence_class(
                             (*dependencies_class[1]).clone(),
                         )?,
                     );
+                }
+
+                Operation::Truncate(_)
+                | Operation::Sum(_)
+                | Operation::Get(_)
+                | Operation::GetSlice(_)
+                | Operation::Reshape(_)
+                | Operation::A2B
+                | Operation::B2A(_) => {
+                    equivalence_classes
+                        .insert(node.get_global_id(), (*dependencies_class[0]).clone());
+                }
+
+                Operation::PermuteAxes(_) => {
+                    let previous_class = (*dependencies_class[0]).clone();
+                    if let EquivalenceClasses::Atomic(d) = previous_class {
+                        let current_class = d;
+                        equivalence_classes.insert(
+                            node.get_global_id(),
+                            EquivalenceClasses::Atomic(current_class),
+                        );
+                    }
+                }
+
+                Operation::Stack(_) | Operation::VectorToArray => {
+                    let previous_class = (*dependencies_class[0]).clone();
+                    match previous_class {
+                        EquivalenceClasses::Atomic(d) => {
+                            let current_class = d;
+                            equivalence_classes.insert(
+                                node.get_global_id(),
+                                EquivalenceClasses::Atomic(current_class),
+                            );
+                        }
+
+                        EquivalenceClasses::Vector(v) => {
+                            let mut current_class = (*v[0]).clone();
+                            for e in v {
+                                current_class = combine_class(current_class, (*e).clone())?;
+                            }
+                            equivalence_classes.insert(node.get_global_id(), current_class);
+                        }
+                    }
+                }
+
+                Operation::Zip => {
+                    let mut current_class = vec![];
+                    let mut index = 0;
+                    'result_entries: loop {
+                        let mut row = vec![];
+                        for dependency_class in dependencies_class.clone() {
+                            if let EquivalenceClasses::Vector(v) = &*dependency_class {
+                                if v.len() <= index {
+                                    break 'result_entries;
+                                }
+                                row.push(v[index].clone());
+                            }
+                        }
+                        current_class.push(Arc::new(EquivalenceClasses::Vector(row)));
+                        index += 1;
+                    }
+                    equivalence_classes.insert(
+                        node.get_global_id(),
+                        EquivalenceClasses::Vector(current_class),
+                    );
+                }
+
+                Operation::Constant(t, _) => {
+                    equivalence_classes.insert(
+                        node.get_global_id(),
+                        recursive_class_filler(t, EquivalenceClasses::Atomic(vec![vec![0, 1, 2]]))?,
+                    );
+                }
+
+                Operation::Repeat(n) => {
+                    let mut current_class = vec![];
+                    for _ in 0..n {
+                        current_class.push(Arc::new((*dependencies_class[0]).clone()));
+                    }
+                    equivalence_classes.insert(
+                        node.get_global_id(),
+                        EquivalenceClasses::Vector(current_class),
+                    );
+                }
+
+                Operation::ArrayToVector => {
+                    let mut current_class = vec![];
+
+                    let dependency_node = dependencies[0].clone();
+                    let shape = dependency_node.get_type()?.get_shape();
+                    for _ in 0..shape[0] {
+                        current_class.push(Arc::new((*dependencies_class[0]).clone()));
+                    }
+                    equivalence_classes.insert(
+                        node.get_global_id(),
+                        EquivalenceClasses::Vector(current_class),
+                    );
+                }
+
+                Operation::VectorGet => {
+                    let previous_class = (*dependencies_class[0]).clone();
+                    if let EquivalenceClasses::Vector(v) = previous_class {
+                        let current_class = (*v[0]).clone();
+                        for class in v {
+                            if current_class != *class {
+                                panic!("elements in Vector have different EquivalenceClasses");
+                            }
+                        }
+                        equivalence_classes.insert(node.get_global_id(), current_class);
+                    }
                 }
 
                 _ => return Err(runtime_error!("node not supported")),
@@ -381,7 +517,8 @@ fn check_equivalence_class_nop(
 mod tests {
     use super::*;
     use crate::data_types::{array_type, scalar_type, tuple_type, vector_type, BIT, UINT64};
-    use crate::graphs::{create_context, create_unchecked_context};
+    use crate::data_values::Value;
+    use crate::graphs::{create_context, create_unchecked_context, SliceElement};
     use crate::inline::inline_common::DepthOptimizationLevel;
     use crate::inline::inline_ops::{InlineConfig, InlineMode};
     use crate::mpc::mpc_compiler::{prepare_for_mpc_evaluation, IOStatus};
@@ -508,6 +645,10 @@ mod tests {
             add_op2.set_name("add_op2")?;
             let add1 = g.add(add_op1.clone(), add_op2.clone())?;
             add1.set_name("add1")?;
+            let subtract = g.subtract(add_op1.clone(), add_op2.clone())?;
+            subtract.set_name("subtract")?;
+            let multiply = g.multiply(add_op1.clone(), add_op2.clone())?;
+            multiply.set_name("multiply")?;
 
             let rand1 = g.random(scalar_type(BIT))?;
             rand1.set_name("rand1")?;
@@ -572,6 +713,8 @@ mod tests {
         let class_add_op1 = share1_02.clone();
         let class_add_op2 = share2_01.clone();
         let class_add1 = private_class.clone();
+        let class_subtract = private_class.clone();
+        let class_multiply = private_class.clone();
         let class_rand1 = private_class.clone();
         let class_rand2 = EquivalenceClasses::Vector(vec![
             Arc::new(private_class.clone()),
@@ -685,6 +828,28 @@ mod tests {
             *test_class1
                 .get(
                     &context1
+                        .retrieve_node(context1.retrieve_graph("test_g1").unwrap(), "subtract")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class_subtract
+        );
+        assert_eq!(
+            *test_class1
+                .get(
+                    &context1
+                        .retrieve_node(context1.retrieve_graph("test_g1").unwrap(), "multiply")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class_multiply
+        );
+        assert_eq!(
+            *test_class1
+                .get(
+                    &context1
                         .retrieve_node(context1.retrieve_graph("test_g1").unwrap(), "rand1")
                         .unwrap()
                         .get_global_id()
@@ -757,6 +922,446 @@ mod tests {
                 )
                 .unwrap(),
             class_create_tuple
+        );
+
+        let context2 = || -> Result<Context> {
+            let context = create_context()?;
+            let g = context.create_graph()?;
+            g.set_name("test_g2")?;
+            let i1 = g.input(tuple_type(vec![
+                scalar_type(UINT64),
+                scalar_type(UINT64),
+                scalar_type(UINT64),
+            ]))?;
+            i1.set_name("i1")?;
+            let i2 = g.input(tuple_type(vec![
+                scalar_type(UINT64),
+                scalar_type(UINT64),
+                scalar_type(UINT64),
+            ]))?;
+            i2.set_name("i2")?;
+            let i3 = g.input(scalar_type(UINT64))?;
+            i3.set_name("i3")?;
+
+            let a2b = g.a2b(i3.clone())?;
+            a2b.set_name("a2b")?;
+            let b2a = g.b2a(a2b.clone(), UINT64)?;
+            b2a.set_name("b2a")?;
+
+            let tuple_get1 = g.tuple_get(i1.clone(), 0)?;
+            tuple_get1.set_name("tuple_get1")?;
+            let tuple_get2 = g.tuple_get(i2.clone(), 1)?;
+            tuple_get2.set_name("tuple_get2")?;
+
+            let repeat = g.repeat(tuple_get1.clone(), 4)?;
+            repeat.set_name("repeat")?;
+
+            let vector_to_array = g.vector_to_array(repeat.clone())?;
+            vector_to_array.set_name("vector_to_array")?;
+
+            let permuteaxe = g.permute_axes(vector_to_array.clone(), vec![0])?;
+            permuteaxe.set_name("permuteaxe")?;
+
+            let reshape = g.reshape(permuteaxe.clone(), array_type(vec![2, 2], UINT64))?;
+            reshape.set_name("reshape")?;
+
+            let stack = g.stack(vec![reshape.clone()], vec![1])?;
+            stack.set_name("stack")?;
+
+            let constant = g.constant(scalar_type(UINT64), Value::from_scalar(1, UINT64)?)?;
+            constant.set_name("constant")?;
+
+            let trunc = g.truncate(reshape.clone(), 2)?;
+            trunc.set_name("trunc")?;
+
+            let get_slice = g.get_slice(
+                trunc.clone(),
+                vec![
+                    SliceElement::Ellipsis,
+                    SliceElement::SubArray(None, None, Some(-1)),
+                ],
+            )?;
+            get_slice.set_name("get_slice")?;
+
+            let array_to_vector = g.array_to_vector(reshape.clone())?;
+            array_to_vector.set_name("array_to_vector")?;
+
+            let zip = g.zip(vec![array_to_vector.clone(), array_to_vector.clone()])?;
+            zip.set_name("zip")?;
+
+            let vector_get = g.vector_get(zip.clone(), i3.clone())?;
+            vector_get.set_name("vector_get")?;
+
+            let sum = g.sum(reshape.clone(), vec![0, 1])?;
+            sum.set_name("sum")?;
+
+            let matmul = g.matmul(reshape.clone(), reshape.clone())?;
+            matmul.set_name("matmul")?;
+
+            let get = g.get(vector_to_array.clone(), vec![2])?;
+            get.set_name("get")?;
+
+            let dot = g.dot(vector_to_array.clone(), vector_to_array.clone())?;
+            dot.set_name("dot")?;
+
+            let create_named_tuple = g.create_named_tuple(vec![
+                ("dot".to_string(), dot.clone()),
+                ("get".to_string(), get.clone()),
+            ])?;
+            create_named_tuple.set_name("create_named_tuple")?;
+
+            let named_tuple_get =
+                g.named_tuple_get(create_named_tuple.clone(), "get".to_string())?;
+            named_tuple_get.set_name("named_tuple_get")?;
+
+            let create_vector =
+                g.create_vector(scalar_type(UINT64), vec![i3.clone(), i3.clone()])?;
+            create_vector.set_name("create_vector")?;
+            Ok(context)
+        }()
+        .unwrap();
+
+        let test_class2 = generate_equivalence_class(
+            context2.clone(),
+            vec![vec![IOStatus::Shared, IOStatus::Shared, IOStatus::Public]],
+        )
+        .unwrap();
+
+        let class2_i1 = EquivalenceClasses::Vector(vec![
+            Arc::new(share1_02.clone()),
+            Arc::new(share2_01.clone()),
+            Arc::new(share0_12.clone()),
+        ]);
+        let class2_i2 = class_i1.clone();
+        let class2_i3 = public_class.clone();
+        let class2_a2b = public_class.clone();
+        let class2_b2a = public_class.clone();
+        let class2_tuple_get1 = share1_02.clone();
+        let class2_tuple_get2 = share2_01.clone();
+        let class2_repeat = EquivalenceClasses::Vector(vec![
+            Arc::new(share1_02.clone()),
+            Arc::new(share1_02.clone()),
+            Arc::new(share1_02.clone()),
+            Arc::new(share1_02.clone()),
+        ]);
+        let class2_vector_to_array = share1_02.clone();
+        let class2_permuteaxe = share1_02.clone();
+        let class2_reshape = share1_02.clone();
+        let class2_stack = share1_02.clone();
+        let class2_constant = public_class.clone();
+        let class2_trunc = share1_02.clone();
+        let class2_get_slice = share1_02.clone();
+        let class2_array_to_vector = EquivalenceClasses::Vector(vec![
+            Arc::new(share1_02.clone()),
+            Arc::new(share1_02.clone()),
+        ]);
+        let class2_zip = EquivalenceClasses::Vector(vec![
+            Arc::new(class2_array_to_vector.clone()),
+            Arc::new(class2_array_to_vector.clone()),
+        ]);
+        let class2_vector_get = EquivalenceClasses::Vector(vec![
+            Arc::new(share1_02.clone()),
+            Arc::new(share1_02.clone()),
+        ]);
+        let class2_sum = share1_02.clone();
+        let class2_matmul = share1_02.clone();
+        let class2_get = share1_02.clone();
+        let class2_dot = share1_02.clone();
+        let class2_create_named_tuple = EquivalenceClasses::Vector(vec![
+            Arc::new(share1_02.clone()),
+            Arc::new(share1_02.clone()),
+        ]);
+        let class2_named_tuple_get = share1_02.clone();
+        let class2_create_vector = EquivalenceClasses::Vector(vec![
+            Arc::new(public_class.clone()),
+            Arc::new(public_class.clone()),
+        ]);
+        assert_eq!(
+            *test_class2
+                .get(
+                    &context2
+                        .retrieve_node(context2.retrieve_graph("test_g2").unwrap(), "i1")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class2_i1
+        );
+        assert_eq!(
+            *test_class2
+                .get(
+                    &context2
+                        .retrieve_node(context2.retrieve_graph("test_g2").unwrap(), "i2")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class2_i2
+        );
+        assert_eq!(
+            *test_class2
+                .get(
+                    &context2
+                        .retrieve_node(context2.retrieve_graph("test_g2").unwrap(), "i3")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class2_i3
+        );
+        assert_eq!(
+            *test_class2
+                .get(
+                    &context2
+                        .retrieve_node(context2.retrieve_graph("test_g2").unwrap(), "a2b")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class2_a2b
+        );
+        assert_eq!(
+            *test_class2
+                .get(
+                    &context2
+                        .retrieve_node(context2.retrieve_graph("test_g2").unwrap(), "b2a")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class2_b2a
+        );
+        assert_eq!(
+            *test_class2
+                .get(
+                    &context2
+                        .retrieve_node(context2.retrieve_graph("test_g2").unwrap(), "tuple_get1")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class2_tuple_get1
+        );
+        assert_eq!(
+            *test_class2
+                .get(
+                    &context2
+                        .retrieve_node(context2.retrieve_graph("test_g2").unwrap(), "tuple_get2")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class2_tuple_get2
+        );
+        assert_eq!(
+            *test_class2
+                .get(
+                    &context2
+                        .retrieve_node(context2.retrieve_graph("test_g2").unwrap(), "repeat")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class2_repeat
+        );
+        assert_eq!(
+            *test_class2
+                .get(
+                    &context2
+                        .retrieve_node(
+                            context2.retrieve_graph("test_g2").unwrap(),
+                            "vector_to_array"
+                        )
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class2_vector_to_array
+        );
+        assert_eq!(
+            *test_class2
+                .get(
+                    &context2
+                        .retrieve_node(context2.retrieve_graph("test_g2").unwrap(), "permuteaxe")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class2_permuteaxe
+        );
+        assert_eq!(
+            *test_class2
+                .get(
+                    &context2
+                        .retrieve_node(context2.retrieve_graph("test_g2").unwrap(), "reshape")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class2_reshape
+        );
+        assert_eq!(
+            *test_class2
+                .get(
+                    &context2
+                        .retrieve_node(context2.retrieve_graph("test_g2").unwrap(), "stack")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class2_stack
+        );
+        assert_eq!(
+            *test_class2
+                .get(
+                    &context2
+                        .retrieve_node(context2.retrieve_graph("test_g2").unwrap(), "constant")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class2_constant
+        );
+        assert_eq!(
+            *test_class2
+                .get(
+                    &context2
+                        .retrieve_node(context2.retrieve_graph("test_g2").unwrap(), "trunc")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class2_trunc
+        );
+        assert_eq!(
+            *test_class2
+                .get(
+                    &context2
+                        .retrieve_node(context2.retrieve_graph("test_g2").unwrap(), "get_slice")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class2_get_slice
+        );
+        assert_eq!(
+            *test_class2
+                .get(
+                    &context2
+                        .retrieve_node(
+                            context2.retrieve_graph("test_g2").unwrap(),
+                            "array_to_vector"
+                        )
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class2_array_to_vector
+        );
+        assert_eq!(
+            *test_class2
+                .get(
+                    &context2
+                        .retrieve_node(context2.retrieve_graph("test_g2").unwrap(), "zip")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class2_zip
+        );
+        assert_eq!(
+            *test_class2
+                .get(
+                    &context2
+                        .retrieve_node(context2.retrieve_graph("test_g2").unwrap(), "vector_get")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class2_vector_get
+        );
+        assert_eq!(
+            *test_class2
+                .get(
+                    &context2
+                        .retrieve_node(context2.retrieve_graph("test_g2").unwrap(), "sum")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class2_sum
+        );
+        assert_eq!(
+            *test_class2
+                .get(
+                    &context2
+                        .retrieve_node(context2.retrieve_graph("test_g2").unwrap(), "matmul")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class2_matmul
+        );
+        assert_eq!(
+            *test_class2
+                .get(
+                    &context2
+                        .retrieve_node(context2.retrieve_graph("test_g2").unwrap(), "get")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class2_get
+        );
+        assert_eq!(
+            *test_class2
+                .get(
+                    &context2
+                        .retrieve_node(context2.retrieve_graph("test_g2").unwrap(), "dot")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class2_dot
+        );
+        assert_eq!(
+            *test_class2
+                .get(
+                    &context2
+                        .retrieve_node(
+                            context2.retrieve_graph("test_g2").unwrap(),
+                            "create_named_tuple"
+                        )
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class2_create_named_tuple
+        );
+        assert_eq!(
+            *test_class2
+                .get(
+                    &context2
+                        .retrieve_node(
+                            context2.retrieve_graph("test_g2").unwrap(),
+                            "named_tuple_get"
+                        )
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class2_named_tuple_get
+        );
+        assert_eq!(
+            *test_class2
+                .get(
+                    &context2
+                        .retrieve_node(context2.retrieve_graph("test_g2").unwrap(), "create_vector")
+                        .unwrap()
+                        .get_global_id()
+                )
+                .unwrap(),
+            class2_create_vector
         );
     }
 
