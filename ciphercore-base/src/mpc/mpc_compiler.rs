@@ -800,17 +800,19 @@ fn reveal_output(g: Graph, out_node: Node, output_parties: Vec<IOStatus>) -> Res
         let revealed_node = recursively_sum_shares(g, shares_to_reveal)?;
         // If there are other parties waiting for a revealed value, send it to them
         let result_node = if output_parties.len() > 1 {
-            let send_node = revealed_node.nop()?;
+            let mut send_node = revealed_node;
             for i in 1..PARTIES {
                 let party_to_send_id = (party_id + i) % PARTIES;
                 if output_parties.contains(&IOStatus::Party(party_to_send_id as u64)) {
+                    send_node = send_node.nop()?;
                     send_node.add_annotation(NodeAnnotation::Send(
                         party_id as u64,
                         party_to_send_id as u64,
                     ))?;
                 }
             }
-            send_node
+            // Output node can't have Send annotation
+            send_node.nop()?
         } else {
             revealed_node
         };

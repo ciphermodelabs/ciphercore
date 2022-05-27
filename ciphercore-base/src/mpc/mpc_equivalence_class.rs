@@ -1489,7 +1489,6 @@ mod tests {
             assert_eq!(*test_class1.get(&(0, 21)).unwrap(), private_class.clone());
             // There should be no other nodes
             assert!(test_class1.get(&(0, 22)).is_none());
-            // assert_eq!(*test_class1.get(&(0, 19)).unwrap(), share2_01.clone());
         }
         {
             let compiled_c = prepare_for_mpc_evaluation(
@@ -1558,8 +1557,10 @@ mod tests {
             assert_eq!(*test_class1.get(&(0, 21)).unwrap(), private_class.clone());
             // Send the revealed value to another party
             assert_eq!(*test_class1.get(&(0, 22)).unwrap(), share1_02.clone());
+            // Output node can't have Send annotation
+            assert_eq!(*test_class1.get(&(0, 23)).unwrap(), share1_02.clone());
             // There should be no other nodes
-            assert!(test_class1.get(&(0, 23)).is_none());
+            assert!(test_class1.get(&(0, 24)).is_none());
         }
     }
 
