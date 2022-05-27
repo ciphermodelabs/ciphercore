@@ -308,9 +308,9 @@ impl CustomOperationBody for TruncateMPC2K {
             return Ok(g);
         }
         // PRF key k_02, this is the last key in the multiplication PRF key triple
-        let key_02 = prf_mul_keys.tuple_get(2)?;
+        let key_02 = prf_mul_keys.tuple_get(0)?;
         // PRF key k_12, this is the second key in the multiplication PRF key triple
-        let key_12 = prf_mul_keys.tuple_get(1)?;
+        let key_12 = prf_mul_keys.tuple_get(2)?;
 
         let st = input_t.get_scalar_type();
         let st_size = scalar_size_in_bits(st.clone());
