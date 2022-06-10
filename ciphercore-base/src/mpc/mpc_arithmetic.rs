@@ -458,38 +458,33 @@ mod tests {
         st: ScalarType,
         dims: ArrayShape,
         output_parties: Vec<IOStatus>,
-        is_output_private: bool,
     ) -> Result<()> {
         let output = random_evaluate(mpc_graph.clone(), inputs)?;
         let output_type = array_type(dims.clone(), st.clone());
-        if is_output_private {
-            if output_parties.is_empty() {
-                // check that mpc_output is a sharing of plain_output
-                assert!(output.check_type(tuple_type(vec![output_type.clone(); PARTIES]))?);
-                // check that output is a sharing of expected
-                let out = output.access_vector(|v| {
-                    let flat_dims: u64 = dims.iter().product();
-                    let mut res = vec![0; flat_dims as usize];
-                    for val in v {
-                        let arr = val.to_flattened_array_u64(output_type.clone())?;
-                        for i in 0..flat_dims {
-                            res[i as usize] += arr[i as usize];
-                        }
+
+        if output_parties.is_empty() {
+            // check that mpc_output is a sharing of plain_output
+            assert!(output.check_type(tuple_type(vec![output_type.clone(); PARTIES]))?);
+            // check that output is a sharing of expected
+            let out = output.access_vector(|v| {
+                let flat_dims: u64 = dims.iter().product();
+                let mut res = vec![0; flat_dims as usize];
+                for val in v {
+                    let arr = val.to_flattened_array_u64(output_type.clone())?;
+                    for i in 0..flat_dims {
+                        res[i as usize] += arr[i as usize];
                     }
-                    if let Some(m) = st.get_modulus() {
-                        Ok(res.iter().map(|x| x % m).collect())
-                    } else {
-                        Ok(res)
-                    }
-                })?;
-                assert_eq!(out, expected)
-            } else {
-                assert!(output.check_type(output_type.clone())?);
-                assert_eq!(output.to_flattened_array_u64(output_type)?, expected);
-            }
+                }
+                if let Some(m) = st.get_modulus() {
+                    Ok(res.iter().map(|x| x % m).collect())
+                } else {
+                    Ok(res)
+                }
+            })?;
+            assert_eq!(out, expected)
         } else {
-            let array_output = Value::from_flattened_array(&expected, st.clone())?;
-            assert_eq!(output, array_output);
+            assert!(output.check_type(output_type.clone())?);
+            assert_eq!(output.to_flattened_array_u64(output_type)?, expected);
         }
         Ok(())
     }
@@ -507,8 +502,7 @@ mod tests {
                       input: Vec<Vec<u64>>,
                       expected: Vec<u64>,
                       input_status: Vec<IOStatus>,
-                      output_parties: Vec<IOStatus>,
-                      is_output_private: bool|
+                      output_parties: Vec<IOStatus>|
          -> Result<()> {
             let mpc_context = prepare_arithmetic_context(
                 input_status.clone(),
@@ -528,7 +522,6 @@ mod tests {
                 st,
                 dims_out.clone(),
                 output_parties,
-                is_output_private,
             )?;
 
             Ok(())
@@ -541,7 +534,6 @@ mod tests {
             expected.clone(),
             vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
             vec![IOStatus::Party(0)],
-            true,
         )?;
         helper(
             op.clone(),
@@ -550,7 +542,6 @@ mod tests {
             expected.clone(),
             vec![IOStatus::Public, IOStatus::Party(0), IOStatus::Public],
             vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
-            true,
         )?;
         helper(
             op.clone(),
@@ -559,7 +550,6 @@ mod tests {
             expected.clone(),
             vec![IOStatus::Public, IOStatus::Public, IOStatus::Party(0)],
             vec![IOStatus::Party(0), IOStatus::Party(1)],
-            true,
         )?;
         helper(
             op.clone(),
@@ -568,16 +558,22 @@ mod tests {
             expected.clone(),
             vec![IOStatus::Public, IOStatus::Public, IOStatus::Public],
             vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
-            false,
+        )?;
+        helper(
+            op.clone(),
+            st.clone(),
+            input.clone(),
+            expected.clone(),
+            vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
+            vec![],
         )?;
         helper(
             op,
             st,
             input,
             expected,
-            vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
+            vec![IOStatus::Public, IOStatus::Public, IOStatus::Public],
             vec![],
-            true,
         )?;
         Ok(())
     }
@@ -680,185 +676,93 @@ mod tests {
         .unwrap();
     }
 
-    fn bilinear_product_helper(
-        op: Operation,
-        input_status: Vec<IOStatus>,
-        output_parties: Vec<IOStatus>,
-        is_output_private: bool,
-        dims: ArrayShape,
-    ) -> Result<()> {
-        let st = INT32;
-        let mpc_context = prepare_arithmetic_context(
-            input_status.clone(),
-            output_parties.clone(),
-            op.clone(),
-            st.clone(),
-            vec![dims.clone(); 3],
-        )?;
-        let mpc_graph = mpc_context.get_main_graph()?;
+    fn bilinear_product_helper(op: Operation, dims: ArrayShape) -> Result<()> {
+        let helper = |input_status: Vec<IOStatus>, output_parties: Vec<IOStatus>| -> Result<()> {
+            let st = INT32;
+            let mpc_context = prepare_arithmetic_context(
+                input_status.clone(),
+                output_parties.clone(),
+                op.clone(),
+                st.clone(),
+                vec![dims.clone(); 3],
+            )?;
+            let mpc_graph = mpc_context.get_main_graph()?;
 
-        let flat_dims: u64 = dims.iter().product();
-        let inputs = prepare_arithmetic_input(
-            vec![
-                (2..2 + flat_dims).collect(),
-                (4..4 + flat_dims).collect(),
-                (6..6 + flat_dims).collect(),
-            ],
-            input_status,
-            st.clone(),
-        )?;
+            let flat_dims: u64 = dims.iter().product();
+            let inputs = prepare_arithmetic_input(
+                vec![
+                    (2..2 + flat_dims).collect(),
+                    (4..4 + flat_dims).collect(),
+                    (6..6 + flat_dims).collect(),
+                ],
+                input_status,
+                st.clone(),
+            )?;
 
-        let expected = match op {
-            Operation::Multiply => vec![48, 105],
-            Operation::Dot => vec![138, 161],
-            Operation::Matmul => vec![404, 461, 716, 817],
-            _ => panic!("Not a bilinear operation"),
+            let expected = match op.clone() {
+                Operation::Multiply => vec![48, 105],
+                Operation::Dot => vec![138, 161],
+                Operation::Matmul => vec![404, 461, 716, 817],
+                _ => panic!("Not a bilinear operation"),
+            };
+
+            check_arithmetic_output(
+                mpc_graph,
+                inputs,
+                expected,
+                st,
+                dims.clone(),
+                output_parties,
+            )?;
+
+            Ok(())
         };
 
-        check_arithmetic_output(
-            mpc_graph,
-            inputs,
-            expected,
-            st,
-            dims,
-            output_parties,
-            is_output_private,
-        )?;
+        helper(
+            vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
+            vec![IOStatus::Party(0)],
+        )
+        .unwrap();
+        helper(
+            vec![IOStatus::Public, IOStatus::Party(0), IOStatus::Public],
+            vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
+        )
+        .unwrap();
+        helper(
+            vec![IOStatus::Public, IOStatus::Public, IOStatus::Party(0)],
+            vec![IOStatus::Party(0), IOStatus::Party(1)],
+        )
+        .unwrap();
+        helper(
+            vec![IOStatus::Public, IOStatus::Public, IOStatus::Public],
+            vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
+        )
+        .unwrap();
+        helper(
+            vec![IOStatus::Public, IOStatus::Party(0), IOStatus::Public],
+            vec![],
+        )
+        .unwrap();
+        helper(
+            vec![IOStatus::Public, IOStatus::Public, IOStatus::Public],
+            vec![],
+        )
+        .unwrap();
 
         Ok(())
     }
     #[test]
     fn test_multiply() {
-        let op = Operation::Multiply;
-        bilinear_product_helper(
-            op.clone(),
-            vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
-            vec![IOStatus::Party(0)],
-            true,
-            vec![2],
-        )
-        .unwrap();
-        bilinear_product_helper(
-            op.clone(),
-            vec![IOStatus::Public, IOStatus::Party(0), IOStatus::Public],
-            vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
-            true,
-            vec![2],
-        )
-        .unwrap();
-        bilinear_product_helper(
-            op.clone(),
-            vec![IOStatus::Public, IOStatus::Public, IOStatus::Party(0)],
-            vec![IOStatus::Party(0), IOStatus::Party(1)],
-            true,
-            vec![2],
-        )
-        .unwrap();
-        bilinear_product_helper(
-            op.clone(),
-            vec![IOStatus::Public, IOStatus::Public, IOStatus::Public],
-            vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
-            false,
-            vec![2],
-        )
-        .unwrap();
-        bilinear_product_helper(
-            op.clone(),
-            vec![IOStatus::Public, IOStatus::Party(0), IOStatus::Public],
-            vec![],
-            true,
-            vec![2],
-        )
-        .unwrap();
+        bilinear_product_helper(Operation::Multiply, vec![2]).unwrap();
     }
 
     #[test]
     fn test_dot() {
-        let op = Operation::Dot;
-        bilinear_product_helper(
-            op.clone(),
-            vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
-            vec![IOStatus::Party(0)],
-            true,
-            vec![2],
-        )
-        .unwrap();
-        bilinear_product_helper(
-            op.clone(),
-            vec![IOStatus::Public, IOStatus::Party(0), IOStatus::Public],
-            vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
-            true,
-            vec![2],
-        )
-        .unwrap();
-        bilinear_product_helper(
-            op.clone(),
-            vec![IOStatus::Public, IOStatus::Public, IOStatus::Party(0)],
-            vec![IOStatus::Party(0), IOStatus::Party(1)],
-            true,
-            vec![2],
-        )
-        .unwrap();
-        bilinear_product_helper(
-            op.clone(),
-            vec![IOStatus::Public, IOStatus::Public, IOStatus::Public],
-            vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
-            false,
-            vec![2],
-        )
-        .unwrap();
-        bilinear_product_helper(
-            op.clone(),
-            vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
-            vec![],
-            true,
-            vec![2],
-        )
-        .unwrap();
+        bilinear_product_helper(Operation::Dot, vec![2]).unwrap();
     }
 
     #[test]
     fn test_matmul() {
-        let op = Operation::Matmul;
-        bilinear_product_helper(
-            op.clone(),
-            vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
-            vec![IOStatus::Party(0)],
-            true,
-            vec![2, 2],
-        )
-        .unwrap();
-        bilinear_product_helper(
-            op.clone(),
-            vec![IOStatus::Public, IOStatus::Party(0), IOStatus::Public],
-            vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
-            true,
-            vec![2, 2],
-        )
-        .unwrap();
-        bilinear_product_helper(
-            op.clone(),
-            vec![IOStatus::Public, IOStatus::Public, IOStatus::Party(0)],
-            vec![IOStatus::Party(0), IOStatus::Party(1)],
-            true,
-            vec![2, 2],
-        )
-        .unwrap();
-        bilinear_product_helper(
-            op.clone(),
-            vec![IOStatus::Public, IOStatus::Public, IOStatus::Public],
-            vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
-            false,
-            vec![2, 2],
-        )
-        .unwrap();
-        bilinear_product_helper(
-            op.clone(),
-            vec![IOStatus::Public, IOStatus::Party(0), IOStatus::Public],
-            vec![],
-            true,
-            vec![2, 2],
-        )
-        .unwrap();
+        bilinear_product_helper(Operation::Matmul, vec![2, 2]).unwrap();
     }
 }

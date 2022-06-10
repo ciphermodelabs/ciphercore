@@ -618,58 +618,48 @@ mod tests {
         inputs: Vec<Value>,
         expected: Vec<u64>,
         output_parties: Vec<IOStatus>,
-        is_output_private: bool,
         t: Type,
     ) -> Result<()> {
         let output = random_evaluate(mpc_graph.clone(), inputs)?;
         let st = t.get_scalar_type();
-        if is_output_private {
-            if output_parties.is_empty() {
-                let out = output.access_vector(|v| {
-                    let modulus = st.get_modulus();
-                    let mut res = vec![0; expected.len()];
-                    for val in v {
-                        let arr = match t.clone() {
-                            Type::Scalar(_) => {
-                                vec![val.to_u64(st.clone())?]
-                            }
-                            Type::Array(_, _) => val.to_flattened_array_u64(t.clone())?,
-                            _ => {
-                                panic!("Shouldn't be here");
-                            }
-                        };
-                        for i in 0..expected.len() {
-                            res[i] = if let Some(m) = modulus {
-                                (res[i] + arr[i]) % m
-                            } else {
-                                res[i].wrapping_add(arr[i])
-                            };
+
+        if output_parties.is_empty() {
+            let out = output.access_vector(|v| {
+                let modulus = st.get_modulus();
+                let mut res = vec![0; expected.len()];
+                for val in v {
+                    let arr = match t.clone() {
+                        Type::Scalar(_) => {
+                            vec![val.to_u64(st.clone())?]
                         }
+                        Type::Array(_, _) => val.to_flattened_array_u64(t.clone())?,
+                        _ => {
+                            panic!("Shouldn't be here");
+                        }
+                    };
+                    for i in 0..expected.len() {
+                        res[i] = if let Some(m) = modulus {
+                            (res[i] + arr[i]) % m
+                        } else {
+                            res[i].wrapping_add(arr[i])
+                        };
                     }
-                    Ok(res)
-                })?;
-                compare_truncate_output(&out, &expected, true, st.clone())?;
-            } else {
-                assert!(output.check_type(t.clone())?);
-                let out = match t.clone() {
-                    Type::Scalar(_) => vec![output.to_u64(st.clone())?],
-                    Type::Array(_, _) => output.to_flattened_array_u64(t.clone())?,
-                    _ => {
-                        panic!("Shouldn't be here");
-                    }
-                };
-                compare_truncate_output(&out, &expected, true, st.clone())?;
-            }
+                }
+                Ok(res)
+            })?;
+            compare_truncate_output(&out, &expected, true, st.clone())?;
         } else {
-            let array_output = match t.clone() {
-                Type::Scalar(_) => Value::from_scalar(expected[0], st)?,
-                Type::Array(_, _) => Value::from_flattened_array(&expected, st)?,
+            assert!(output.check_type(t.clone())?);
+            let out = match t.clone() {
+                Type::Scalar(_) => vec![output.to_u64(st.clone())?],
+                Type::Array(_, _) => output.to_flattened_array_u64(t.clone())?,
                 _ => {
                     panic!("Shouldn't be here");
                 }
             };
-            assert_eq!(output, array_output);
+            compare_truncate_output(&out, &expected, true, st.clone())?;
         }
+
         Ok(())
     }
 
@@ -691,8 +681,6 @@ mod tests {
 
             let mpc_input = prepare_input(input.clone(), input_status.clone(), t.clone())?;
 
-            let is_output_private = input_status != IOStatus::Public;
-
             let expected = if t.get_scalar_type().get_signed() {
                 input
                     .iter()
@@ -712,14 +700,7 @@ mod tests {
                     })
                     .collect()
             };
-            check_output(
-                mpc_graph,
-                mpc_input,
-                expected,
-                output_parties,
-                is_output_private,
-                t.clone(),
-            )?;
+            check_output(mpc_graph, mpc_input, expected, output_parties, t.clone())?;
 
             Ok(())
         };

@@ -538,64 +538,52 @@ mod tests {
         inputs: Vec<Value>,
         expected: Vec<u64>,
         output_parties: Vec<IOStatus>,
-        is_output_private: bool,
         t: Type,
     ) -> Result<()> {
         let output = random_evaluate(mpc_graph.clone(), inputs)?;
         let st = t.get_scalar_type();
-        if is_output_private {
-            if output_parties.is_empty() {
-                let out = output.access_vector(|v| {
-                    let modulus = st.get_modulus();
-                    let mut res = vec![0; expected.len()];
-                    for val in v {
-                        let arr = match t.clone() {
-                            Type::Scalar(_) => {
-                                vec![val.to_u64(st.clone())?]
-                            }
-                            Type::Array(_, _) => val.to_flattened_array_u64(t.clone())?,
-                            _ => {
-                                panic!("Shouldn't be here");
-                            }
-                        };
-                        for i in 0..expected.len() {
-                            if op == Operation::A2B {
-                                res[i] ^= arr[i];
+
+        if output_parties.is_empty() {
+            let out = output.access_vector(|v| {
+                let modulus = st.get_modulus();
+                let mut res = vec![0; expected.len()];
+                for val in v {
+                    let arr = match t.clone() {
+                        Type::Scalar(_) => {
+                            vec![val.to_u64(st.clone())?]
+                        }
+                        Type::Array(_, _) => val.to_flattened_array_u64(t.clone())?,
+                        _ => {
+                            panic!("Shouldn't be here");
+                        }
+                    };
+                    for i in 0..expected.len() {
+                        if op == Operation::A2B {
+                            res[i] ^= arr[i];
+                        } else {
+                            res[i] = if let Some(m) = modulus {
+                                (res[i] + arr[i]) % m
                             } else {
-                                res[i] = if let Some(m) = modulus {
-                                    (res[i] + arr[i]) % m
-                                } else {
-                                    res[i] + arr[i]
-                                };
-                            }
+                                res[i] + arr[i]
+                            };
                         }
                     }
-                    Ok(res)
-                })?;
-                assert_eq!(out, expected);
-            } else {
-                assert!(output.check_type(t.clone())?);
-                let out = match t.clone() {
-                    Type::Scalar(_) => vec![output.to_u64(st.clone())?],
-                    Type::Array(_, _) => output.to_flattened_array_u64(t.clone())?,
-                    _ => {
-                        panic!("Shouldn't be here");
-                    }
-                };
-                assert_eq!(out, expected);
-            }
-            Ok(())
+                }
+                Ok(res)
+            })?;
+            assert_eq!(out, expected);
         } else {
-            let array_output = match t.clone() {
-                Type::Scalar(_) => Value::from_scalar(expected[0], st)?,
-                Type::Array(_, _) => Value::from_flattened_array(&expected, st)?,
+            assert!(output.check_type(t.clone())?);
+            let out = match t.clone() {
+                Type::Scalar(_) => vec![output.to_u64(st.clone())?],
+                Type::Array(_, _) => output.to_flattened_array_u64(t.clone())?,
                 _ => {
                     panic!("Shouldn't be here");
                 }
             };
-            assert_eq!(output, array_output);
-            Ok(())
+            assert_eq!(out, expected);
         }
+        Ok(())
     }
 
     fn conversion_test(op: Operation, st: ScalarType) -> Result<()> {
@@ -621,14 +609,12 @@ mod tests {
 
             let inputs = prepare_input(op.clone(), input.clone(), input_status.clone(), t.clone())?;
 
-            let is_output_private = input_status != IOStatus::Public;
             check_output(
                 op.clone(),
                 mpc_graph,
                 inputs,
                 input.clone(),
                 output_parties,
-                is_output_private,
                 t.clone(),
             )?;
 
