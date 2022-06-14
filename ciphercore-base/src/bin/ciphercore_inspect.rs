@@ -16,7 +16,7 @@ use std::fs;
 
 use std::collections::HashMap;
 
-use clap::{ArgEnum, Parser};
+use clap::{ArgAction, ArgEnum, Parser};
 
 struct InputInfo {
     name: String,
@@ -247,12 +247,13 @@ enum InlineModeArg {
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about=None)]
 struct Args {
-    ///Path to a file with a serialized context
+    #[clap(value_parser)]
+    /// Path to a file with a serialized context
     input_path: String,
-    ///Optional flag to inline, instantiate custom operations and optimize graphs within a given context
-    #[clap(parse(from_flag))]
+    /// Optional flag to inline, instantiate custom operations and optimize graphs within a given context
+    #[clap(action = ArgAction::SetTrue)]
     prepare: bool,
-    #[clap(arg_enum)]
+    #[clap(arg_enum, value_parser)]
     /// Mode of inlining that unrolls operation nodes in graphs.
     /// Possible values are `simple`, `depth-optimized-default`, `depth-optimized-extreme`.
     /// The default value is simple.

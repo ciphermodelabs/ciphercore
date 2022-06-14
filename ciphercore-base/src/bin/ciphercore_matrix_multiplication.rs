@@ -16,14 +16,17 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about=None)]
 struct Args {
+    #[clap(value_parser)]
     /// number of rows of the left matrix
     n: u64,
+    #[clap(value_parser)]
     /// number of columns of the left matrix (or number of rows of the right matrix)
     m: u64,
+    #[clap(value_parser)]
     /// number of columns of the right matrix
     k: u64,
     /// scalar type of matrix elements
-    #[clap(short, long)]
+    #[clap(short, long, value_parser)]
     scalar_type: String,
 }
 

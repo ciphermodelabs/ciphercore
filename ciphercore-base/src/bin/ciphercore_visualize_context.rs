@@ -187,6 +187,7 @@ use ciphercore_utils::execute_main::execute_main;
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about=None)]
 struct Args {
+    #[clap(value_parser)]
     /// Path to file that contains the serialized Context
     context_path: String,
 }

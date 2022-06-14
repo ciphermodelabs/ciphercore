@@ -13,11 +13,13 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about=None)]
 struct Args {
+    #[clap(value_parser)]
     /// Path to a file containing serialized context
     context_path: String,
+    #[clap(value_parser)]
     /// Path to a file containing serialized inputs
     inputs_path: String,
-    #[clap(long)]
+    #[clap(long, value_parser)]
     /// (optional) Boolean to indicate if the output is to be revealed for secret-shared outputs
     reveal_output: bool,
 }
