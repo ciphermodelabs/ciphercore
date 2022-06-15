@@ -84,11 +84,13 @@ pub trait Evaluator {
             }
         }
 
+        let output_node = graph.get_output_node()?;
+        let output_id = output_node.get_id() as usize;
         let mut update_consumed_option_nodes = |node: Node, values: &mut [Option<Value>]| {
             for dep in node.get_node_dependencies() {
                 let dep_id = dep.get_id() as usize;
                 to_consume_option[dep_id] -= 1;
-                if to_consume_option[dep_id] == 0 {
+                if to_consume_option[dep_id] == 0 && dep_id != output_id {
                     values[dep_id] = None;
                 }
             }
@@ -125,7 +127,6 @@ pub trait Evaluator {
                 }
             }
         }
-        let output_node = graph.get_output_node()?;
         Ok(node_option_values[output_node.get_id() as usize]
             .clone()
             .unwrap())
