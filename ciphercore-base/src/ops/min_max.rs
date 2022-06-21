@@ -11,11 +11,11 @@ use serde::{Deserialize, Serialize};
 
 /// A structure that defines the custom operation Min that computes the minimum of length-n bitstring arrays elementwise.
 ///
-/// Note that input bitstrings should represent unsigned integers.
-///
 /// The last dimension of both inputs must be the same; it defines the length of input bitstrings.
 /// If input shapes are different, the broadcasting rules are applied (see [the NumPy broadcasting rules](https://numpy.org/doc/stable/user/basics.broadcasting.html)).
 /// For example, if input arrays are of shapes `[2,3]`, and `[1,3]`, the resulting array has shape `[2,3]`.
+///
+/// To compare signed numbers, `signed_comparison` should be set `true`.
 ///
 /// To use this and other custom operations in computation graphs, see [Graph::custom_op].
 ///
@@ -40,10 +40,13 @@ use serde::{Deserialize, Serialize};
 /// let t = array_type(vec![2, 3], BIT);
 /// let n1 = g.input(t.clone()).unwrap();
 /// let n2 = g.input(t.clone()).unwrap();
-/// let n3 = g.custom_op(CustomOperation::new(Min {}), vec![n1, n2]).unwrap();
+/// let n3 = g.custom_op(CustomOperation::new(Min {signed_comparison: false}), vec![n1, n2]).unwrap();
 /// ```
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
-pub struct Min {}
+pub struct Min {
+    /// Boolean value indicating whether input bitstring represent signed integers
+    pub signed_comparison: bool,
+}
 
 /// If `cmp` is an array, add `1` to the shape by reshaping,
 /// otherwise, do nothing.
@@ -74,7 +77,7 @@ impl CustomOperationBody for Min {
         let i2 = g.input(arguments_types[1].clone())?;
         let cmp = g.custom_op(
             CustomOperation::new(GreaterThan {
-                signed_comparison: false,
+                signed_comparison: self.signed_comparison,
             }),
             vec![i1.clone(), i2.clone()],
         )?;
@@ -86,17 +89,17 @@ impl CustomOperationBody for Min {
     }
 
     fn get_name(&self) -> String {
-        "Min".to_owned()
+        format!("Min(signed_comparison={})", self.signed_comparison)
     }
 }
 
 /// A structure that defines the custom operation Max that computes the maximum of length-n bitstring arrays elementwise.
 ///
-/// Note that input bitstrings should represent unsigned integers.
-///
 /// The last dimension of both inputs must be the same; it defines the length of input bitstrings.
 /// If input shapes are different, the broadcasting rules are applied (see [the NumPy broadcasting rules](https://numpy.org/doc/stable/user/basics.broadcasting.html)).
 /// For example, if input arrays are of shapes `[2,3]`, and `[1,3]`, the resulting array has shape `[2,3]`.
+///
+/// To compare signed numbers, `signed_comparison` should be set `true`.
 ///
 /// To use this and other custom operations in computation graphs, see [Graph::custom_op].
 ///
@@ -121,10 +124,13 @@ impl CustomOperationBody for Min {
 /// let t = array_type(vec![2, 3], BIT);
 /// let n1 = g.input(t.clone()).unwrap();
 /// let n2 = g.input(t.clone()).unwrap();
-/// let n3 = g.custom_op(CustomOperation::new(Max {}), vec![n1, n2]).unwrap();
+/// let n3 = g.custom_op(CustomOperation::new(Max {signed_comparison: true}), vec![n1, n2]).unwrap();
 /// ```
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
-pub struct Max {}
+pub struct Max {
+    /// Boolean value indicating whether input bitstring represent signed integers
+    pub signed_comparison: bool,
+}
 
 #[typetag::serde]
 impl CustomOperationBody for Max {
@@ -137,7 +143,7 @@ impl CustomOperationBody for Max {
         let i2 = g.input(arguments_types[1].clone())?;
         let cmp = g.custom_op(
             CustomOperation::new(GreaterThan {
-                signed_comparison: false,
+                signed_comparison: self.signed_comparison,
             }),
             vec![i1.clone(), i2.clone()],
         )?;
@@ -149,7 +155,7 @@ impl CustomOperationBody for Max {
     }
 
     fn get_name(&self) -> String {
-        "Max".to_owned()
+        format!("Max(signed_comparison={})", self.signed_comparison)
     }
 }
 
@@ -157,7 +163,7 @@ impl CustomOperationBody for Max {
 mod tests {
 
     use crate::custom_ops::run_instantiation_pass;
-    use crate::data_types::{array_type, scalar_type, BIT, UINT64};
+    use crate::data_types::{array_type, scalar_type, BIT, INT64, UINT64};
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
     use crate::graphs::create_context;
@@ -175,7 +181,8 @@ mod tests {
                 (0, 1),
                 (0, 0),
                 (761523, 761523),
-                (18446744073709551615u64, 18446744073708999999u64),
+                (u64::MAX, u64::MAX - 1),
+                (u64::MAX - 761522, u64::MAX - 761523),
             ];
             let context = || -> Result<Context> {
                 let c = create_context()?;
@@ -183,8 +190,18 @@ mod tests {
                 let i1 = g.input(scalar_type(UINT64))?.a2b()?;
                 let i2 = g.input(scalar_type(UINT64))?.a2b()?;
                 let o = g.create_tuple(vec![
-                    g.custom_op(CustomOperation::new(Min {}), vec![i1.clone(), i2.clone()])?,
-                    g.custom_op(CustomOperation::new(Max {}), vec![i1.clone(), i2.clone()])?,
+                    g.custom_op(
+                        CustomOperation::new(Min {
+                            signed_comparison: false,
+                        }),
+                        vec![i1.clone(), i2.clone()],
+                    )?,
+                    g.custom_op(
+                        CustomOperation::new(Max {
+                            signed_comparison: true,
+                        }),
+                        vec![i1.clone(), i2.clone()],
+                    )?,
                 ])?;
                 g.set_output_node(o)?;
                 g.finalize()?;
@@ -203,9 +220,9 @@ mod tests {
                 )?
                 .to_vector()?;
                 let computed_min = minmax[0].to_u64(UINT64)?;
-                let computed_max = minmax[1].to_u64(UINT64)?;
+                let computed_max = minmax[1].to_i64(INT64)?;
                 assert_eq!(min(u, v), computed_min);
-                assert_eq!(max(u, v), computed_max);
+                assert_eq!(max(u as i64, v as i64), computed_max);
             }
             Ok(())
         }()
@@ -219,10 +236,20 @@ mod tests {
             let g = c.create_graph()?;
             let i1 = g.input(scalar_type(UINT64))?.a2b()?;
             assert!(g
-                .custom_op(CustomOperation::new(Min {}), vec![i1.clone()])
+                .custom_op(
+                    CustomOperation::new(Min {
+                        signed_comparison: false
+                    }),
+                    vec![i1.clone()]
+                )
                 .is_err());
             assert!(g
-                .custom_op(CustomOperation::new(Max {}), vec![i1.clone()])
+                .custom_op(
+                    CustomOperation::new(Max {
+                        signed_comparison: false
+                    }),
+                    vec![i1.clone()]
+                )
                 .is_err());
             Ok(())
         }()
@@ -238,8 +265,18 @@ mod tests {
                 let i1 = g.input(array_type(vec![1, 3, 64], BIT))?;
                 let i2 = g.input(array_type(vec![3, 1, 64], BIT))?;
                 let o = g.create_tuple(vec![
-                    g.custom_op(CustomOperation::new(Min {}), vec![i1.clone(), i2.clone()])?,
-                    g.custom_op(CustomOperation::new(Max {}), vec![i1.clone(), i2.clone()])?,
+                    g.custom_op(
+                        CustomOperation::new(Min {
+                            signed_comparison: false,
+                        }),
+                        vec![i1.clone(), i2.clone()],
+                    )?,
+                    g.custom_op(
+                        CustomOperation::new(Max {
+                            signed_comparison: false,
+                        }),
+                        vec![i1.clone(), i2.clone()],
+                    )?,
                 ])?;
                 g.set_output_node(o)?;
                 g.finalize()?;

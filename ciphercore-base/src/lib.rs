@@ -647,7 +647,7 @@
 //! # let t = array_type(vec![32], BIT);
 //! # let arg1 = graph.input(t.clone()).unwrap();
 //! # let arg2 = graph.input(t).unwrap();
-//! graph.custom_op(CustomOperation::new(Min {}), vec![arg1,arg2]).unwrap();
+//! graph.custom_op(CustomOperation::new(Min {signed_comparison: true}), vec![arg1,arg2]).unwrap();
 //! ```
 //!
 //! The following custom operations are already implemented within CipherCore:
