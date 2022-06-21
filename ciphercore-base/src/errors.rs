@@ -60,6 +60,12 @@ impl From<std::io::Error> for CiphercoreBaseError {
     }
 }
 
+impl From<std::num::TryFromIntError> for CiphercoreBaseError {
+    fn from(err: std::num::TryFromIntError) -> CiphercoreBaseError {
+        runtime_error!("std::num::TryFromIntError {}", err)
+    }
+}
+
 impl From<ShapeError> for CiphercoreBaseError {
     fn from(err: ShapeError) -> CiphercoreBaseError {
         runtime_error!("NDArray shape error: {}", err)

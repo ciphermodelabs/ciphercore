@@ -1,7 +1,8 @@
 use crate::bytes::{add_vectors_u64, subtract_vectors_u64, vec_from_bytes, vec_to_bytes};
 use crate::data_types::{
-    array_type, is_valid_shape, named_tuple_type, scalar_type, tuple_type, vector_type, ArrayShape,
-    ScalarType, Type, BIT, INT16, INT32, INT64, INT8, UINT16, UINT32, UINT64, UINT8,
+    array_type, get_size_in_bits, get_types_vector, is_valid_shape, named_tuple_type, scalar_type,
+    tuple_type, vector_type, ArrayShape, ScalarType, Type, BIT, INT16, INT32, INT64, INT8, UINT16,
+    UINT32, UINT64, UINT8,
 };
 use crate::data_values::Value;
 use crate::errors::Result;
@@ -501,6 +502,58 @@ impl TypedValue {
             }
         } else {
             return Err(runtime_error!("Not a secret-shared type/value"));
+        }
+    }
+    pub fn is_equal(&self, other: &Self) -> Result<bool> {
+        const TWO: u8 = 2;
+        let t = self.t.clone();
+        if other.t != t {
+            return Ok(false);
+        }
+        let type_size_in_bits = get_size_in_bits(t.clone())?;
+        match t {
+            Type::Scalar(_) | Type::Array(_, _) => {
+                let self_bytes = self
+                    .value
+                    .access_bytes(|ref_bytes| Ok(ref_bytes.to_vec()))?;
+                let other_bytes = other
+                    .value
+                    .access_bytes(|ref_bytes| Ok(ref_bytes.to_vec()))?;
+                let value_size_in_bytes = self_bytes.len();
+                let r: u32 = (type_size_in_bits % 8).try_into()?;
+                let mut complete_bytes = value_size_in_bytes;
+                if r != 0 {
+                    complete_bytes -= 1;
+                }
+                for i in 0..complete_bytes {
+                    if self_bytes[i] != other_bytes[i] {
+                        return Ok(false);
+                    }
+                }
+                if self_bytes[value_size_in_bytes - 1] % TWO.pow(r)
+                    != other_bytes[value_size_in_bytes - 1] % TWO.pow(r)
+                {
+                    return Ok(false);
+                }
+                Ok(true)
+            }
+            Type::Vector(_, _) | Type::Tuple(_) | Type::NamedTuple(_) => {
+                let types_vector = get_types_vector(t)?;
+                let self_value_vector = self.value.access_vector(|vec| Ok(vec.clone()))?;
+                let other_value_vector = other.value.access_vector(|vec| Ok(vec.clone()))?;
+                // we are sure that types_vector.len() == self_value_vector.len() == other_value_vector.len()
+                // because in generating TypedValue we recursivly call check_type for all values.
+                for i in 0..types_vector.len() {
+                    let typed_value1 =
+                        TypedValue::new((*types_vector[i]).clone(), self_value_vector[i].clone())?;
+                    let typed_value2 =
+                        TypedValue::new((*types_vector[i]).clone(), other_value_vector[i].clone())?;
+                    if !typed_value1.is_equal(&typed_value2)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
         }
     }
 }
@@ -1069,5 +1122,133 @@ mod tests {
             assert!(TypedValue::from_json(&json::parse(&s)?).is_err());
             Ok(())
         }().unwrap();
+    }
+    #[test]
+    fn test_is_equal() {
+        // two identical integers are equal
+        || -> Result<()> {
+            let t1 = scalar_type(INT8);
+            let t2 = scalar_type(INT8);
+            let v1 = Value::from_bytes(vec![13]);
+            let v2 = Value::from_bytes(vec![13]);
+            let tv1 = TypedValue::new(t1, v1)?;
+            let tv2 = TypedValue::new(t2, v2)?;
+            assert!(tv1.is_equal(&tv2)?);
+            Ok(())
+        }()
+        .unwrap();
+        // two distinct integers are not equal
+        || -> Result<()> {
+            let t1 = scalar_type(INT8);
+            let t2 = scalar_type(INT8);
+            let v1 = Value::from_bytes(vec![11]);
+            let v2 = Value::from_bytes(vec![13]);
+            let tv1 = TypedValue::new(t1, v1)?;
+            let tv2 = TypedValue::new(t2, v2)?;
+            assert!(!tv1.is_equal(&tv2)?);
+            Ok(())
+        }()
+        .unwrap();
+        // integers with different types are not equal
+        || -> Result<()> {
+            let t1 = scalar_type(INT8);
+            let t2 = scalar_type(UINT8);
+            let v1 = Value::from_bytes(vec![13]);
+            let v2 = Value::from_bytes(vec![13]);
+            let tv1 = TypedValue::new(t1, v1)?;
+            let tv2 = TypedValue::new(t2, v2)?;
+            assert!(!tv1.is_equal(&tv2)?);
+            Ok(())
+        }()
+        .unwrap();
+        // identical arrays are eqaul
+        || -> Result<()> {
+            let t1 = array_type(vec![2, 2], BIT);
+            let t2 = array_type(vec![2, 2], BIT);
+            let v1 = Value::from_bytes(vec![13]);
+            let v2 = Value::from_bytes(vec![13]);
+            let tv1 = TypedValue::new(t1, v1)?;
+            let tv2 = TypedValue::new(t2, v2)?;
+            assert!(tv1.is_equal(&tv2)?);
+            Ok(())
+        }()
+        .unwrap();
+        // distinct arrays are eqaul if they are equal up to number of bits in their size
+        || -> Result<()> {
+            let t1 = array_type(vec![2, 2], BIT);
+            let t2 = array_type(vec![2, 2], BIT);
+            let v1 = Value::from_bytes(vec![13]);
+            let v2 = Value::from_bytes(vec![173]);
+            let tv1 = TypedValue::new(t1, v1)?;
+            let tv2 = TypedValue::new(t2, v2)?;
+            assert!(tv1.is_equal(&tv2)?);
+            Ok(())
+        }()
+        .unwrap();
+        // distinct arrays are not eqaul if they are not equal up to number of bits in their size
+        || -> Result<()> {
+            let t1 = array_type(vec![2, 2], BIT);
+            let t2 = array_type(vec![2, 2], BIT);
+            let v1 = Value::from_bytes(vec![13]);
+            let v2 = Value::from_bytes(vec![174]);
+            let tv1 = TypedValue::new(t1, v1)?;
+            let tv2 = TypedValue::new(t2, v2)?;
+            assert!(!tv1.is_equal(&tv2)?);
+            Ok(())
+        }()
+        .unwrap();
+        // Identical tuples are equal
+        || -> Result<()> {
+            let t1 = tuple_type(vec![scalar_type(BIT), scalar_type(INT32)]);
+            let t2 = t1.clone();
+            let v1 = Value::from_vector(vec![
+                Value::from_scalar(0, BIT)?,
+                Value::from_scalar(-73, INT32)?,
+            ]);
+            let v2 = Value::from_vector(vec![
+                Value::from_scalar(0, BIT)?,
+                Value::from_scalar(-73, INT32)?,
+            ]);
+            let tv1 = TypedValue::new(t1, v1)?;
+            let tv2 = TypedValue::new(t2, v2)?;
+            assert!(tv1.is_equal(&tv2)?);
+            Ok(())
+        }()
+        .unwrap();
+        // Identical tuples are equal, elements are compared with type size awareness
+        || -> Result<()> {
+            let t1 = tuple_type(vec![scalar_type(BIT), array_type(vec![5, 2], BIT)]);
+            let t2 = t1.clone();
+            let v1 = Value::from_vector(vec![
+                Value::from_scalar(0, BIT)?,
+                Value::from_bytes(vec![234, 85]),
+            ]);
+            let v2 = Value::from_vector(vec![
+                Value::from_scalar(0, BIT)?,
+                Value::from_bytes(vec![234, 17]),
+            ]);
+            let tv1 = TypedValue::new(t1, v1)?;
+            let tv2 = TypedValue::new(t2, v2)?;
+            assert!(tv1.is_equal(&tv2)?);
+            Ok(())
+        }()
+        .unwrap();
+        || -> Result<()> {
+            let t1 = tuple_type(vec![scalar_type(BIT), array_type(vec![5, 2], BIT)]);
+            let t2 = t1.clone();
+            let v1 = Value::from_vector(vec![
+                Value::from_scalar(0, BIT)?,
+                Value::from_bytes(vec![234, 85]),
+            ]);
+            let v2 = Value::from_vector(vec![
+                Value::from_scalar(0, BIT)?,
+                Value::from_bytes(vec![234, 14]),
+            ]);
+            let tv1 = TypedValue::new(t1, v1)?;
+            let tv2 = TypedValue::new(t2, v2)?;
+            assert!(!tv1.is_equal(&tv2)?);
+            Ok(())
+        }()
+        .unwrap();
     }
 }
