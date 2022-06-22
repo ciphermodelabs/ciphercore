@@ -13,6 +13,8 @@ enum ProxyObject {
     Tuple(Vec<Arc<ProxyObjectWithNode>>),
     Zip(Vec<Arc<ProxyObjectWithNode>>),
     Vector(Vec<Arc<ProxyObjectWithNode>>),
+    A2B(Node),
+    B2A(Node),
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -84,6 +86,32 @@ pub(super) fn optimize_graph_meta_operations(graph: Graph, out_graph: Graph) -> 
                 meta: ProxyObject::ArrayToVector(deps[0].clone()),
                 node: simple_node.clone(),
             }),
+            Operation::A2B => {
+                let mut node = simple_node.clone();
+                if let Some(meta_dep) = &meta_deps[0] {
+                    if let ProxyObject::B2A(binary_node) = &meta_dep.meta {
+                        node = binary_node.clone();
+                    }
+                }
+                Some(ProxyObjectWithNode {
+                    meta: ProxyObject::A2B(deps[0].clone()),
+                    node,
+                })
+            }
+            Operation::B2A(st) => {
+                let mut node = simple_node.clone();
+                if let Some(meta_dep) = &meta_deps[0] {
+                    if let ProxyObject::A2B(arithmetic_node) = &meta_dep.meta {
+                        if st == arithmetic_node.get_type()?.get_scalar_type() {
+                            node = arithmetic_node.clone();
+                        }
+                    }
+                }
+                Some(ProxyObjectWithNode {
+                    meta: ProxyObject::B2A(deps[0].clone()),
+                    node,
+                })
+            }
             Operation::CreateTuple => {
                 let mut computed_elements = vec![];
                 for i in 0..deps.len() {
@@ -270,7 +298,7 @@ fn maybe_vector_get(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data_types::{array_type, scalar_type, UINT64};
+    use crate::data_types::{array_type, scalar_type, BIT, INT64, UINT64};
     use crate::data_values::Value;
     use crate::graphs::contexts_deep_equal;
     use crate::graphs::{create_context, Context};
@@ -636,6 +664,90 @@ mod tests {
             expected_c.finalize()?;
 
             assert!(contexts_deep_equal(new_c, expected_c));
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    #[test]
+    fn test_b2a_a2b() {
+        || -> Result<()> {
+            let c = create_context()?;
+            let g = c.create_graph()?;
+            let i = g.input(array_type(vec![16, 64], BIT))?;
+            i.set_name("Input")?;
+            let a = i.b2a(UINT64)?;
+            let b = a.a2b()?;
+            b.set_as_output()?;
+            g.finalize()?;
+            g.set_as_main()?;
+            c.finalize()?;
+
+            let new_c = optimize_helper(c.clone())?;
+
+            let expected_c = create_context()?;
+            let expected_g = expected_c.create_graph()?;
+            let i = expected_g.input(array_type(vec![16, 64], BIT))?;
+            i.set_name("Input")?;
+            i.set_as_output()?;
+            expected_g.finalize()?;
+            expected_g.set_as_main()?;
+            expected_c.finalize()?;
+
+            assert!(contexts_deep_equal(new_c, expected_c));
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    #[test]
+    fn test_a2b_b2a() {
+        || -> Result<()> {
+            let c = create_context()?;
+            let g = c.create_graph()?;
+            let i = g.input(array_type(vec![16], UINT64))?;
+            i.set_name("Input")?;
+            let a = i.a2b()?;
+            let b = a.b2a(UINT64)?;
+            b.set_as_output()?;
+            g.finalize()?;
+            g.set_as_main()?;
+            c.finalize()?;
+
+            let new_c = optimize_helper(c.clone())?;
+
+            let expected_c = create_context()?;
+            let expected_g = expected_c.create_graph()?;
+            let i = expected_g.input(array_type(vec![16], UINT64))?;
+            i.set_name("Input")?;
+            i.set_as_output()?;
+            expected_g.finalize()?;
+            expected_g.set_as_main()?;
+            expected_c.finalize()?;
+
+            assert!(contexts_deep_equal(new_c, expected_c));
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    #[test]
+    fn test_a2b_b2a_different_type() {
+        || -> Result<()> {
+            let c = create_context()?;
+            let g = c.create_graph()?;
+            let i = g.input(array_type(vec![16], UINT64))?;
+            i.set_name("Input")?;
+            let a = i.a2b()?;
+            let b = a.b2a(INT64)?;
+            b.set_as_output()?;
+            g.finalize()?;
+            g.set_as_main()?;
+            c.finalize()?;
+
+            let new_c = optimize_helper(c.clone())?;
+
+            assert!(contexts_deep_equal(new_c, c));
             Ok(())
         }()
         .unwrap();

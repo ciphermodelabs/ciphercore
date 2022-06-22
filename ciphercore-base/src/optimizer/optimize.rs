@@ -6,6 +6,8 @@ use crate::optimizer::dangling_nodes_optimizer::optimize_graph_dangling_nodes;
 use crate::optimizer::meta_operation_optimizer::optimize_graph_meta_operations;
 use crate::random::PRNG;
 
+use super::duplicates_optimizer::optimize_graph_duplicates;
+
 /// Applies common optimizations to all graphs in the context.
 /// The graphs must be fully inlined.
 /// The primary targets of the optimizations here are to remove inefficiencies
@@ -23,8 +25,12 @@ pub fn optimize_context<T: Evaluator>(context: Context, mut evaluator: T) -> Res
         optimize_graph_meta_operations(const_graph.clone(), meta_graph.clone())?;
         meta_graph.finalize()?;
 
+        let (_dup_context, dup_graph) = graph_in_new_context(graph.clone())?;
+        optimize_graph_duplicates(meta_graph.clone(), dup_graph.clone())?;
+        dup_graph.finalize()?;
+
         let final_graph = add_graph_to_context(output_context.clone(), graph.clone())?;
-        optimize_graph_dangling_nodes(meta_graph.clone(), final_graph.clone())?;
+        optimize_graph_dangling_nodes(dup_graph.clone(), final_graph.clone())?;
         final_graph.finalize()?;
 
         if graph == context.get_main_graph()? {
