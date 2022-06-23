@@ -1,3 +1,5 @@
+use std::ops::Not;
+
 use crate::bytes::{add_vectors_u64, subtract_vectors_u64, vec_from_bytes, vec_to_bytes};
 use crate::data_types::{
     array_type, get_size_in_bits, get_types_vector, is_valid_shape, named_tuple_type, scalar_type,
@@ -8,111 +10,7 @@ use crate::data_values::Value;
 use crate::errors::Result;
 use crate::random::PRNG;
 use json::{object, object::Object, JsonValue};
-
-#[doc(hidden)]
-#[derive(Debug, PartialEq, Eq)]
-pub struct TypedValue {
-    pub value: Value,
-    pub t: Type,
-}
-
-impl TypedValue {
-    #[doc(hidden)]
-    pub fn new(t: Type, value: Value) -> Result<Self> {
-        if !value.check_type(t.clone())? {
-            return Err(runtime_error!("Can't create a typed value"));
-        }
-        Ok(TypedValue { value, t })
-    }
-}
-
-fn get_value(o: &Object) -> Result<&JsonValue> {
-    let v = o
-        .get("value")
-        .ok_or_else(|| runtime_error!("Unknown value"))?;
-    Ok(v)
-}
-
-fn get_shape(j: &JsonValue) -> Result<ArrayShape> {
-    match j {
-        JsonValue::Number(_) => Ok(vec![]),
-        JsonValue::Array(a) => {
-            let mut shapes = vec![];
-            for element in a {
-                shapes.push(get_shape(element)?);
-            }
-            if shapes.is_empty() {
-                return Ok(vec![0]);
-            }
-            for i in 0..shapes.len() {
-                if shapes[i] != shapes[0] {
-                    return Err(runtime_error!("Unbalanced shapes"));
-                }
-            }
-            let mut result = vec![shapes.len() as u64];
-            result.extend(shapes[0].iter());
-            Ok(result)
-        }
-        _ => Err(runtime_error!("Invalid array value")),
-    }
-}
-
-fn flatten_value(j: &JsonValue) -> Result<Vec<JsonValue>> {
-    match j {
-        JsonValue::Number(_) => Ok(vec![j.clone()]),
-        JsonValue::Array(a) => {
-            let mut result = vec![];
-            for element in a {
-                result.extend(flatten_value(element)?.into_iter());
-            }
-            Ok(result)
-        }
-        _ => Err(runtime_error!("Invalid array value")),
-    }
-}
-
-macro_rules! extract_values_aux {
-    ($numbers:ident,$st:ident,$convert:ident) => {{
-        let mut result = vec![];
-        for number in $numbers {
-            let cast_number = number
-                .$convert()
-                .ok_or_else(|| runtime_error!("Unable to cast"))?;
-            result.push(cast_number);
-        }
-        Ok(Value::from_flattened_array(&result, $st)?)
-    }};
-}
-
-fn extract_values(numbers: Vec<JsonValue>, st: ScalarType) -> Result<Value> {
-    match st {
-        BIT | UINT8 => {
-            extract_values_aux!(numbers, st, as_u8)
-        }
-        INT8 => {
-            extract_values_aux!(numbers, st, as_i8)
-        }
-        UINT16 => {
-            extract_values_aux!(numbers, st, as_u16)
-        }
-        INT16 => {
-            extract_values_aux!(numbers, st, as_i16)
-        }
-        UINT32 => {
-            extract_values_aux!(numbers, st, as_u32)
-        }
-        INT32 => {
-            extract_values_aux!(numbers, st, as_i32)
-        }
-        UINT64 => {
-            extract_values_aux!(numbers, st, as_u64)
-        }
-        INT64 => {
-            extract_values_aux!(numbers, st, as_i64)
-        }
-        _ => Err(runtime_error!("Invalid scalar type")),
-    }
-}
+use serde::{Deserialize, Serialize};
 
 macro_rules! to_json_aux {
     ($v:expr, $t:expr, $cnv:ident) => {
@@ -131,143 +29,313 @@ macro_rules! to_json_array_aux {
     };
 }
 
-fn json_reshape(shape: ArrayShape, j: &JsonValue) -> Result<JsonValue> {
-    let e = Err(runtime_error!("Can't JSON-reshape"));
-    if let JsonValue::Array(a) = j {
-        if shape.is_empty() {
-            return Ok(a[0].clone());
-        }
-        if a.len() as u64 % shape[0] == 0 {
-            let chunks = a
-                .chunks_exact(a.len() / shape[0] as usize)
-                .map(Vec::from)
-                .collect::<Vec<Vec<JsonValue>>>();
-            let truncated_shape: Vec<u64> = shape.into_iter().skip(1).collect();
-            let mut result = vec![];
-            for chunk in chunks {
-                result.push(json_reshape(
-                    truncated_shape.clone(),
-                    &JsonValue::from(chunk),
-                )?);
-            }
-            Ok(JsonValue::from(result))
-        } else {
-            e
-        }
-    } else {
-        e
-    }
-}
-
-fn scalar_type_from_json(o: &Object) -> Result<ScalarType> {
-    o.get("type")
-        .ok_or_else(|| runtime_error!("Unknown scalar type"))?
-        .as_str()
-        .ok_or_else(|| runtime_error!("Scalar type is not a string"))?
-        .parse::<ScalarType>()
-}
-
-fn generalized_subtract(v: Value, v0: Value, t: Type) -> Result<Value> {
-    match t {
-        Type::Scalar(st) | Type::Array(_, st) => {
-            let v_raw = v.access_bytes(|bytes| vec_from_bytes(bytes, st.clone()))?;
-            let v0_raw = v0.access_bytes(|bytes| vec_from_bytes(bytes, st.clone()))?;
-            let result = subtract_vectors_u64(&v_raw, &v0_raw, st.get_modulus())?;
-            Ok(Value::from_bytes(vec_to_bytes(&result, st)?))
-        }
-        Type::Tuple(tv) => {
-            let v_raw = v.access_vector(|vector| Ok(vector.clone()))?;
-            let v0_raw = v0.access_vector(|vector| Ok(vector.clone()))?;
-            let mut result = vec![];
-            for i in 0..tv.len() {
-                result.push(generalized_subtract(
-                    v_raw[i].clone(),
-                    v0_raw[i].clone(),
-                    (*tv[i]).clone(),
-                )?);
-            }
-            Ok(Value::from_vector(result))
-        }
-        Type::NamedTuple(tv) => {
-            let v_raw = v.access_vector(|vector| Ok(vector.clone()))?;
-            let v0_raw = v0.access_vector(|vector| Ok(vector.clone()))?;
-            let mut result = vec![];
-            for i in 0..tv.len() {
-                result.push(generalized_subtract(
-                    v_raw[i].clone(),
-                    v0_raw[i].clone(),
-                    (*tv[i].1).clone(),
-                )?);
-            }
-            Ok(Value::from_vector(result))
-        }
-        Type::Vector(len, element_type) => {
-            let v_raw = v.access_vector(|vector| Ok(vector.clone()))?;
-            let v0_raw = v0.access_vector(|vector| Ok(vector.clone()))?;
-            let mut result = vec![];
-            for i in 0..(len as usize) {
-                result.push(generalized_subtract(
-                    v_raw[i].clone(),
-                    v0_raw[i].clone(),
-                    (*element_type).clone(),
-                )?);
-            }
-            Ok(Value::from_vector(result))
-        }
-    }
-}
-
-fn generalized_add(v: Value, v0: Value, t: Type) -> Result<Value> {
-    match t {
-        Type::Scalar(st) | Type::Array(_, st) => {
-            let v_raw = v.access_bytes(|bytes| vec_from_bytes(bytes, st.clone()))?;
-            let v0_raw = v0.access_bytes(|bytes| vec_from_bytes(bytes, st.clone()))?;
-            let result = add_vectors_u64(&v_raw, &v0_raw, st.get_modulus())?;
-            Ok(Value::from_bytes(vec_to_bytes(&result, st)?))
-        }
-        Type::Tuple(tv) => {
-            let v_raw = v.access_vector(|vector| Ok(vector.clone()))?;
-            let v0_raw = v0.access_vector(|vector| Ok(vector.clone()))?;
-            let mut result = vec![];
-            for i in 0..tv.len() {
-                result.push(generalized_add(
-                    v_raw[i].clone(),
-                    v0_raw[i].clone(),
-                    (*tv[i]).clone(),
-                )?);
-            }
-            Ok(Value::from_vector(result))
-        }
-        Type::NamedTuple(tv) => {
-            let v_raw = v.access_vector(|vector| Ok(vector.clone()))?;
-            let v0_raw = v0.access_vector(|vector| Ok(vector.clone()))?;
-            let mut result = vec![];
-            for i in 0..tv.len() {
-                result.push(generalized_add(
-                    v_raw[i].clone(),
-                    v0_raw[i].clone(),
-                    (*tv[i].1).clone(),
-                )?);
-            }
-            Ok(Value::from_vector(result))
-        }
-        Type::Vector(len, element_type) => {
-            let v_raw = v.access_vector(|vector| Ok(vector.clone()))?;
-            let v0_raw = v0.access_vector(|vector| Ok(vector.clone()))?;
-            let mut result = vec![];
-            for i in 0..(len as usize) {
-                result.push(generalized_add(
-                    v_raw[i].clone(),
-                    v0_raw[i].clone(),
-                    (*element_type).clone(),
-                )?);
-            }
-            Ok(Value::from_vector(result))
-        }
-    }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TypedValue {
+    pub value: Value,
+    pub t: Type,
 }
 
 impl TypedValue {
+    /// Creates a typed value from a given type and value.
+    /// Checks that the value is a valid for the given type.
+    /// Note: check might be not sufficient.
+    ///
+    /// # Arguments
+    ///
+    /// `t` - the type
+    /// `value` - the value
+    ///
+    /// # Returns
+    ///
+    /// New typed value constructed from the given type and value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::data_types::{INT32, Type};
+    /// # use ciphercore_base::data_values::Value;
+    /// # use ciphercore_base::typed_value::TypedValue;
+    /// let t = Type::Scalar(INT32);
+    /// let v = TypedValue::new(t.clone(), Value::zero_of_type(t.clone())).unwrap();
+    /// ```
+    pub fn new(t: Type, value: Value) -> Result<Self> {
+        let type_check = value.check_type(t.clone());
+        match type_check {
+            Ok(flag) => {
+                if !flag {
+                    return Err(runtime_error!("Value doesn't match type"));
+                }
+            }
+            Err(_) => {
+                return Err(runtime_error!("Cannot check type: {:?}", type_check));
+            }
+        };
+        Ok(TypedValue { value, t })
+    }
+
+    /// Generates a typed value of a given type with all-zero bytes.
+    ///
+    /// # Arguments
+    ///
+    /// `t` - the type of a new value
+    ///
+    /// # Returns
+    ///
+    /// "Zero" typed value of type `t`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::data_types::{array_type, INT32};
+    /// # use ciphercore_base::typed_value::TypedValue;
+    /// # use ndarray::array;
+    /// let v = TypedValue::zero_of_type(array_type(vec![2, 2], INT32));
+    /// let a = v.value.to_ndarray_i32(array_type(vec![2, 2], INT32)).unwrap();
+    /// assert_eq!(a, array![[0, 0], [0, 0]].into_dyn());
+    /// ```
+    pub fn zero_of_type(t: Type) -> Self {
+        TypedValue {
+            value: Value::zero_of_type(t.clone()),
+            t,
+        }
+    }
+
+    /// Constructs a typed value from a given bit or integer scalar.
+    ///
+    /// # Arguments
+    ///
+    /// * `x` - scalar to be converted to a value, can be of any standard integer type
+    /// * `st` - scalar type corresponding to `x`
+    ///
+    /// # Returns
+    ///
+    /// New typed value constructed from `x`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::data_types::INT32;
+    /// # use ciphercore_base::typed_value::TypedValue;
+    /// let v = TypedValue::from_scalar(-123456, INT32).unwrap();
+    /// v.value.access_bytes(|bytes| {
+    ///     assert_eq!(*bytes, vec![192, 29, 254, 255]);
+    ///     Ok(())
+    /// }).unwrap();
+    /// ```
+    pub fn from_scalar<T: TryInto<u64> + Not<Output = T> + TryInto<u8> + Copy>(
+        x: T,
+        st: ScalarType,
+    ) -> Result<Self> {
+        Ok(TypedValue {
+            t: Type::Scalar(st.clone()),
+            value: Value::from_scalar(x, st)?,
+        })
+    }
+
+    /// Converts `self` to a scalar if it is a byte vector, then casts the result to `u64`.
+    ///
+    /// # Arguments
+    ///
+    /// `st` - scalar type used to interpret `self`
+    ///
+    /// # Result
+    ///
+    /// Resulting scalar cast to `u64`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::data_types::INT32;
+    /// # use ciphercore_base::typed_value::TypedValue;
+    /// let v = TypedValue::from_scalar(-123456, INT32).unwrap();
+    /// assert_eq!(v.to_u64().unwrap(), -123456i32 as u32 as u64);
+    /// ```
+    pub fn to_u64(&self) -> Result<u64> {
+        if let Type::Scalar(st) = &self.t {
+            return Ok(self.value.to_u64(st.clone())?);
+        } else {
+            return Err(runtime_error!("Cannot convert type {:?} to u64", self.t));
+        }
+    }
+
+    /// Constructs a typed value from a vector of other typed values.
+    /// All typed values must have the same type.
+    ///
+    /// # Arguments
+    ///
+    /// `v` - vector of typed values
+    ///
+    /// # Returns
+    ///
+    /// New typed value constructed from `v`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::data_types::INT32;
+    /// # use ciphercore_base::typed_value::TypedValue;
+    /// let v = TypedValue::from_vector(
+    ///     vec![
+    ///         TypedValue::from_scalar(1, INT32).unwrap(),
+    ///         TypedValue::from_scalar(423532, INT32).unwrap(),
+    ///         TypedValue::from_scalar(-91, INT32).unwrap()]);
+    /// ```
+    pub fn from_vector(v: Vec<TypedValue>) -> Result<Self> {
+        if v.len() < 1 {
+            return Err(runtime_error!(
+                "Can not distinguish the type: vector is empty"
+            ));
+        }
+        let val_type = v[0].t.clone();
+        let t = vector_type(v.len() as u64, val_type.clone());
+        let mut val_vec = vec![];
+        for val in v {
+            if !val.t.eq(&val_type) {
+                return Err(runtime_error!(
+                    "Can not distinguish the type: vector has different types"
+                ));
+            }
+            val_vec.push(val.value);
+        }
+        Ok(TypedValue {
+            t,
+            value: Value::from_vector(val_vec),
+        })
+    }
+    /// Converts `self` to a vector of values or return an error if `self` is a byte vector.
+    ///
+    /// # Returns
+    ///
+    /// Extracted vector of values
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::data_values::Value;
+    /// let v = Value::from_vector(
+    ///     vec![
+    ///         Value::from_vector(vec![]),
+    ///         Value::from_bytes(vec![1, 2, 3])]);
+    /// let vv = v.to_vector().unwrap();
+    /// assert_eq!(vv.len(), 2);
+    /// vv[0].access_vector(|v| {
+    ///     assert_eq!(*v, Vec::<Value>::new());
+    ///     Ok(())
+    /// }).unwrap();
+    /// vv[1].access_bytes(|bytes| {
+    ///     assert_eq!(*bytes, vec![1, 2, 3]);
+    ///     Ok(())
+    /// }).unwrap();
+    /// ```
+    pub fn to_vector(&self) -> Result<Vec<TypedValue>> {
+        let vec_val = self.value.to_vector()?;
+        let mut res = vec![];
+        match &self.t {
+            Type::Tuple(ts) => {
+                if ts.len() != vec_val.len() {
+                    return Err(runtime_error!("Inconsistent number of elements!"));
+                }
+                for (t, value) in ts.iter().zip(vec_val.iter()) {
+                    res.push(TypedValue::new(t.as_ref().clone(), value.clone())?);
+                }
+                Ok(res)
+            }
+            Type::Vector(n, t) => {
+                if *n != (vec_val.len() as u64) {
+                    return Err(runtime_error!("Inconsistent number of elements!"));
+                }
+                let mut res = vec![];
+                for val in vec_val {
+                    res.push(TypedValue::new(t.as_ref().clone(), val)?);
+                }
+                Ok(res)
+            }
+            _ => {
+                return Err(runtime_error!("Not a vector!"));
+            }
+        }
+    }
+
+    /// Constructs a typed value from a flattened bit or integer array.
+    ///
+    /// # Arguments
+    ///
+    /// * `x` - 1d array to be converted to a typed value, can have entries of any standard integer type
+    /// * `st` - scalar type corresponding to the entries of `x`
+    ///
+    /// # Returns
+    ///
+    /// New typed value constructed from `x`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::data_types::BIT;
+    /// # use ciphercore_base::typed_value::TypedValue;
+    /// let v = TypedValue::from_flattened_array(&[0, 1, 1, 0, 1, 0, 0, 1], BIT).unwrap();
+    /// v.value.access_bytes(|bytes| {
+    ///     assert_eq!(*bytes, vec![150]);
+    ///     Ok(())
+    /// }).unwrap();
+    /// assert!(v.t.is_array());
+    /// assert_eq!(v.t.get_dimensions()[0], 8);
+    /// ```
+    pub fn from_flattened_array<T: TryInto<u64> + Not<Output = T> + TryInto<u8> + Copy>(
+        x: &[T],
+        st: ScalarType,
+    ) -> Result<Self> {
+        Ok(TypedValue {
+            t: array_type(vec![x.len() as u64], st.clone()),
+            value: Value::from_flattened_array(x, st.clone())?,
+        })
+    }
+
+    /// Converts `self` to a flattened array if it is a byte vector, then cast the array entries to `i64`.
+    ///
+    /// # Arguments
+    ///
+    /// `t` - array type used to interpret `self`
+    ///
+    /// # Result
+    ///
+    /// Resulting flattened array with entries cast to `i64`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::data_values::Value;
+    /// # use ciphercore_base::data_types::{array_type, INT32};
+    /// let v = Value::from_flattened_array(&[-123, 123], INT32).unwrap();
+    /// let a = v.to_flattened_array_i64(array_type(vec![2], INT32)).unwrap();
+    /// assert_eq!(a, vec![-123i32 as u32 as i64, 123i32 as u32 as i64]);
+    /// ```
+    pub fn to_flattened_array_i64(&self) -> Result<Vec<i64>> {
+        self.value.to_flattened_array_i64(self.t.clone())
+    }
+
+    /// Converts `self` to a flattened array if it is a byte vector, then cast the array entries to `u64`.
+    ///
+    /// # Arguments
+    ///
+    /// `t` - array type used to interpret `self`
+    ///
+    /// # Result
+    ///
+    /// Resulting flattened array with entries cast to `u64`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::data_values::Value;
+    /// # use ciphercore_base::data_types::{array_type, INT32};
+    /// let v = Value::from_flattened_array(&[-123, 123], INT32).unwrap();
+    /// let a = v.to_flattened_array_u64(array_type(vec![2], INT32)).unwrap();
+    /// assert_eq!(a, vec![-123i32 as u32 as u64, 123i32 as u32 as u64]);
+    /// ```
+    pub fn to_flattened_array_u64(&self) -> Result<Vec<u64>> {
+        self.value.to_flattened_array_u64(self.t.clone())
+    }
+
     pub fn from_json(j: &JsonValue) -> Result<Self> {
         if let JsonValue::Object(o) = j {
             let kind = o
@@ -472,6 +540,36 @@ impl TypedValue {
     }
 
     pub fn secret_share(&self, prng: &mut PRNG) -> Result<TypedValue> {
+        let vals = self.shard_to_shares(prng)?;
+        Ok(TypedValue {
+            t: tuple_type(vec![self.t.clone(), self.t.clone(), self.t.clone()]),
+            value: Value::from_vector(vals),
+        })
+    }
+
+    pub fn get_secret_shares(&self, prng: &mut PRNG) -> Result<Vec<TypedValue>> {
+        let v = self.shard_to_shares(prng)?;
+        let mut garbage = vec![];
+        for _ in 0..3 {
+            garbage.push(prng.get_random_value(self.t.clone())?);
+        }
+        Ok(vec![
+            TypedValue {
+                t: tuple_type(vec![self.t.clone(), self.t.clone(), self.t.clone()]),
+                value: Value::from_vector(vec![v[0].clone(), v[1].clone(), garbage[2].clone()]),
+            },
+            TypedValue {
+                t: tuple_type(vec![self.t.clone(), self.t.clone(), self.t.clone()]),
+                value: Value::from_vector(vec![garbage[0].clone(), v[1].clone(), v[2].clone()]),
+            },
+            TypedValue {
+                t: tuple_type(vec![self.t.clone(), self.t.clone(), self.t.clone()]),
+                value: Value::from_vector(vec![v[0].clone(), garbage[1].clone(), v[2].clone()]),
+            },
+        ])
+    }
+
+    pub(self) fn shard_to_shares(&self, prng: &mut PRNG) -> Result<Vec<Value>> {
         let v0 = prng.get_random_value(self.t.clone())?;
         let v1 = prng.get_random_value(self.t.clone())?;
         let v2 = generalized_subtract(
@@ -479,10 +577,7 @@ impl TypedValue {
             v1.clone(),
             self.t.clone(),
         )?;
-        Ok(TypedValue {
-            t: tuple_type(vec![self.t.clone(), self.t.clone(), self.t.clone()]),
-            value: Value::from_vector(vec![v0, v1, v2]),
-        })
+        Ok(vec![v0, v1, v2])
     }
 
     pub fn secret_share_reveal(&self) -> Result<TypedValue> {
@@ -504,6 +599,7 @@ impl TypedValue {
             return Err(runtime_error!("Not a secret-shared type/value"));
         }
     }
+
     pub fn is_equal(&self, other: &Self) -> Result<bool> {
         const TWO: u8 = 2;
         let t = self.t.clone();
@@ -554,6 +650,230 @@ impl TypedValue {
                 }
                 Ok(true)
             }
+        }
+    }
+}
+
+fn get_value(o: &Object) -> Result<&JsonValue> {
+    let v = o
+        .get("value")
+        .ok_or_else(|| runtime_error!("Unknown value"))?;
+    Ok(v)
+}
+
+fn get_shape(j: &JsonValue) -> Result<ArrayShape> {
+    match j {
+        JsonValue::Number(_) => Ok(vec![]),
+        JsonValue::Array(a) => {
+            let mut shapes = vec![];
+            for element in a {
+                shapes.push(get_shape(element)?);
+            }
+            if shapes.is_empty() {
+                return Ok(vec![0]);
+            }
+            for i in 0..shapes.len() {
+                if shapes[i] != shapes[0] {
+                    return Err(runtime_error!("Unbalanced shapes"));
+                }
+            }
+            let mut result = vec![shapes.len() as u64];
+            result.extend(shapes[0].iter());
+            Ok(result)
+        }
+        _ => Err(runtime_error!("Invalid array value")),
+    }
+}
+
+fn flatten_value(j: &JsonValue) -> Result<Vec<JsonValue>> {
+    match j {
+        JsonValue::Number(_) => Ok(vec![j.clone()]),
+        JsonValue::Array(a) => {
+            let mut result = vec![];
+            for element in a {
+                result.extend(flatten_value(element)?.into_iter());
+            }
+            Ok(result)
+        }
+        _ => Err(runtime_error!("Invalid array value")),
+    }
+}
+
+macro_rules! extract_values_aux {
+    ($numbers:ident,$st:ident,$convert:ident) => {{
+        let mut result = vec![];
+        for number in $numbers {
+            let cast_number = number
+                .$convert()
+                .ok_or_else(|| runtime_error!("Unable to cast"))?;
+            result.push(cast_number);
+        }
+        Ok(Value::from_flattened_array(&result, $st)?)
+    }};
+}
+
+fn extract_values(numbers: Vec<JsonValue>, st: ScalarType) -> Result<Value> {
+    match st {
+        BIT | UINT8 => {
+            extract_values_aux!(numbers, st, as_u8)
+        }
+        INT8 => {
+            extract_values_aux!(numbers, st, as_i8)
+        }
+        UINT16 => {
+            extract_values_aux!(numbers, st, as_u16)
+        }
+        INT16 => {
+            extract_values_aux!(numbers, st, as_i16)
+        }
+        UINT32 => {
+            extract_values_aux!(numbers, st, as_u32)
+        }
+        INT32 => {
+            extract_values_aux!(numbers, st, as_i32)
+        }
+        UINT64 => {
+            extract_values_aux!(numbers, st, as_u64)
+        }
+        INT64 => {
+            extract_values_aux!(numbers, st, as_i64)
+        }
+        _ => Err(runtime_error!("Invalid scalar type")),
+    }
+}
+
+fn json_reshape(shape: ArrayShape, j: &JsonValue) -> Result<JsonValue> {
+    let e = Err(runtime_error!("Can't JSON-reshape"));
+    if let JsonValue::Array(a) = j {
+        if shape.is_empty() {
+            return Ok(a[0].clone());
+        }
+        if a.len() as u64 % shape[0] == 0 {
+            let chunks = a
+                .chunks_exact(a.len() / shape[0] as usize)
+                .map(Vec::from)
+                .collect::<Vec<Vec<JsonValue>>>();
+            let truncated_shape: Vec<u64> = shape.into_iter().skip(1).collect();
+            let mut result = vec![];
+            for chunk in chunks {
+                result.push(json_reshape(
+                    truncated_shape.clone(),
+                    &JsonValue::from(chunk),
+                )?);
+            }
+            Ok(JsonValue::from(result))
+        } else {
+            e
+        }
+    } else {
+        e
+    }
+}
+
+fn scalar_type_from_json(o: &Object) -> Result<ScalarType> {
+    o.get("type")
+        .ok_or_else(|| runtime_error!("Unknown scalar type"))?
+        .as_str()
+        .ok_or_else(|| runtime_error!("Scalar type is not a string"))?
+        .parse::<ScalarType>()
+}
+
+fn generalized_subtract(v: Value, v0: Value, t: Type) -> Result<Value> {
+    match t {
+        Type::Scalar(st) | Type::Array(_, st) => {
+            let v_raw = v.access_bytes(|bytes| vec_from_bytes(bytes, st.clone()))?;
+            let v0_raw = v0.access_bytes(|bytes| vec_from_bytes(bytes, st.clone()))?;
+            let result = subtract_vectors_u64(&v_raw, &v0_raw, st.get_modulus())?;
+            Ok(Value::from_bytes(vec_to_bytes(&result, st)?))
+        }
+        Type::Tuple(tv) => {
+            let v_raw = v.access_vector(|vector| Ok(vector.clone()))?;
+            let v0_raw = v0.access_vector(|vector| Ok(vector.clone()))?;
+            let mut result = vec![];
+            for i in 0..tv.len() {
+                result.push(generalized_subtract(
+                    v_raw[i].clone(),
+                    v0_raw[i].clone(),
+                    (*tv[i]).clone(),
+                )?);
+            }
+            Ok(Value::from_vector(result))
+        }
+        Type::NamedTuple(tv) => {
+            let v_raw = v.access_vector(|vector| Ok(vector.clone()))?;
+            let v0_raw = v0.access_vector(|vector| Ok(vector.clone()))?;
+            let mut result = vec![];
+            for i in 0..tv.len() {
+                result.push(generalized_subtract(
+                    v_raw[i].clone(),
+                    v0_raw[i].clone(),
+                    (*tv[i].1).clone(),
+                )?);
+            }
+            Ok(Value::from_vector(result))
+        }
+        Type::Vector(len, element_type) => {
+            let v_raw = v.access_vector(|vector| Ok(vector.clone()))?;
+            let v0_raw = v0.access_vector(|vector| Ok(vector.clone()))?;
+            let mut result = vec![];
+            for i in 0..(len as usize) {
+                result.push(generalized_subtract(
+                    v_raw[i].clone(),
+                    v0_raw[i].clone(),
+                    (*element_type).clone(),
+                )?);
+            }
+            Ok(Value::from_vector(result))
+        }
+    }
+}
+
+fn generalized_add(v: Value, v0: Value, t: Type) -> Result<Value> {
+    match t {
+        Type::Scalar(st) | Type::Array(_, st) => {
+            let v_raw = v.access_bytes(|bytes| vec_from_bytes(bytes, st.clone()))?;
+            let v0_raw = v0.access_bytes(|bytes| vec_from_bytes(bytes, st.clone()))?;
+            let result = add_vectors_u64(&v_raw, &v0_raw, st.get_modulus())?;
+            Ok(Value::from_bytes(vec_to_bytes(&result, st)?))
+        }
+        Type::Tuple(tv) => {
+            let v_raw = v.access_vector(|vector| Ok(vector.clone()))?;
+            let v0_raw = v0.access_vector(|vector| Ok(vector.clone()))?;
+            let mut result = vec![];
+            for i in 0..tv.len() {
+                result.push(generalized_add(
+                    v_raw[i].clone(),
+                    v0_raw[i].clone(),
+                    (*tv[i]).clone(),
+                )?);
+            }
+            Ok(Value::from_vector(result))
+        }
+        Type::NamedTuple(tv) => {
+            let v_raw = v.access_vector(|vector| Ok(vector.clone()))?;
+            let v0_raw = v0.access_vector(|vector| Ok(vector.clone()))?;
+            let mut result = vec![];
+            for i in 0..tv.len() {
+                result.push(generalized_add(
+                    v_raw[i].clone(),
+                    v0_raw[i].clone(),
+                    (*tv[i].1).clone(),
+                )?);
+            }
+            Ok(Value::from_vector(result))
+        }
+        Type::Vector(len, element_type) => {
+            let v_raw = v.access_vector(|vector| Ok(vector.clone()))?;
+            let v0_raw = v0.access_vector(|vector| Ok(vector.clone()))?;
+            let mut result = vec![];
+            for i in 0..(len as usize) {
+                result.push(generalized_add(
+                    v_raw[i].clone(),
+                    v0_raw[i].clone(),
+                    (*element_type).clone(),
+                )?);
+            }
+            Ok(Value::from_vector(result))
         }
     }
 }
@@ -766,6 +1086,33 @@ mod tests {
                     .secret_share_reveal()
                     .is_err()
             );
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    #[test]
+    fn test_get_secret_shares() {
+        || -> Result<()> {
+            let mut prng = PRNG::new(None)?;
+            let data = vec![12, 34, 56];
+            let value = TypedValue::from_flattened_array(&data, UINT64)?;
+            let shares = value.get_secret_shares(&mut prng)?;
+            let shares0 = shares[0].to_vector()?;
+            let shares1 = shares[1].to_vector()?;
+            let shares2 = shares[2].to_vector()?;
+            assert_eq!(shares0[0], shares2[0]);
+            assert_eq!(shares0[1], shares1[1]);
+            assert_eq!(shares1[2], shares2[2]);
+            let v0 = shares0[0].to_flattened_array_u64()?;
+            let v1 = shares1[1].to_flattened_array_u64()?;
+            let v2 = shares2[2].to_flattened_array_u64()?;
+            let new_data = add_vectors_u64(
+                &add_vectors_u64(&v0, &v1, UINT32.get_modulus())?,
+                &v2,
+                UINT32.get_modulus(),
+            )?;
+            assert_eq!(new_data, data);
             Ok(())
         }()
         .unwrap();
@@ -1250,5 +1597,109 @@ mod tests {
             Ok(())
         }()
         .unwrap();
+    }
+    #[test]
+    fn test_new() {
+        let t0 = Type::Scalar(INT32);
+        let t1 = Type::Scalar(UINT32);
+        let t2 = Type::Scalar(INT8);
+        // Ok cases:
+        assert!(TypedValue::new(t0.clone(), Value::zero_of_type(t0.clone())).is_ok());
+        assert!(TypedValue::new(t0.clone(), Value::zero_of_type(t1.clone())).is_ok());
+        assert!(TypedValue::new(t1.clone(), Value::zero_of_type(t0.clone())).is_ok());
+        // Err cases:
+        assert!(TypedValue::new(t0.clone(), Value::zero_of_type(t2.clone())).is_err());
+        assert!(TypedValue::new(t2.clone(), Value::zero_of_type(t0.clone())).is_err());
+    }
+    #[test]
+    fn test_zero_of_type() {
+        let types = vec![
+            scalar_type(BIT),
+            scalar_type(INT32),
+            scalar_type(UINT64),
+            array_type(vec![2, 3], BIT),
+            array_type(vec![1, 7], INT32),
+            array_type(vec![10, 10], UINT64),
+            tuple_type(vec![]),
+            tuple_type(vec![scalar_type(BIT), scalar_type(BIT)]),
+            tuple_type(vec![scalar_type(INT32), scalar_type(BIT)]),
+            tuple_type(vec![tuple_type(vec![]), array_type(vec![5, 5], INT32)]),
+            vector_type(10, tuple_type(vec![])),
+            vector_type(
+                10,
+                tuple_type(vec![vector_type(5, scalar_type(INT32)), scalar_type(BIT)]),
+            ),
+            named_tuple_type(vec![
+                ("field 1".to_string(), scalar_type(BIT)),
+                ("field 2".to_string(), scalar_type(INT32)),
+            ]),
+        ];
+        for t in types {
+            let v = TypedValue::zero_of_type(t.clone());
+            assert_eq!(t, v.t);
+            assert!(v.value.check_type(v.t.clone()).unwrap());
+        }
+    }
+    #[test]
+    fn test_extract_scalar_bit() {
+        let v = TypedValue::from_scalar(1, BIT).unwrap();
+        let result = v.to_u64().unwrap();
+        assert_eq!(result, 1);
+    }
+    #[test]
+    fn test_create_from_scalar() {
+        assert_eq!(
+            TypedValue::from_scalar(73, UINT64)
+                .unwrap()
+                .to_u64()
+                .unwrap(),
+            73
+        );
+        assert_eq!(
+            TypedValue::from_scalar(73, UINT32)
+                .unwrap()
+                .to_u64()
+                .unwrap(),
+            73
+        );
+        assert_eq!(
+            TypedValue::from_scalar(-73, INT32)
+                .unwrap()
+                .to_u64()
+                .unwrap(),
+            4294967223
+        );
+    }
+    #[test]
+    fn test_create_from_flattened_array() {
+        let x = vec![0, 1, 1, 0, 1, 0, 0, 1];
+        let v = TypedValue::from_flattened_array(&x, BIT).unwrap();
+        v.value
+            .access_bytes(|bytes| {
+                assert_eq!(*bytes, vec![150]);
+                Ok(())
+            })
+            .unwrap();
+        assert!(v.t.is_array());
+        assert_eq!(v.t.get_dimensions()[0], 8);
+        assert_eq!(x, v.to_flattened_array_u64().unwrap());
+    }
+    #[test]
+    fn test_create_from_vector() {
+        assert!(TypedValue::from_vector(vec![
+            TypedValue::from_scalar(0, BIT).unwrap(),
+            TypedValue::from_scalar(73, INT32).unwrap(),
+        ])
+        .is_err());
+
+        let v = TypedValue::from_vector(vec![
+            TypedValue::from_scalar(0, INT32).unwrap(),
+            TypedValue::from_scalar(73, INT32).unwrap(),
+        ])
+        .unwrap();
+        let entries = v.to_vector().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].to_u64().unwrap(), 0);
+        assert_eq!(entries[1].to_u64().unwrap(), 73);
     }
 }

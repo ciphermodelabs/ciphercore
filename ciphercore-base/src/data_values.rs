@@ -1,4 +1,4 @@
-//! Definition of the [Value] struct and related functions, which handle data values within CipherCore.
+// ! Definition of the [Value] struct and related functions, which handle data values within CipherCore.
 use atomic_refcell::AtomicRefCell;
 
 use std::convert::TryInto;
@@ -10,7 +10,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::bytes::{vec_from_bytes, vec_to_bytes};
-use crate::data_types::{get_size_in_bits, get_types_vector, ScalarType, Type, BIT};
+use crate::data_types::{get_size_in_bits, get_types_vector, ScalarType, Type, BIT, array_type};
 use crate::errors::Result;
 
 use crate::version::{VersionedData, DATA_VERSION};
@@ -350,6 +350,24 @@ impl Value {
     /// ```
     pub fn to_u8(&self, st: ScalarType) -> Result<u8> {
         Ok(self.to_u64(st)? as u8)
+    }
+
+    /// Converts `self` to a scalar if it is a byte vector, then casts the result to `bool`.
+    ///
+    /// # Result
+    ///
+    /// Resulting scalar cast to `bool`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::data_values::Value;
+    /// # use ciphercore_base::data_types::UINT8;
+    /// let v = Value::from_scalar(156, UINT8).unwrap();
+    /// assert_eq!(v.to_bit().unwrap(), false);
+    /// ```
+    pub fn to_bit(&self) -> Result<bool> {
+        Ok(self.to_flattened_array_u8(array_type(vec![1], BIT))?[0] != 0)
     }
 
     /// Converts `self` to a scalar if it is a byte vector, then casts the result to `i8`.
@@ -1671,6 +1689,9 @@ mod tests {
             assert_eq!(v.to_i32(INT32)?, (-123456i32) as i32);
             assert_eq!(v.to_u64(INT32)?, 4294843840u64);
             assert_eq!(v.to_i64(INT32)?, 4294843840i64);
+            
+            assert_eq!(Value::from_scalar(156, UINT8)?.to_bit()?, false);
+            assert_eq!(Value::from_scalar(157, UINT8)?.to_bit()?, true);
             Ok(())
         }()
         .unwrap();
