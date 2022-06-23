@@ -152,9 +152,9 @@ impl TypedValue {
     /// ```
     pub fn to_u64(&self) -> Result<u64> {
         if let Type::Scalar(st) = &self.t {
-            return Ok(self.value.to_u64(st.clone())?);
+            Ok(self.value.to_u64(st.clone())?)
         } else {
-            return Err(runtime_error!("Cannot convert type {:?} to u64", self.t));
+            Err(runtime_error!("Cannot convert type {:?} to u64", self.t))
         }
     }
 
@@ -181,7 +181,7 @@ impl TypedValue {
     ///         TypedValue::from_scalar(-91, INT32).unwrap()]);
     /// ```
     pub fn from_vector(v: Vec<TypedValue>) -> Result<Self> {
-        if v.len() < 1 {
+        if v.is_empty() {
             return Err(runtime_error!(
                 "Can not distinguish the type: vector is empty"
             ));
@@ -286,7 +286,7 @@ impl TypedValue {
     ) -> Result<Self> {
         Ok(TypedValue {
             t: array_type(vec![x.len() as u64], st.clone()),
-            value: Value::from_flattened_array(x, st.clone())?,
+            value: Value::from_flattened_array(x, st)?,
         })
     }
 

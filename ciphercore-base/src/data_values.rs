@@ -1,4 +1,4 @@
-// ! Definition of the [Value] struct and related functions, which handle data values within CipherCore.
+//! Definition of the [Value] struct and related functions, which handle data values within CipherCore.
 use atomic_refcell::AtomicRefCell;
 
 use std::convert::TryInto;
