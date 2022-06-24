@@ -10,7 +10,7 @@ use crate::data_values::Value;
 use crate::errors::Result;
 use crate::random::PRNG;
 use json::{object, object::Object, JsonValue};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 macro_rules! to_json_aux {
     ($v:expr, $t:expr, $cnv:ident) => {
@@ -29,10 +29,89 @@ macro_rules! to_json_array_aux {
     };
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypedValue {
     pub value: Value,
     pub t: Type,
+}
+
+impl Serialize for TypedValue {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let v = self.to_json().map_err(serde::ser::Error::custom)?;
+        v.to_string().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for TypedValue {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<TypedValue, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        TypedValue::from_json(&json::parse(&s).map_err(serde::de::Error::custom)?)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+trait ToNdarray<T> {
+    fn to_ndarray(&self) -> Result<ndarray::ArrayD<T>>;
+}
+
+impl ToNdarray<bool> for TypedValue {
+    fn to_ndarray(&self) -> Result<ndarray::ArrayD<bool>> {
+        self.value.to_ndarray_bool(self.t.clone())
+    }
+}
+
+impl ToNdarray<u8> for TypedValue {
+    fn to_ndarray(&self) -> Result<ndarray::ArrayD<u8>> {
+        self.value.to_ndarray_u8(self.t.clone())
+    }
+}
+
+impl ToNdarray<u16> for TypedValue {
+    fn to_ndarray(&self) -> Result<ndarray::ArrayD<u16>> {
+        self.value.to_ndarray_u16(self.t.clone())
+    }
+}
+
+impl ToNdarray<u32> for TypedValue {
+    fn to_ndarray(&self) -> Result<ndarray::ArrayD<u32>> {
+        self.value.to_ndarray_u32(self.t.clone())
+    }
+}
+
+impl ToNdarray<u64> for TypedValue {
+    fn to_ndarray(&self) -> Result<ndarray::ArrayD<u64>> {
+        self.value.to_ndarray_u64(self.t.clone())
+    }
+}
+
+impl ToNdarray<i8> for TypedValue {
+    fn to_ndarray(&self) -> Result<ndarray::ArrayD<i8>> {
+        self.value.to_ndarray_i8(self.t.clone())
+    }
+}
+
+impl ToNdarray<i16> for TypedValue {
+    fn to_ndarray(&self) -> Result<ndarray::ArrayD<i16>> {
+        self.value.to_ndarray_i16(self.t.clone())
+    }
+}
+
+impl ToNdarray<i32> for TypedValue {
+    fn to_ndarray(&self) -> Result<ndarray::ArrayD<i32>> {
+        self.value.to_ndarray_i32(self.t.clone())
+    }
+}
+
+impl ToNdarray<i64> for TypedValue {
+    fn to_ndarray(&self) -> Result<ndarray::ArrayD<i64>> {
+        self.value.to_ndarray_i64(self.t.clone())
+    }
 }
 
 impl TypedValue {
@@ -255,85 +334,40 @@ impl TypedValue {
             }
         }
     }
-
-    /// Constructs a typed value from a flattened bit or integer array.
+    
+    /// Constructs a typed value from a multi-dimensional bit or integer array.
     ///
     /// # Arguments
     ///
-    /// * `x` - 1d array to be converted to a typed value, can have entries of any standard integer type
+    /// * `x` - array to be converted to a typed value, can have entries of any standard integer type
     /// * `st` - scalar type corresponding to the entries of `x`
     ///
     /// # Returns
     ///
-    /// New typed value constructed from `x`
+    /// New value constructed from `x`
     ///
     /// # Examples
     ///
     /// ```
     /// # use ciphercore_base::data_types::BIT;
     /// # use ciphercore_base::typed_value::TypedValue;
-    /// let v = TypedValue::from_flattened_array(&[0, 1, 1, 0, 1, 0, 0, 1], BIT).unwrap();
+    /// # use ndarray::array;
+    /// let a = array![[false, true, true, false], [true, false, false, true]].into_dyn();
+    /// let v = TypedValue::from_ndarray(a, BIT).unwrap();
     /// v.value.access_bytes(|bytes| {
     ///     assert_eq!(*bytes, vec![150]);
     ///     Ok(())
     /// }).unwrap();
-    /// assert!(v.t.is_array());
-    /// assert_eq!(v.t.get_dimensions()[0], 8);
     /// ```
-    pub fn from_flattened_array<T: TryInto<u64> + Not<Output = T> + TryInto<u8> + Copy>(
-        x: &[T],
+    pub fn from_ndarray<T: TryInto<u64> + Not<Output = T> + TryInto<u8> + Copy>(
+        a: ndarray::ArrayD<T>,
         st: ScalarType,
     ) -> Result<Self> {
+        let t = array_type(a.shape().iter().map(|x| *x as u64).collect(), st.clone());
         Ok(TypedValue {
-            t: array_type(vec![x.len() as u64], st.clone()),
-            value: Value::from_flattened_array(x, st)?,
+            t,
+            value: Value::from_ndarray(a, st)?,
         })
-    }
-
-    /// Converts `self` to a flattened array if it is a byte vector, then cast the array entries to `i64`.
-    ///
-    /// # Arguments
-    ///
-    /// `t` - array type used to interpret `self`
-    ///
-    /// # Result
-    ///
-    /// Resulting flattened array with entries cast to `i64`
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use ciphercore_base::data_values::Value;
-    /// # use ciphercore_base::data_types::{array_type, INT32};
-    /// let v = Value::from_flattened_array(&[-123, 123], INT32).unwrap();
-    /// let a = v.to_flattened_array_i64(array_type(vec![2], INT32)).unwrap();
-    /// assert_eq!(a, vec![-123i32 as u32 as i64, 123i32 as u32 as i64]);
-    /// ```
-    pub fn to_flattened_array_i64(&self) -> Result<Vec<i64>> {
-        self.value.to_flattened_array_i64(self.t.clone())
-    }
-
-    /// Converts `self` to a flattened array if it is a byte vector, then cast the array entries to `u64`.
-    ///
-    /// # Arguments
-    ///
-    /// `t` - array type used to interpret `self`
-    ///
-    /// # Result
-    ///
-    /// Resulting flattened array with entries cast to `u64`
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use ciphercore_base::data_values::Value;
-    /// # use ciphercore_base::data_types::{array_type, INT32};
-    /// let v = Value::from_flattened_array(&[-123, 123], INT32).unwrap();
-    /// let a = v.to_flattened_array_u64(array_type(vec![2], INT32)).unwrap();
-    /// assert_eq!(a, vec![-123i32 as u32 as u64, 123i32 as u32 as u64]);
-    /// ```
-    pub fn to_flattened_array_u64(&self) -> Result<Vec<u64>> {
-        self.value.to_flattened_array_u64(self.t.clone())
     }
 
     pub fn from_json(j: &JsonValue) -> Result<Self> {
@@ -569,7 +603,7 @@ impl TypedValue {
         ])
     }
 
-    pub(self) fn shard_to_shares(&self, prng: &mut PRNG) -> Result<Vec<Value>> {
+    fn shard_to_shares(&self, prng: &mut PRNG) -> Result<Vec<Value>> {
         let v0 = prng.get_random_value(self.t.clone())?;
         let v1 = prng.get_random_value(self.t.clone())?;
         let v2 = generalized_subtract(
@@ -880,6 +914,8 @@ fn generalized_add(v: Value, v0: Value, t: Type) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
+    use std::ops::Add;
+
     use super::*;
     use crate::data_types::tuple_type;
 
@@ -1096,7 +1132,10 @@ mod tests {
         || -> Result<()> {
             let mut prng = PRNG::new(None)?;
             let data = vec![12, 34, 56];
-            let value = TypedValue::from_flattened_array(&data, UINT64)?;
+            let value = TypedValue::from_ndarray(
+                ndarray::Array::from_vec(data.clone()).into_dyn(),
+                UINT64,
+            )?;
             let shares = value.get_secret_shares(&mut prng)?;
             let shares0 = shares[0].to_vector()?;
             let shares1 = shares[1].to_vector()?;
@@ -1104,15 +1143,12 @@ mod tests {
             assert_eq!(shares0[0], shares2[0]);
             assert_eq!(shares0[1], shares1[1]);
             assert_eq!(shares1[2], shares2[2]);
-            let v0 = shares0[0].to_flattened_array_u64()?;
-            let v1 = shares1[1].to_flattened_array_u64()?;
-            let v2 = shares2[2].to_flattened_array_u64()?;
-            let new_data = add_vectors_u64(
-                &add_vectors_u64(&v0, &v1, UINT32.get_modulus())?,
-                &v2,
-                UINT32.get_modulus(),
-            )?;
-            assert_eq!(new_data, data);
+            let m = UINT32.get_modulus().unwrap();
+            let v0 = ToNdarray::<u64>::to_ndarray(&shares0[0])? % m;
+            let v1 = ToNdarray::<u64>::to_ndarray(&shares1[1])? % m;
+            let v2 = ToNdarray::<u64>::to_ndarray(&shares2[2])? % m;
+            let new_data = v0.add(v1).add(v2) % m;
+            assert_eq!(new_data, ndarray::Array::from_vec(data).into_dyn());
             Ok(())
         }()
         .unwrap();
@@ -1671,20 +1707,6 @@ mod tests {
         );
     }
     #[test]
-    fn test_create_from_flattened_array() {
-        let x = vec![0, 1, 1, 0, 1, 0, 0, 1];
-        let v = TypedValue::from_flattened_array(&x, BIT).unwrap();
-        v.value
-            .access_bytes(|bytes| {
-                assert_eq!(*bytes, vec![150]);
-                Ok(())
-            })
-            .unwrap();
-        assert!(v.t.is_array());
-        assert_eq!(v.t.get_dimensions()[0], 8);
-        assert_eq!(x, v.to_flattened_array_u64().unwrap());
-    }
-    #[test]
     fn test_create_from_vector() {
         assert!(TypedValue::from_vector(vec![
             TypedValue::from_scalar(0, BIT).unwrap(),
@@ -1701,5 +1723,24 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].to_u64().unwrap(), 0);
         assert_eq!(entries[1].to_u64().unwrap(), 73);
+    }
+    #[test]
+    fn test_overloaded_serialization() {
+        let v = TypedValue::from_scalar(73, INT32).unwrap();
+        let s = serde_json::to_string(&v).unwrap();
+        assert_eq!(v, serde_json::from_str::<TypedValue>(&s).unwrap());
+    }
+
+    #[test]
+    fn test_ndarray() {
+        || -> Result<()> {
+            let a = ndarray::Array::from_shape_vec((2, 3), vec![10, -20, 30, 40, -50, 60])?;
+            let v = TypedValue::from_ndarray(a.into_dyn(), INT32)?;
+            let b = ToNdarray::<i32>::to_ndarray(&v)?;
+            assert_eq!(b.shape(), vec![2, 3]);
+            assert_eq!(b.into_raw_vec(), vec![10, -20, 30, 40, -50, 60]);
+            Ok(())
+        }()
+        .unwrap();
     }
 }

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::bytes::{vec_from_bytes, vec_to_bytes};
-use crate::data_types::{get_size_in_bits, get_types_vector, ScalarType, Type, BIT, array_type};
+use crate::data_types::{array_type, get_size_in_bits, get_types_vector, ScalarType, Type, BIT};
 use crate::errors::Result;
 
 use crate::version::{VersionedData, DATA_VERSION};
@@ -983,6 +983,43 @@ impl Value {
         }
     }
 
+    /// Converts `self` to a multi-dimensional array if it is a byte vector, then cast the array entries to `u64`.
+    ///
+    /// # Arguments
+    ///
+    /// `t` - array type used to interpret `self`
+    ///
+    /// # Result
+    ///
+    /// Resulting multi-dimensional array with entries cast to `u64`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::data_values::Value;
+    /// # use ciphercore_base::data_types::{BIT, array_type};
+    /// # use ndarray::array;
+    /// let a = array![[false, true], [true, false]].into_dyn();
+    /// let v = Value::from_ndarray(a.clone(), BIT).unwrap();
+    /// let converted = v.to_ndarray_bool(array_type(vec![2, 2], BIT)).unwrap();
+    /// assert_eq!(converted, a);
+    /// ```
+    pub fn to_ndarray_bool(&self, t: Type) -> Result<ndarray::ArrayD<bool>> {
+        match t.clone() {
+            Type::Array(shape, _) => {
+                let arr = self
+                    .to_flattened_array_u8(t)?
+                    .iter()
+                    .map(|x| *x != 0)
+                    .collect();
+                let ndarr = ndarray::Array::from_vec(arr);
+                let shape: Vec<usize> = shape.iter().map(|x| *x as usize).collect();
+                Ok(ndarr.into_shape(shape)?)
+            }
+            _ => Err(runtime_error!("Not an array type")),
+        }
+    }
+
     /// Converts `self` to a multi-dimensional array if it is a byte vector, then cast the array entries to `i64`.
     ///
     /// # Arguments
@@ -1689,7 +1726,7 @@ mod tests {
             assert_eq!(v.to_i32(INT32)?, (-123456i32) as i32);
             assert_eq!(v.to_u64(INT32)?, 4294843840u64);
             assert_eq!(v.to_i64(INT32)?, 4294843840i64);
-            
+
             assert_eq!(Value::from_scalar(156, UINT8)?.to_bit()?, false);
             assert_eq!(Value::from_scalar(157, UINT8)?.to_bit()?, true);
             Ok(())
@@ -1741,6 +1778,18 @@ mod tests {
     #[test]
     fn test_to_ndarray() {
         || -> Result<()> {
+            {
+                let v = Value::from_scalar(1, BIT)?;
+                let a = v.to_ndarray_bool(array_type(vec![1], BIT))?;
+                assert_eq!(a.shape(), &[1]);
+                assert_eq!(a[[0]], true);
+            }
+            {
+                let v = Value::from_scalar(0, BIT)?;
+                let a = v.to_ndarray_bool(array_type(vec![1], BIT))?;
+                assert_eq!(a.shape(), &[1]);
+                assert_eq!(a[[0]], false);
+            }
             let v = Value::from_scalar(-123456, INT32)?;
             {
                 let a = v.to_ndarray_u8(array_type(vec![1], INT32))?;
