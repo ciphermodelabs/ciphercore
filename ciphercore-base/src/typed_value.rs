@@ -41,7 +41,8 @@ impl Serialize for TypedValue {
         S: Serializer,
     {
         let v = self.to_json().map_err(serde::ser::Error::custom)?;
-        v.to_string().serialize(serializer)
+        serializer.collect_str(&v)
+        // v.to_string().serialize(serializer)
     }
 }
 
@@ -56,7 +57,24 @@ impl<'de> Deserialize<'de> for TypedValue {
     }
 }
 
-trait ToNdarray<T> {
+/// Converts `self` to a multi-dimensional array with the corresponding type.
+///
+/// # Result
+///
+/// Resulting multi-dimensional array with the corresponding type.
+///
+/// # Examples
+///
+/// ```
+/// # use ciphercore_base::data_types::{INT32, array_type};
+/// # use ciphercore_base::typed_value::{ToNdarray, TypedValue};
+/// # use ndarray::array;
+/// let a = array![[-123, 123], [-456, 456]].into_dyn();
+/// let v = TypedValue::from_ndarray(a, INT32).unwrap();
+/// let a = ToNdarray::<i32>::to_ndarray(&v).unwrap();
+/// assert_eq!(a, array![[-123i32, 123i32], [-456i32, 456i32]].into_dyn());
+/// ```
+pub trait ToNdarray<T> {
     fn to_ndarray(&self) -> Result<ndarray::ArrayD<T>>;
 }
 
@@ -334,7 +352,7 @@ impl TypedValue {
             }
         }
     }
-    
+
     /// Constructs a typed value from a multi-dimensional bit or integer array.
     ///
     /// # Arguments
@@ -581,7 +599,7 @@ impl TypedValue {
         })
     }
 
-    pub fn get_secret_shares(&self, prng: &mut PRNG) -> Result<Vec<TypedValue>> {
+    pub fn get_local_shares_for_each_party(&self, prng: &mut PRNG) -> Result<Vec<TypedValue>> {
         let v = self.shard_to_shares(prng)?;
         let mut garbage = vec![];
         for _ in 0..3 {
@@ -1136,7 +1154,7 @@ mod tests {
                 ndarray::Array::from_vec(data.clone()).into_dyn(),
                 UINT64,
             )?;
-            let shares = value.get_secret_shares(&mut prng)?;
+            let shares = value.get_local_shares_for_each_party(&mut prng)?;
             let shares0 = shares[0].to_vector()?;
             let shares1 = shares[1].to_vector()?;
             let shares2 = shares[2].to_vector()?;
