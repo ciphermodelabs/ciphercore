@@ -6,29 +6,29 @@ use crate::graphs::SliceElement::SubArray;
 use crate::graphs::*;
 use crate::ops::min_max::{Max, Min};
 
-/// Creates a graph that sorts an array using [Batcher's algorithm](https://math.mit.edu/~shor/18.310/batcher.pdf).
+/// Attaches nodes to an input graph that sort an array of bitstrings with b bits using [Batcher's algorithm](https://math.mit.edu/~shor/18.310/batcher.pdf).
 ///
 /// # Arguments
 ///
-/// * `context` - context where a minimum graph should be created
+/// * `graph` - non-finalized graph to attach sorting nodes
 /// * `k` - number of elements of an array (i.e., 2<sup>k</sup>)
-/// * `st` - scalar type of array elements
+/// * `b` - length of input bitstrings
+/// * `signed_comparison` - Boolean value indicating whether input bitstrings represent signed or unsigned integers
 ///
 /// # Returns
 ///
-/// Graph that sorts an array
-pub fn create_batchers_sorting_graph(context: Context, k: u32, st: ScalarType) -> Result<Graph> {
+/// Node containing the output of sorting binary bitstrings
+fn attach_binary_batchers_sorting(
+    b_graph: Graph,
+    k: u32,
+    b: u64,
+    signed_comparison: bool,
+) -> Result<Node> {
     // NOTE: The implementation is based on the 'bottom up' approach as described in
     // https://math.mit.edu/~shor/18.310/batcher.pdf.
     // Commenting about the initial few shape changes done with the help of a
     // 16 element array example
     let n = 2_u64.pow(k);
-    // Create a graph in a given context that will be used for sorting
-    let b_graph = context.create_graph()?;
-    // To create inputs nodes, compute the bitsize of the input scalar type
-    let b = scalar_size_in_bits(st.clone());
-    // Get sign of the input scalar type that indicates whether signed comparisons should be computed
-    let signed_comparison = st.get_signed();
     // Create an input node accepting binary arrays of shape [n, b]
     let i_a = b_graph.input(Type::Array(vec![n, b], BIT))?;
     // Stash of nodes uses as input of each iteration of the following loop
@@ -453,11 +453,67 @@ pub fn create_batchers_sorting_graph(context: Context, k: u32, st: ScalarType) -
         // data idx:          0    1   2   3   4   5   6   7   8   9  10  11  12  13  14  15
         // data post ops.:  [99, 100, 97, 98, 95, 96, 93, 94, 91, 92, 89, 90, 87, 88, 85, 86]
     }
+    Ok(stage_ops[k as usize].clone())
+}
+
+/// Creates a graph that sorts an array of bitstrings of length b using [Batcher's algorithm](https://math.mit.edu/~shor/18.310/batcher.pdf).
+///
+/// # Arguments
+///
+/// * `context` - context where a sorting graph should be created
+/// * `k` - number of elements of an array (i.e., 2<sup>k</sup>)
+/// * `b` - length of input bitstrings
+/// * `signed_comparison` - Boolean value indicating whether input bitstrings represent signed or unsigned integers
+///
+/// # Returns
+///
+/// Graph that sorts an array of bitstrings
+pub fn create_binary_batchers_sorting_graph(
+    context: Context,
+    k: u32,
+    b: u64,
+    signed_comparison: bool,
+) -> Result<Graph> {
+    // Create a graph in a given context that will be used for sorting
+    let b_graph = context.create_graph()?;
+
+    // Attach nodes that sort bitstrings of length b
+    let sorted_node = attach_binary_batchers_sorting(b_graph.clone(), k, b, signed_comparison)?;
+    // Before computation every graph should be finalized, which means that it should have a designated output node
+    // This can be done by calling `g.set_output_node(output)?` or as below
+    b_graph.set_output_node(sorted_node)?;
+    // Finalization checks that the output node of the graph g is set. After finalization the graph can't be changed
+    b_graph.finalize()?;
+
+    Ok(b_graph)
+}
+
+/// Creates a graph that sorts an array using [Batcher's algorithm](https://math.mit.edu/~shor/18.310/batcher.pdf).
+///
+/// # Arguments
+///
+/// * `context` - context where a sorting graph should be created
+/// * `k` - number of elements of an array (i.e., 2<sup>k</sup>)
+/// * `st` - scalar type of array elements
+///
+/// # Returns
+///
+/// Graph that sorts an array
+pub fn create_batchers_sorting_graph(context: Context, k: u32, st: ScalarType) -> Result<Graph> {
+    // Create a graph in a given context that will be used for sorting
+    let b_graph = context.create_graph()?;
+    // To create inputs nodes, compute the bitsize of the input scalar type
+    let b = scalar_size_in_bits(st.clone());
+    // Boolean value indicating whether input bitstrings represent signed or unsigned integers
+    let signed = st.get_signed();
+
+    // Attach nodes that sort bitstrings of length b
+    let sorted_node = attach_binary_batchers_sorting(b_graph.clone(), k, b, signed)?;
     // Convert output from the binary form to the arithmetic form
     let output = if st != BIT {
-        stage_ops[k as usize].b2a(st)?
+        sorted_node.b2a(st)?
     } else {
-        stage_ops[k as usize].clone()
+        sorted_node
     };
     // Before computation every graph should be finalized, which means that it should have a designated output node
     // This can be done by calling `g.set_output_node(output)?` or as below

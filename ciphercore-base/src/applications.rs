@@ -2,4 +2,5 @@
 pub mod matrix_multiplication;
 pub mod millionaires;
 pub mod minimum;
+pub mod set_intersection;
 pub mod sorting;
