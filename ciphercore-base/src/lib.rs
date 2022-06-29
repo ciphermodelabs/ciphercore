@@ -917,10 +917,11 @@ pub mod random;
 pub mod slices;
 #[doc(hidden)]
 pub mod type_inference;
-#[doc(hidden)]
 pub mod typed_value;
 #[doc(hidden)]
 pub mod version;
+#[doc(hidden)]
+mod typed_value_serialization;
 
 #[cfg(test)]
 #[macro_use]

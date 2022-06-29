@@ -48,9 +48,7 @@ impl From<ParseIntError> for CiphercoreBaseError {
 
 impl From<serde_json::Error> for CiphercoreBaseError {
     fn from(err: serde_json::Error) -> CiphercoreBaseError {
-        let err_str = err.to_string();
-        serde_json::from_str::<CiphercoreBaseError>(&err_str)
-            .expect("Error during error conversion form serde_json error to CiphercoreBaseError")
+        runtime_error!("serde_json::Error: {}", err)
     }
 }
 
@@ -96,17 +94,14 @@ pub type Result<T> = std::result::Result<T, CiphercoreBaseError>;
 
 #[cfg(test)]
 mod tests {
-    use crate::errors::CiphercoreBaseError;
-    use serde_json::Value;
+    use crate::{errors::CiphercoreBaseError, typed_value::TypedValue};
     #[test]
     fn test_serialization_error_conversion() {
-        let orignal_error = runtime_error!("Value version doesn't match the requirement");
-        let orignal_error_str = orignal_error.to_string();
-        let serde_error: Result<Value, serde_json::Error> =
-            Err(orignal_error).map_err(serde::de::Error::custom);
+        let s = r#"{"kind":"vector","value":[{"kind":"scalar","type":"i32","value":-123456},{"kind":"scalar","type":"u32","value":123456}]}"#;
+        let serde_error = serde_json::from_str::<TypedValue>(&s);
         if let Err(e) = serde_error {
-            let cipher_err = CiphercoreBaseError::from(e);
-            assert_eq!(orignal_error_str, cipher_err.to_string());
+            let err = CiphercoreBaseError::from(e);
+            assert!(err.to_string().find("serde_json::Error: ").is_some())
         }
     }
 }

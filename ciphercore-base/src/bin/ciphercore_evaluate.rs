@@ -2,9 +2,10 @@
 #![cfg_attr(feature = "nightly-features", feature(backtrace))]
 
 use ciphercore_base::errors::Result;
-use ciphercore_base::evaluators::get_result_util::{get_evaluator_result, parse_json_array};
+use ciphercore_base::evaluators::get_result_util::get_evaluator_result;
 use ciphercore_base::evaluators::simple_evaluator::SimpleEvaluator;
 use ciphercore_base::graphs::Context;
+use ciphercore_base::typed_value::TypedValue;
 use ciphercore_utils::execute_main::execute_main;
 use std::fs;
 
@@ -51,10 +52,8 @@ fn main() {
         let raw_context = serde_json::from_str::<Context>(&serialized_context)?;
         // Read the entire file containing serialized inputs as a string
         let json_inputs = fs::read_to_string(&args.inputs_path)?;
-        // Parse input string to obtain JSON value object(s)
-        let json_inputs = json::parse(&json_inputs)?;
         // Parse inputs to obtain a vector of typed values, i.e., pair of type, and its value
-        let inputs = parse_json_array(&json_inputs)?;
+        let inputs = serde_json::from_str::<Vec<TypedValue>>(&json_inputs)?;
         // Use the simple evaluator to obtain the typed result value
         let result = get_evaluator_result(
             raw_context,
@@ -67,7 +66,7 @@ fn main() {
             eprintln!("Revealing the output");
         }
         // Print the serialized result to stdout
-        println!("{}", result.to_json()?);
+        println!("{}", serde_json::to_string(&result)?);
         Ok(())
     });
 }

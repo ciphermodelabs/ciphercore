@@ -10,7 +10,6 @@ use crate::data_values::Value;
 use crate::errors::Result;
 use crate::random::PRNG;
 use json::{object, object::Object, JsonValue};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 macro_rules! to_json_aux {
     ($v:expr, $t:expr, $cnv:ident) => {
@@ -33,28 +32,6 @@ macro_rules! to_json_array_aux {
 pub struct TypedValue {
     pub value: Value,
     pub t: Type,
-}
-
-impl Serialize for TypedValue {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let v = self.to_json().map_err(serde::ser::Error::custom)?;
-        serializer.collect_str(&v)
-        // v.to_string().serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for TypedValue {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<TypedValue, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        TypedValue::from_json(&json::parse(&s).map_err(serde::de::Error::custom)?)
-            .map_err(serde::de::Error::custom)
-    }
 }
 
 /// Converts `self` to a multi-dimensional array with the corresponding type.
@@ -255,6 +232,64 @@ impl TypedValue {
         }
     }
 
+    /// Constructs a typed value from a vector of tuples: (name, typed_value).
+    ///
+    /// # Arguments
+    ///
+    /// `v` - vector of tuples: (name, typed_value)
+    ///
+    /// # Returns
+    ///
+    /// New typed value constructed from `v`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::data_types::{BIT, INT32};
+    /// # use ciphercore_base::typed_value::TypedValue;
+    /// let v = TypedValue::from_named_tuple(
+    ///     vec![
+    ///         ("a".to_string(), TypedValue::from_scalar(1, BIT).unwrap()),
+    ///         ("second".to_string(), TypedValue::from_scalar(-91, INT32).unwrap())]);
+    /// ```
+    pub fn from_named_tuple(v: Vec<(String, TypedValue)>) -> Result<Self> {
+        let t = named_tuple_type(v.iter().map(|v| (v.0.clone(), v.1.t.clone())).collect());
+        let val_vec = v.iter().map(|v| v.1.value.clone()).collect();
+        Ok(TypedValue {
+            t,
+            value: Value::from_vector(val_vec),
+        })
+    }
+
+    /// Constructs a typed value from a vector.
+    /// Typed values can have different types
+    ///
+    /// # Arguments
+    ///
+    /// `v` - vector of typed_values
+    ///
+    /// # Returns
+    ///
+    /// New typed value constructed from `v`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::data_types::{BIT, INT32};
+    /// # use ciphercore_base::typed_value::TypedValue;
+    /// let v = TypedValue::from_tuple(
+    ///     vec![TypedValue::from_scalar(1, BIT).unwrap(),
+    ///          TypedValue::from_scalar(-91, INT32).unwrap()]);
+    /// ```
+    pub fn from_tuple(v: Vec<TypedValue>) -> Result<Self> {
+        let t = tuple_type(v.iter().map(|v| v.t.clone()).collect());
+        let val_vec = v.iter().map(|v| v.value.clone()).collect();
+        Ok(TypedValue {
+            t,
+            value: Value::from_vector(val_vec),
+        })
+    }
+
     /// Constructs a typed value from a vector of other typed values.
     /// All typed values must have the same type.
     ///
@@ -278,12 +313,11 @@ impl TypedValue {
     ///         TypedValue::from_scalar(-91, INT32).unwrap()]);
     /// ```
     pub fn from_vector(v: Vec<TypedValue>) -> Result<Self> {
-        if v.is_empty() {
-            return Err(runtime_error!(
-                "Can not distinguish the type: vector is empty"
-            ));
-        }
-        let val_type = v[0].t.clone();
+        let val_type = if v.is_empty() {
+            tuple_type(vec![])
+        } else {
+            v[0].t.clone()
+        };
         let t = vector_type(v.len() as u64, val_type.clone());
         let mut val_vec = vec![];
         for val in v {
@@ -344,6 +378,15 @@ impl TypedValue {
                 let mut res = vec![];
                 for val in vec_val {
                     res.push(TypedValue::new(t.as_ref().clone(), val)?);
+                }
+                Ok(res)
+            }
+            Type::NamedTuple(n_ts) => {
+                if n_ts.len() != vec_val.len() {
+                    return Err(runtime_error!("Inconsistent number of elements!"));
+                }
+                for (n_t, value) in n_ts.iter().zip(vec_val.iter()) {
+                    res.push(TypedValue::new(n_t.1.as_ref().clone(), value.clone())?);
                 }
                 Ok(res)
             }
@@ -690,7 +733,7 @@ impl TypedValue {
                 let self_value_vector = self.value.access_vector(|vec| Ok(vec.clone()))?;
                 let other_value_vector = other.value.access_vector(|vec| Ok(vec.clone()))?;
                 // we are sure that types_vector.len() == self_value_vector.len() == other_value_vector.len()
-                // because in generating TypedValue we recursivly call check_type for all values.
+                // because in generating TypedValue we recursively call check_type for all values.
                 for i in 0..types_vector.len() {
                     let typed_value1 =
                         TypedValue::new((*types_vector[i]).clone(), self_value_vector[i].clone())?;
@@ -1562,7 +1605,7 @@ mod tests {
             Ok(())
         }()
         .unwrap();
-        // identical arrays are eqaul
+        // identical arrays are equal
         || -> Result<()> {
             let t1 = array_type(vec![2, 2], BIT);
             let t2 = array_type(vec![2, 2], BIT);
@@ -1574,7 +1617,7 @@ mod tests {
             Ok(())
         }()
         .unwrap();
-        // distinct arrays are eqaul if they are equal up to number of bits in their size
+        // distinct arrays are equal if they are equal up to number of bits in their size
         || -> Result<()> {
             let t1 = array_type(vec![2, 2], BIT);
             let t2 = array_type(vec![2, 2], BIT);
@@ -1586,7 +1629,7 @@ mod tests {
             Ok(())
         }()
         .unwrap();
-        // distinct arrays are not eqaul if they are not equal up to number of bits in their size
+        // distinct arrays are not equal if they are not equal up to number of bits in their size
         || -> Result<()> {
             let t1 = array_type(vec![2, 2], BIT);
             let t2 = array_type(vec![2, 2], BIT);
@@ -1742,13 +1785,6 @@ mod tests {
         assert_eq!(entries[0].to_u64().unwrap(), 0);
         assert_eq!(entries[1].to_u64().unwrap(), 73);
     }
-    #[test]
-    fn test_overloaded_serialization() {
-        let v = TypedValue::from_scalar(73, INT32).unwrap();
-        let s = serde_json::to_string(&v).unwrap();
-        assert_eq!(v, serde_json::from_str::<TypedValue>(&s).unwrap());
-    }
-
     #[test]
     fn test_ndarray() {
         || -> Result<()> {
