@@ -5,12 +5,7 @@ use clap::Parser;
 use std::fs;
 
 fn get_graphviz_node_ref(node: Node) -> String {
-    return format!(
-        "{}{}_{}",
-        node.get_operation(),
-        node.get_id(),
-        node.get_graph().get_id()
-    );
+    return format!("node_{}_{}", node.get_id(), node.get_graph().get_id());
 }
 
 fn get_graphviz_graph_ref(graph: Graph) -> String {
