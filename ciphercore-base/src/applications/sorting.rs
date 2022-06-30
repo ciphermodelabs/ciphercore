@@ -601,7 +601,7 @@ mod tests {
     /// Parameters varied are k, st and the input data could be unsorted,
     /// sorted or sorted in a decreasing order.
     #[test]
-    fn test_wellformed_unsigned_batchers_sorting_graph() -> Result<()> {
+    fn test_wellformed_batchers_sorting_graph() -> Result<()> {
         let mut data = vec![65535, 0, 2, 32768];
         test_batchers_sorting_graph_helper(2, UINT16, data.clone())?;
         data.sort_unstable();

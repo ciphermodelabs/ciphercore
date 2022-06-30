@@ -56,6 +56,10 @@ name = "ciphercore_minimum"
 path = "src/bin/ciphercore_minimum.rs"
 
 [[bin]]
+name = "ciphercore_set_intersection"
+path = "src/bin/ciphercore_set_intersection.rs"
+
+[[bin]]
 name = "ciphercore_sorting"
 path = "src/bin/ciphercore_sorting.rs"
 
