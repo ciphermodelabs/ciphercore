@@ -7,8 +7,6 @@ use crate::ops::min_max::Min;
 
 /// Creates a graph that finds the minimum of an array.
 ///
-/// Minimum works only for arrays with unsigned scalar values.
-///
 /// # Arguments
 ///
 /// * `context` - context where a minimum graph should be created
@@ -19,10 +17,8 @@ use crate::ops::min_max::Min;
 ///
 /// Graph that finds the minimum of an array
 pub fn create_minimum_graph(context: Context, n: u64, st: ScalarType) -> Result<Graph> {
-    // First, check that the input scalar type is unsigned
-    if st.get_signed() {
-        return Err(runtime_error!("Sorting doesn't accept signed scalar types"));
-    }
+    // Get sign of the input scalar type that indicates whether signed comparisons should be computed
+    let signed_comparison = st.get_signed();
 
     // Create a graph in a given context that will be used for finding the minimum
     let g = context.create_graph()?;
@@ -57,7 +53,10 @@ pub fn create_minimum_graph(context: Context, n: u64, st: ScalarType) -> Result<
             binary_array.get_slice(vec![SliceElement::SubArray(Some(1 << level), None, None)])?;
         // Compare the first half with the second half elementwise to find minimums.
         // This is done via the custom operation Min (see ops.rs).
-        binary_array = g.custom_op(CustomOperation::new(Min {}), vec![half1, half2])?;
+        binary_array = g.custom_op(
+            CustomOperation::new(Min { signed_comparison }),
+            vec![half1, half2],
+        )?;
     }
     // Convert output from the binary form to the arithmetic form
     let output = if st != BIT {
@@ -77,7 +76,7 @@ pub fn create_minimum_graph(context: Context, n: u64, st: ScalarType) -> Result<
 #[cfg(test)]
 mod tests {
     use crate::custom_ops::run_instantiation_pass;
-    use crate::data_types::UINT32;
+    use crate::data_types::{INT32, UINT32};
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
     use crate::graphs::create_context;
@@ -114,6 +113,17 @@ mod tests {
                     4,
                     UINT32
                 ) == Value::from_flattened_array(&[1], UINT32)?
+            );
+            Ok(())
+        }()
+        .unwrap();
+        || -> Result<()> {
+            assert!(
+                test_minimum_helper(
+                    &[-1, 2, -3, 4, -5, 6, -7, 8, -9, 10, -11, 12, -13, 14, -15, 16],
+                    4,
+                    INT32
+                ) == Value::from_flattened_array(&[-15], INT32)?
             );
             Ok(())
         }()

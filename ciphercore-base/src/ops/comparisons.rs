@@ -422,7 +422,7 @@ impl CustomOperationBody for GreaterThan {
     }
 
     fn get_name(&self) -> String {
-        "GreaterThan".to_owned()
+        format!("GreaterThan(signed_comparison={})", self.signed_comparison)
     }
 }
 
@@ -655,7 +655,7 @@ impl CustomOperationBody for LessThan {
     }
 
     fn get_name(&self) -> String {
-        "LessThan".to_owned()
+        format!("LessThan(signed_comparison={})", self.signed_comparison)
     }
 }
 
@@ -734,7 +734,10 @@ impl CustomOperationBody for LessThanEqualTo {
     }
 
     fn get_name(&self) -> String {
-        "LessThanEqualTo".to_owned()
+        format!(
+            "LessThanEqualTo(signed_comparison={})",
+            self.signed_comparison
+        )
     }
 }
 
@@ -813,7 +816,10 @@ impl CustomOperationBody for GreaterThanEqualTo {
     }
 
     fn get_name(&self) -> String {
-        "GreaterThanEqualTo".to_owned()
+        format!(
+            "GreaterThanEqualTo(signed_comparison={})",
+            self.signed_comparison
+        )
     }
 }
 

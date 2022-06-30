@@ -16,10 +16,11 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about=None)]
 struct Args {
+    #[clap(value_parser)]
     /// number of elements of an array (i.e., 2<sup>k</sup>)
     k: u32,
     /// scalar type of array elements
-    #[clap(short, long)]
+    #[clap(short, long, value_parser)]
     scalar_type: String,
 }
 

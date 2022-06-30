@@ -22,6 +22,7 @@
 //!    - [Millionaires' problem](#millionaires-problem)
 //!    - [Minimum of an array](#minimum-of-an-array)
 //!    - [Sorting](#sorting)
+//!    - [Set intersection](#set-intersection)
 //! - [Graph creation and management](#graph-creation-and-management)
 //!    - [Overview of CipherCore operations](#overview-of-ciphercore-operations)
 //!       - [Data types](#data-types)
@@ -318,7 +319,8 @@
 //! * matrix multiplication,
 //! * Millionaires' problem,
 //! * minimum of an array,
-//! * sorting using [Batcher's sorting algorithm](https://math.mit.edu/~shor/18.310/batcher.pdf).
+//! * sorting using [Batcher's sorting algorithm](https://math.mit.edu/~shor/18.310/batcher.pdf),
+//! * set intersection using [the HEK algorithm](https://homes.luddy.indiana.edu/yh33/mypub/psi.pdf).
 //!
 //! ## Matrix multiplication
 //!
@@ -351,11 +353,20 @@
 //!
 //! ## Sorting
 //!
-//! Given an array of unsigned integers, this example sorts them in the ascending order.
+//! Given an array of integers, this example sorts them in an ascending order.
 //! The serialization binary generates the following graph corresponding to the Batcher's sorting network.
 //!
 //! <p align = "center">
 //!     <img src="https://raw.githubusercontent.com/ciphermodelabs/ciphercore/main/reference/images/sorting_graph_rot90.svg" alt="Sorting Graph" width="100%"/>
+//! </p>
+//!
+//! ## Set intersection
+//!
+//! Given two arrays of integers without duplicate elements, this example computes their intersection.
+//! The serialization binary generates the following graph corresponding to [the sorting-based algorithm of Huang, Evans and Katz](https://homes.luddy.indiana.edu/yh33/mypub/psi.pdf).
+//!
+//! <p align = "center">
+//!     <img src="https://raw.githubusercontent.com/ciphermodelabs/ciphercore/main/reference/images/set_intersection_graph_rot90.svg" alt="Set Intersection Graph" width="100%"/>
 //! </p>
 //!
 //! # Graph creation and management
@@ -647,7 +658,7 @@
 //! # let t = array_type(vec![32], BIT);
 //! # let arg1 = graph.input(t.clone()).unwrap();
 //! # let arg2 = graph.input(t).unwrap();
-//! graph.custom_op(CustomOperation::new(Min {}), vec![arg1,arg2]).unwrap();
+//! graph.custom_op(CustomOperation::new(Min {signed_comparison: true}), vec![arg1,arg2]).unwrap();
 //! ```
 //!
 //! The following custom operations are already implemented within CipherCore:
@@ -917,10 +928,11 @@ pub mod random;
 pub mod slices;
 #[doc(hidden)]
 pub mod type_inference;
-#[doc(hidden)]
 pub mod typed_value;
 #[doc(hidden)]
 pub mod version;
+#[doc(hidden)]
+mod typed_value_serialization;
 
 #[cfg(test)]
 #[macro_use]

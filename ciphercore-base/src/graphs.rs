@@ -1665,13 +1665,14 @@ impl Clone for WeakGraph {
 #[doc(hidden)]
 /// Various node-related properties which aren't used in the graph building
 /// or type inference, but can be used in node expansion or MPC compilation.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum NodeAnnotation {
     AssociativeOperation,
     Private,
     Send(u64, u64), // (sender_index, receiver_index); indices belong to the set 0..PARTIES
     PRFMultiplication,
     PRFB2A,
+    PRFTruncate,
 }
 
 #[doc(hidden)]

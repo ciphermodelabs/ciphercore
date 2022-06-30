@@ -275,12 +275,12 @@ pub struct CTypedValue {
 impl CTypedValue {
     pub(crate) fn to_type_value(&self) -> Result<(Type, Value)> {
         let op_str_slice = self.json.to_str_slice()?;
-        let tv = TypedValue::from_json(&json::parse(op_str_slice)?)?;
+        let tv = serde_json::from_str::<TypedValue>(op_str_slice)?;
         Ok((tv.t, tv.value))
     }
     pub(crate) fn from_type_and_value(t: Type, value: Value) -> Result<CTypedValue> {
         let tv = TypedValue { value, t };
-        let jstr = CStr::from_string(tv.to_json()?.dump())?;
+        let jstr = CStr::from_string(serde_json::to_string(&tv)?)?;
         Ok(CTypedValue { json: jstr })
     }
 }

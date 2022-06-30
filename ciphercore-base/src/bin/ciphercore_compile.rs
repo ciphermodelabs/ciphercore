@@ -26,14 +26,17 @@ enum InlineModeArg {
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about=None)]
 struct Args {
+    #[clap(value_parser)]
     /// Path to file that contains the serialized context
     context_path: String,
-    #[clap(arg_enum)]
+    #[clap(arg_enum, value_parser)]
     /// Argument to specify the inline mode required.
     // Valid values are `simple`, `depth-optimized-default` and `depth-optimized-extreme`.
     inline_mode: InlineModeArg,
+    #[clap(value_parser)]
     /// String comprising comma separated list of input parties' IDs, valid ID values include `0`, `1`, `2` OR `public` OR `secret-shared`.
     input_parties: String,
+    #[clap(value_parser)]
     /// String comprising comma separated list of output parties' IDs, which could be `0`, `1`, and `2` OR `public` OR `secret-shared`.
     output_parties: String,
 }

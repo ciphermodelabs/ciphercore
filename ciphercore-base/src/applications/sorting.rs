@@ -6,36 +6,29 @@ use crate::graphs::SliceElement::SubArray;
 use crate::graphs::*;
 use crate::ops::min_max::{Max, Min};
 
-/// Creates a graph that sorts an array using [Batcher's algorithm](https://math.mit.edu/~shor/18.310/batcher.pdf).
-///
-/// Sorting works only for arrays with unsigned scalar values.
+/// Attaches nodes to an input graph that sort an array of bitstrings with b bits using [Batcher's algorithm](https://math.mit.edu/~shor/18.310/batcher.pdf).
 ///
 /// # Arguments
 ///
-/// * `context` - context where a minimum graph should be created
+/// * `graph` - non-finalized graph to attach sorting nodes
 /// * `k` - number of elements of an array (i.e., 2<sup>k</sup>)
-/// * `st` - scalar type of array elements
+/// * `b` - length of input bitstrings
+/// * `signed_comparison` - Boolean value indicating whether input bitstrings represent signed or unsigned integers
 ///
 /// # Returns
 ///
-/// Graph that sorts an array
-pub fn create_batchers_sorting_graph(context: Context, k: u32, st: ScalarType) -> Result<Graph> {
-    // First, check that the input scalar type is unsigned
-    if st.get_signed() {
-        return Err(runtime_error!(
-            "Sorting doesn't support signed scalar types"
-        ));
-    }
-
+/// Node containing the output of sorting binary bitstrings
+fn attach_binary_batchers_sorting(
+    b_graph: Graph,
+    k: u32,
+    b: u64,
+    signed_comparison: bool,
+) -> Result<Node> {
     // NOTE: The implementation is based on the 'bottom up' approach as described in
     // https://math.mit.edu/~shor/18.310/batcher.pdf.
     // Commenting about the initial few shape changes done with the help of a
     // 16 element array example
     let n = 2_u64.pow(k);
-    // Create a graph in a given context that will be used for sorting
-    let b_graph = context.create_graph()?;
-    // To create inputs nodes, compute the bitsize of the input scalar type
-    let b = scalar_size_in_bits(st.clone());
     // Create an input node accepting binary arrays of shape [n, b]
     let i_a = b_graph.input(Type::Array(vec![n, b], BIT))?;
     // Stash of nodes uses as input of each iteration of the following loop
@@ -196,15 +189,19 @@ pub fn create_batchers_sorting_graph(context: Context, k: u32, st: ScalarType) -
                 let vv = b_graph.get(chunks_a.clone(), vec![1])?;
 
                 // Get minimums from both the classes
-                let chunks_a_0 = b_graph
-                    .custom_op(CustomOperation::new(Min {}), vec![uu.clone(), vv.clone()])?;
+                let chunks_a_0 = b_graph.custom_op(
+                    CustomOperation::new(Min { signed_comparison }),
+                    vec![uu.clone(), vv.clone()],
+                )?;
                 // For it==1, i==0, chunks_a_0 = [[min(0, 1), min(2, 3), ..., min(12, 13), min(14, 15)]]
                 // For it==2, i==1, chunks_a_0 = [[min(0, 2), min(4, 6), min(8, 10), min(12, 14)],
                 //                                [min(1, 3), min(5, 7), min(9, 11), min(13, 15)]]
 
                 // Get maximums from both the classes
-                let chunks_a_1 = b_graph
-                    .custom_op(CustomOperation::new(Max {}), vec![uu.clone(), vv.clone()])?;
+                let chunks_a_1 = b_graph.custom_op(
+                    CustomOperation::new(Max { signed_comparison }),
+                    vec![uu.clone(), vv.clone()],
+                )?;
                 // For it==1, i==0, chunks_a_1 = [[max(0, 1), max(2, 3), ..., max(12, 13), max(14, 15)]]
                 // For it==2, i==1, chunks_a_0 = [[max(0, 2), max(4, 6), max(8, 10), max(12, 14)],
                 //                                [max(1, 3), max(5, 7), max(9, 11), max(13, 15)]]
@@ -297,16 +294,20 @@ pub fn create_batchers_sorting_graph(context: Context, k: u32, st: ScalarType) -
                 // ]
 
                 // Obtain the minimum of these two arrays - uu and vv
-                let chunks_a_evens = b_graph
-                    .custom_op(CustomOperation::new(Min {}), vec![uu.clone(), vv.clone()])?;
+                let chunks_a_evens = b_graph.custom_op(
+                    CustomOperation::new(Min { signed_comparison }),
+                    vec![uu.clone(), vv.clone()],
+                )?;
                 // For it==2, i==0, chunks_a_evens shape = [1, 1, 4, x], chunks_a_evens =
                 // [
                 //      [[min(8, 10, 1, 3), min(max(8, 10), max(1, 3)), min(12, 14, 5, 7), min(max(12, 14), max(5, 7))]]
                 // ]
 
                 // Obtain the maximum of these two arrays - uu and vv
-                let chunks_a_odds = b_graph
-                    .custom_op(CustomOperation::new(Max {}), vec![uu.clone(), vv.clone()])?;
+                let chunks_a_odds = b_graph.custom_op(
+                    CustomOperation::new(Max { signed_comparison }),
+                    vec![uu.clone(), vv.clone()],
+                )?;
                 // For it==2, i==0, chunks_a_odds shape = [1, 1, 4, x], chunks_a_odds =
                 // [
                 //      [[max(min(8, 10), min(1, 3)), max(8, 10, 1, 3), max(min(12, 14), min(5, 7)), max(12, 14, 5, 7)]]
@@ -452,11 +453,67 @@ pub fn create_batchers_sorting_graph(context: Context, k: u32, st: ScalarType) -
         // data idx:          0    1   2   3   4   5   6   7   8   9  10  11  12  13  14  15
         // data post ops.:  [99, 100, 97, 98, 95, 96, 93, 94, 91, 92, 89, 90, 87, 88, 85, 86]
     }
+    Ok(stage_ops[k as usize].clone())
+}
+
+/// Creates a graph that sorts an array of bitstrings of length b using [Batcher's algorithm](https://math.mit.edu/~shor/18.310/batcher.pdf).
+///
+/// # Arguments
+///
+/// * `context` - context where a sorting graph should be created
+/// * `k` - number of elements of an array (i.e., 2<sup>k</sup>)
+/// * `b` - length of input bitstrings
+/// * `signed_comparison` - Boolean value indicating whether input bitstrings represent signed or unsigned integers
+///
+/// # Returns
+///
+/// Graph that sorts an array of bitstrings
+pub fn create_binary_batchers_sorting_graph(
+    context: Context,
+    k: u32,
+    b: u64,
+    signed_comparison: bool,
+) -> Result<Graph> {
+    // Create a graph in a given context that will be used for sorting
+    let b_graph = context.create_graph()?;
+
+    // Attach nodes that sort bitstrings of length b
+    let sorted_node = attach_binary_batchers_sorting(b_graph.clone(), k, b, signed_comparison)?;
+    // Before computation every graph should be finalized, which means that it should have a designated output node
+    // This can be done by calling `g.set_output_node(output)?` or as below
+    b_graph.set_output_node(sorted_node)?;
+    // Finalization checks that the output node of the graph g is set. After finalization the graph can't be changed
+    b_graph.finalize()?;
+
+    Ok(b_graph)
+}
+
+/// Creates a graph that sorts an array using [Batcher's algorithm](https://math.mit.edu/~shor/18.310/batcher.pdf).
+///
+/// # Arguments
+///
+/// * `context` - context where a sorting graph should be created
+/// * `k` - number of elements of an array (i.e., 2<sup>k</sup>)
+/// * `st` - scalar type of array elements
+///
+/// # Returns
+///
+/// Graph that sorts an array
+pub fn create_batchers_sorting_graph(context: Context, k: u32, st: ScalarType) -> Result<Graph> {
+    // Create a graph in a given context that will be used for sorting
+    let b_graph = context.create_graph()?;
+    // To create inputs nodes, compute the bitsize of the input scalar type
+    let b = scalar_size_in_bits(st.clone());
+    // Boolean value indicating whether input bitstrings represent signed or unsigned integers
+    let signed = st.get_signed();
+
+    // Attach nodes that sort bitstrings of length b
+    let sorted_node = attach_binary_batchers_sorting(b_graph.clone(), k, b, signed)?;
     // Convert output from the binary form to the arithmetic form
     let output = if st != BIT {
-        stage_ops[k as usize].b2a(st)?
+        sorted_node.b2a(st)?
     } else {
-        stage_ops[k as usize].clone()
+        sorted_node
     };
     // Before computation every graph should be finalized, which means that it should have a designated output node
     // This can be done by calling `g.set_output_node(output)?` or as below
@@ -471,7 +528,7 @@ pub fn create_batchers_sorting_graph(context: Context, k: u32, st: ScalarType) -
 mod tests {
     use super::*;
     use crate::custom_ops::run_instantiation_pass;
-    use crate::data_types::{ScalarType, BIT, UINT16, UINT32, UINT64};
+    use crate::data_types::{ScalarType, BIT, INT64, UINT16, UINT32, UINT64};
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
     use crate::random::PRNG;
@@ -485,7 +542,7 @@ mod tests {
     ///
     /// * `k` - number of elements of an array (i.e., 2<sup>k</sup>)
     /// * `st` - scalar type of array elements
-    fn test_large_vec_unsigned_batchers_sorting(k: u32, st: ScalarType) -> Result<()> {
+    fn test_large_vec_batchers_sorting(k: u32, st: ScalarType) -> Result<()> {
         let context = create_context()?;
         let graph: Graph = create_batchers_sorting_graph(context.clone(), k, st.clone())?;
         context.set_main_graph(graph.clone())?;
@@ -495,14 +552,23 @@ mod tests {
 
         let seed = b"\xB6\xD7\x1A\x2F\x88\xC1\x12\xBA\x3F\x2E\x17\xAB\xB7\x46\x15\x9A";
         let mut prng = PRNG::new(Some(seed.clone()))?;
-        let array_t: Type = array_type(vec![2_u64.pow(k)], st);
+        let array_t: Type = array_type(vec![2_u64.pow(k)], st.clone());
         let data = prng.get_random_value(array_t.clone())?;
-        let data_v_u64 = data.to_flattened_array_u64(array_t.clone())?;
-        let result = random_evaluate(mapped_c.mappings.get_graph(graph), vec![data])?
-            .to_flattened_array_u64(array_t)?;
-        let mut sorted_data = data_v_u64;
-        sorted_data.sort_unstable();
-        assert_eq!(sorted_data, result);
+        if st.get_signed() {
+            let data_v_i64 = data.to_flattened_array_i64(array_t.clone())?;
+            let result = random_evaluate(mapped_c.mappings.get_graph(graph), vec![data])?
+                .to_flattened_array_i64(array_t)?;
+            let mut sorted_data = data_v_i64;
+            sorted_data.sort_unstable();
+            assert_eq!(sorted_data, result);
+        } else {
+            let data_v_u64 = data.to_flattened_array_u64(array_t.clone())?;
+            let result = random_evaluate(mapped_c.mappings.get_graph(graph), vec![data])?
+                .to_flattened_array_u64(array_t)?;
+            let mut sorted_data = data_v_u64;
+            sorted_data.sort_unstable();
+            assert_eq!(sorted_data, result);
+        }
         Ok(())
     }
 
@@ -514,11 +580,7 @@ mod tests {
     ///
     /// * `k` - number of elements of an array (i.e., 2<sup>k</sup>)
     /// * `st` - scalar type of array elements
-    fn test_unsigned_batchers_sorting_graph_helper(
-        k: u32,
-        st: ScalarType,
-        data: Vec<u64>,
-    ) -> Result<()> {
+    fn test_batchers_sorting_graph_helper(k: u32, st: ScalarType, data: Vec<u64>) -> Result<()> {
         let context = create_context()?;
         let graph: Graph = create_batchers_sorting_graph(context.clone(), k, st.clone())?;
         context.set_main_graph(graph.clone())?;
@@ -539,25 +601,26 @@ mod tests {
     /// Parameters varied are k, st and the input data could be unsorted,
     /// sorted or sorted in a decreasing order.
     #[test]
-    fn test_wellformed_unsigned_batchers_sorting_graph() -> Result<()> {
+    fn test_wellformed_batchers_sorting_graph() -> Result<()> {
         let mut data = vec![65535, 0, 2, 32768];
-        test_unsigned_batchers_sorting_graph_helper(2, UINT16, data.clone())?;
+        test_batchers_sorting_graph_helper(2, UINT16, data.clone())?;
         data.sort_unstable();
-        test_unsigned_batchers_sorting_graph_helper(2, UINT16, data.clone())?;
+        test_batchers_sorting_graph_helper(2, UINT16, data.clone())?;
         data.sort_by_key(|w| Reverse(*w));
-        test_unsigned_batchers_sorting_graph_helper(2, UINT16, data.clone())?;
+        test_batchers_sorting_graph_helper(2, UINT16, data.clone())?;
 
         let data = vec![548890456, 402403639693304868, u64::MAX, 999790788];
-        test_unsigned_batchers_sorting_graph_helper(2, UINT64, data.clone())?;
+        test_batchers_sorting_graph_helper(2, UINT64, data.clone())?;
 
         let data = vec![643082556];
-        test_unsigned_batchers_sorting_graph_helper(0, UINT32, data.clone())?;
+        test_batchers_sorting_graph_helper(0, UINT32, data.clone())?;
 
         let data = vec![1, 0, 0, 1];
-        test_unsigned_batchers_sorting_graph_helper(2, BIT, data.clone())?;
+        test_batchers_sorting_graph_helper(2, BIT, data.clone())?;
 
-        test_large_vec_unsigned_batchers_sorting(7, BIT)?;
-        test_large_vec_unsigned_batchers_sorting(4, UINT64)?;
+        test_large_vec_batchers_sorting(7, BIT)?;
+        test_large_vec_batchers_sorting(4, UINT64)?;
+        test_large_vec_batchers_sorting(4, INT64)?;
 
         Ok(())
     }

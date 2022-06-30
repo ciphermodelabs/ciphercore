@@ -1,10 +1,10 @@
-//! Code example of a binary creating the serialization of a matrix multiplication context.
+//! Code example of a binary creating the serialization of a set intersection context via [the HEK protocol](https://homes.luddy.indiana.edu/yh33/mypub/psi.pdf).
 #![cfg_attr(feature = "nightly-features", feature(backtrace))]
 extern crate ciphercore_base;
 
 use std::str::FromStr;
 
-use ciphercore_base::applications::matrix_multiplication::create_matrix_multiplication_graph;
+use ciphercore_base::applications::set_intersection::create_set_intersection_graph;
 use ciphercore_base::data_types::ScalarType;
 use ciphercore_base::errors::Result;
 use ciphercore_base::graphs::{create_context, Graph};
@@ -17,31 +17,24 @@ use clap::Parser;
 #[clap(author, version, about, long_about=None)]
 struct Args {
     #[clap(value_parser)]
-    /// number of rows of the left matrix
-    n: u64,
-    #[clap(value_parser)]
-    /// number of columns of the left matrix (or number of rows of the right matrix)
-    m: u64,
-    #[clap(value_parser)]
-    /// number of columns of the right matrix
-    k: u64,
-    /// scalar type of matrix elements
+    /// number of elements of each input array (i.e., 2<sup>k</sup>)
+    k: u32,
+    /// scalar type of array elements
     #[clap(short, long, value_parser)]
     scalar_type: String,
 }
 
-/// This binary prints the serialized matrix-multiplication-graph context on the non-encrypted input in (serde) JSON format.
+/// This binary prints the serialized set intersection context on the non-encrypted input in (serde) JSON format.
+/// Main context graph is based on [the HEK protocol](https://homes.luddy.indiana.edu/yh33/mypub/psi.pdf).
 ///
 /// # Arguments
 ///
-/// * `n` - number of rows of the first matrix,
-/// * `m` - number of columns of the first matrix (and number of rows of the second matrix)
-/// * `k` - number of columns of the second matrix
-/// * `st` - scalar type of matrix elements (choose `b` for binary entries or one of the Rust built-in integer types: `i8`, `u8`, ..., `i64`, `u64`)
+/// * `k` - number of elements of each input array (i.e. 2<sup>n</sup>)
+/// * `st` - scalar type of array elements
 ///
 /// # Usage
 ///
-/// < this_binary > -s <st> <n> <m> <k>
+/// < this_binary > -s <st> <k>
 fn main() {
     // Initialize a logger that collects information about errors and panics within CipherCore.
     // This information can be accessed via RUST_LOG.
@@ -52,9 +45,8 @@ fn main() {
         let st = ScalarType::from_str(&args.scalar_type)?;
         // Create a context
         let context = create_context()?;
-        // Create a matrix multiplication graph in the context
-        let graph: Graph =
-            create_matrix_multiplication_graph(context.clone(), args.n, args.m, args.k, st)?;
+        // Create a set intersection graph in the context
+        let graph: Graph = create_set_intersection_graph(context.clone(), args.k, st)?;
         // Set this graph as main to be able to finalize the context
         context.set_main_graph(graph)?;
         // Finalize the context. This makes sure that all the graphs of the contexts are ready for computation.

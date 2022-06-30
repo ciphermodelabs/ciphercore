@@ -9,7 +9,7 @@ use crate::graphs::{
 use crate::inline::inline_ops::{inline_operations, InlineConfig};
 use crate::mpc::mpc_arithmetic::{AddMPC, DotMPC, MatmulMPC, MultiplyMPC, SubtractMPC};
 use crate::mpc::mpc_conversion::{A2BMPC, B2AMPC};
-use crate::mpc::mpc_truncate::TruncateMPC;
+use crate::mpc::mpc_truncate::{TruncateMPC, TruncateMPC2K};
 use crate::optimizer::optimize::optimize_context;
 
 use std::collections::HashMap;
@@ -27,7 +27,7 @@ pub enum IOStatus {
 }
 
 // Bitsize of PRF keys
-const KEY_LENGTH: u64 = 128;
+pub(super) const KEY_LENGTH: u64 = 128;
 
 /// Checks whether a private tuple value has the correct number of shares
 pub(super) fn check_private_tuple(v: Vec<TypePointer>) -> Result<()> {
@@ -201,10 +201,11 @@ pub(super) fn get_zero_shares(g: Graph, prf_keys: Node, t: Type) -> Result<Vec<N
 fn propagate_private_annotations(
     graph: Graph,
     is_input_private: Vec<bool>,
-) -> Result<(HashSet<Node>, bool, bool)> {
+) -> Result<(HashSet<Node>, bool, bool, bool)> {
     let mut private_nodes: HashSet<Node> = HashSet::new();
     let mut use_prf_for_mul = false;
     let mut use_prf_for_b2a = false;
+    let mut use_prf_for_truncate2k = false;
     let mut input_id = 0usize;
     for node in graph.get_nodes() {
         let op = node.get_operation();
@@ -236,7 +237,6 @@ fn propagate_private_annotations(
             | Operation::CreateVector(_)
             | Operation::Stack(_)
             | Operation::Zip
-            | Operation::Truncate(_)
             | Operation::Repeat(_) => {
                 let dependencies = node.get_node_dependencies();
                 if is_one_node_private(&dependencies, &private_nodes) {
@@ -248,8 +248,7 @@ fn propagate_private_annotations(
                     Operation::Matmul,
                     Operation::A2B,
                 ]
-                .contains(&op)
-                    || matches!(op, Operation::Truncate(_)))
+                .contains(&op))
                     && are_all_nodes_private(&dependencies, &private_nodes)
                 {
                     use_prf_for_mul = true;
@@ -259,6 +258,19 @@ fn propagate_private_annotations(
                 {
                     use_prf_for_mul = true;
                     use_prf_for_b2a = true;
+                }
+            }
+            Operation::Truncate(scale) => {
+                let dependencies = node.get_node_dependencies();
+                if is_one_node_private(&dependencies, &private_nodes) {
+                    private_nodes.insert(node.clone());
+                }
+
+                if are_all_nodes_private(&dependencies, &private_nodes) {
+                    use_prf_for_mul = true;
+                    if scale.is_power_of_two() {
+                        use_prf_for_truncate2k = true;
+                    }
                 }
             }
             Operation::Constant(_, _) => {
@@ -281,7 +293,12 @@ fn propagate_private_annotations(
             }
         }
     }
-    Ok((private_nodes, use_prf_for_mul, use_prf_for_b2a))
+    Ok((
+        private_nodes,
+        use_prf_for_mul,
+        use_prf_for_b2a,
+        use_prf_for_truncate2k,
+    ))
 }
 
 pub(super) fn compile_to_mpc_graph(
@@ -292,7 +309,7 @@ pub(super) fn compile_to_mpc_graph(
 ) -> Result<Graph> {
     let out_graph = out_context.create_graph()?;
 
-    let (private_nodes, use_prf_for_mul, use_prf_for_b2a) =
+    let (private_nodes, use_prf_for_mul, use_prf_for_b2a, use_prf_for_truncate2k) =
         propagate_private_annotations(in_graph.clone(), is_input_private)?;
     // Input tuple of PRF keys for multiplication if needed
     // If created, these are the first input node of a graph
@@ -317,6 +334,17 @@ pub(super) fn compile_to_mpc_graph(
         let keys_type = tuple_type(vec![key_triple_type; 2]);
         let node = out_graph.input(keys_type)?;
         node.add_annotation(NodeAnnotation::PRFB2A)?;
+        Some(node)
+    } else {
+        None
+    };
+    // Input tuple of PRF keys for Truncate if needed
+    // If created, these are the second input node of a graph
+    let prf_keys_truncate2k = if use_prf_for_truncate2k {
+        // PRF key type
+        let key_t = array_type(vec![KEY_LENGTH], BIT);
+        let node = out_graph.input(key_t)?;
+        node.add_annotation(NodeAnnotation::PRFTruncate)?;
         Some(node)
     } else {
         None
@@ -429,17 +457,50 @@ pub(super) fn compile_to_mpc_graph(
                     out_graph.custom_op(custom_op, vec![new_input0.clone(), new_input1.clone()])?
                 }
             }
-            Operation::A2B | Operation::Truncate(_) => {
+            Operation::Truncate(scale) => {
                 let dependencies = node.get_node_dependencies();
                 let input = dependencies[0].clone();
                 let new_input = out_mapping.get_node(input.clone());
-                let custom_op = match op.clone() {
-                    Operation::A2B => CustomOperation::new(A2BMPC {}),
-                    Operation::Truncate(scale) => CustomOperation::new(TruncateMPC { scale }),
-                    _ => {
-                        panic!("Shouldn't be here")
-                    }
+                let custom_op = if scale.is_power_of_two() {
+                    let k = scale.trailing_zeros() as u64;
+                    CustomOperation::new(TruncateMPC2K { k })
+                } else {
+                    CustomOperation::new(TruncateMPC { scale })
                 };
+                if private_nodes.contains(&input) {
+                    // If input is private, the MPC protocol requires invoking PRFs.
+                    // Thus, PRF keys must be provided.
+                    let prf_mul_keys = match prf_keys_mul {
+                        Some(ref k) => k.clone(),
+                        None => {
+                            panic!("Propagation of annotations failed")
+                        }
+                    };
+
+                    if scale.is_power_of_two() {
+                        let prf_truncate_keys = match prf_keys_truncate2k {
+                            Some(ref k) => k.clone(),
+                            None => {
+                                panic!("Propagation of annotations failed")
+                            }
+                        };
+
+                        out_graph.custom_op(
+                            custom_op,
+                            vec![new_input.clone(), prf_mul_keys, prf_truncate_keys],
+                        )?
+                    } else {
+                        out_graph.custom_op(custom_op, vec![new_input.clone(), prf_mul_keys])?
+                    }
+                } else {
+                    out_graph.custom_op(custom_op, vec![new_input.clone()])?
+                }
+            }
+            Operation::A2B => {
+                let dependencies = node.get_node_dependencies();
+                let input = dependencies[0].clone();
+                let new_input = out_mapping.get_node(input.clone());
+                let custom_op = CustomOperation::new(A2BMPC {});
                 if private_nodes.contains(&input) {
                     // If input is private, the MPC protocol requires invoking PRFs.
                     // Thus, PRF keys must be provided.
@@ -547,11 +608,10 @@ fn contains_node_annotation(g: Graph, annotation: NodeAnnotation) -> Result<bool
     Ok(false)
 }
 
-fn share_input(g: Graph, node: Node, t: Type, prf_keys: Node, status: IOStatus) -> Result<Node> {
-    let plain_input = g.input(t.clone())?;
-    copy_node_name(node, plain_input.clone())?;
+fn share_node(g: Graph, node: Node, prf_keys: Node, status: IOStatus) -> Result<Node> {
     let mut outputs = vec![];
-    let node_shares = get_node_shares(g.clone(), prf_keys, t, Some((plain_input, status)))?;
+    let t = node.get_type()?;
+    let node_shares = get_node_shares(g.clone(), prf_keys, t, Some((node, status)))?;
     // networking
     for (i, node_share) in node_shares.iter().enumerate().take(PARTIES) {
         let network_node = g.nop((*node_share).clone())?;
@@ -560,6 +620,12 @@ fn share_input(g: Graph, node: Node, t: Type, prf_keys: Node, status: IOStatus) 
         outputs.push(network_node);
     }
     g.create_tuple(outputs)
+}
+
+fn share_input(g: Graph, node: Node, t: Type, prf_keys: Node, status: IOStatus) -> Result<Node> {
+    let plain_input = g.input(t)?;
+    copy_node_name(node, plain_input.clone())?;
+    share_node(g, plain_input, prf_keys, status)
 }
 
 /// Generates a triple of random PRF keys (k_0, k_1, k_2) such that k_i is generated by party i.
@@ -585,6 +651,7 @@ fn share_all_inputs(
     prf_keys: Node,
     is_prf_mul_key_needed: bool,
     is_prf_b2a_key_needed: bool,
+    is_prf_truncate_key_needed: bool,
 ) -> Result<Vec<Node>> {
     let mut shared_inputs = if is_prf_mul_key_needed {
         vec![prf_keys.clone()]
@@ -625,6 +692,11 @@ fn share_all_inputs(
             out_graph.create_tuple(vec![key_triple0, key_triple1])?
         };
         shared_inputs.push(prf_b2a_key);
+    }
+    if is_prf_truncate_key_needed {
+        let key_t = array_type(vec![KEY_LENGTH], BIT);
+        let prf_truncate_key = out_graph.random(key_t)?;
+        shared_inputs.push(prf_truncate_key);
     }
 
     let mut input_id = 0usize;
@@ -733,17 +805,19 @@ fn reveal_output(g: Graph, out_node: Node, output_parties: Vec<IOStatus>) -> Res
         let revealed_node = recursively_sum_shares(g, shares_to_reveal)?;
         // If there are other parties waiting for a revealed value, send it to them
         let result_node = if output_parties.len() > 1 {
-            let send_node = revealed_node.nop()?;
+            let mut send_node = revealed_node;
             for i in 1..PARTIES {
                 let party_to_send_id = (party_id + i) % PARTIES;
                 if output_parties.contains(&IOStatus::Party(party_to_send_id as u64)) {
+                    send_node = send_node.nop()?;
                     send_node.add_annotation(NodeAnnotation::Send(
                         party_id as u64,
                         party_to_send_id as u64,
                     ))?;
                 }
             }
-            send_node
+            // Output node can't have Send annotation
+            send_node.nop()?
         } else {
             revealed_node
         };
@@ -793,13 +867,16 @@ fn compile_to_mpc_context(
             contains_node_annotation(computation_graph.clone(), NodeAnnotation::PRFMultiplication)?;
         let is_prf_b2a_key_needed =
             contains_node_annotation(computation_graph.clone(), NodeAnnotation::PRFB2A)?;
+        let is_prf_truncate_key_needed =
+            contains_node_annotation(computation_graph.clone(), NodeAnnotation::PRFTruncate)?;
         let shared_input = share_all_inputs(
             graph.clone(),
             new_graph.clone(),
             input_party_map[i].clone(),
-            prf_keys,
+            prf_keys.clone(),
             is_prf_mul_key_needed,
             is_prf_b2a_key_needed,
+            is_prf_truncate_key_needed,
         )?;
 
         // compute the MPC graph on the shared input
@@ -812,6 +889,15 @@ fn compile_to_mpc_context(
         };
         let result = if is_output_private {
             reveal_output(new_graph.clone(), shared_result, output_parties[i].clone())?
+        } else if output_parties[i].is_empty() {
+            // if output is public and it should be secretly shared (no output parties), party 0 creates its secret sharing
+            let node = share_node(
+                new_graph.clone(),
+                shared_result.clone(),
+                prf_keys,
+                IOStatus::Party(0),
+            )?;
+            node.add_annotation(NodeAnnotation::Private)?
         } else {
             shared_result
         };
@@ -1143,8 +1229,8 @@ mod tests {
 
                 let mpc_computation_graph = mpc_context.get_graphs()[0].clone();
 
-                let output_node = mpc_computation_graph.get_output_node()?;
-                let output_annotations = output_node.get_annotations()?;
+                let computation_output_node = mpc_computation_graph.get_output_node()?;
+                let computation_output_annotations = computation_output_node.get_annotations()?;
                 if input_status != IOStatus::Public {
                     let expected = if input_status == IOStatus::Shared {
                         reveal_private_value(inputs[0].clone(), t.clone())?
@@ -1161,10 +1247,21 @@ mod tests {
                         assert!(output.check_type(t.clone())?);
                         assert_eq!(output, expected.clone());
                     }
-                    assert!(output_annotations.contains(&NodeAnnotation::Private));
+                    assert!(computation_output_annotations.contains(&NodeAnnotation::Private));
                 } else {
-                    assert_eq!(output, inputs[0]);
-                    assert!(!output_annotations.contains(&NodeAnnotation::Private));
+                    // public input must be shared
+                    if output_parties.is_empty() {
+                        let revealed_output = reveal_private_value(output.clone(), t.clone())?;
+                        assert!(output.check_type(tuple_type(vec![t.clone(); PARTIES]))?);
+                        assert_eq!(revealed_output, inputs[0]);
+                        // check that the final output is private (since it's shared)
+                        let output_annotations = mpc_graph.get_output_node()?.get_annotations()?;
+                        assert!(output_annotations.contains(&NodeAnnotation::Private));
+                    } else {
+                        assert_eq!(output, inputs[0]);
+                    }
+                    // computation output should be public on public inputs
+                    assert!(!computation_output_annotations.contains(&NodeAnnotation::Private));
                 }
                 Ok(())
             };
@@ -1200,6 +1297,7 @@ mod tests {
         )
         .unwrap();
         helper(scalar_type(UINT64), IOStatus::Shared, vec![]).unwrap();
+        helper(scalar_type(UINT64), IOStatus::Public, vec![]).unwrap();
     }
 
     fn prepare_private_value(value: Value, t: Type) -> Result<Vec<Value>> {
@@ -1283,23 +1381,18 @@ mod tests {
         plain_inputs: Vec<Value>,
         mpc_inputs: Vec<Value>,
         output_parties: Vec<IOStatus>,
-        is_output_private: bool,
         t: Type,
     ) -> Result<()> {
         let plain_output = random_evaluate(plain_graph.clone(), plain_inputs)?;
         let mpc_output = random_evaluate(mpc_graph.clone(), mpc_inputs)?;
 
-        if is_output_private {
-            if output_parties.is_empty() {
-                // check that mpc_output is a sharing of plain_output
-                assert!(mpc_output.check_type(tuple_type(vec![t.clone(); PARTIES]))?);
-                let value_revealed = reveal_private_value(mpc_output.clone(), t.clone())?;
-                assert_eq!(value_revealed, plain_output);
-            } else {
-                assert!(mpc_output.check_type(t.clone())?);
-                assert_eq!(mpc_output, plain_output.clone());
-            }
+        if output_parties.is_empty() {
+            // check that mpc_output is a sharing of plain_output
+            assert!(mpc_output.check_type(tuple_type(vec![t.clone(); PARTIES]))?);
+            let value_revealed = reveal_private_value(mpc_output.clone(), t.clone())?;
+            assert_eq!(value_revealed, plain_output);
         } else {
+            assert!(mpc_output.check_type(t.clone())?);
             assert_eq!(mpc_output, plain_output);
         }
 
@@ -1311,7 +1404,6 @@ mod tests {
         op: Operation,
         input_party_map: Vec<IOStatus>,
         output_parties: Vec<IOStatus>,
-        is_output_private: bool,
     ) -> Result<()> {
         let c = create_context()?;
         let g = c.create_graph()?;
@@ -1366,7 +1458,6 @@ mod tests {
             plain_inputs,
             mpc_inputs,
             output_parties,
-            is_output_private,
             output_type,
         )?;
         Ok(())
@@ -1378,30 +1469,32 @@ mod tests {
             op.clone(),
             vec![IOStatus::Party(0)],
             vec![IOStatus::Party(0)],
-            true,
         )?;
         helper_one_input(
             vec![input_type.clone()],
             op.clone(),
             vec![IOStatus::Party(0)],
             vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
-            true,
         )?;
         helper_one_input(
             vec![input_type.clone()],
             op.clone(),
             vec![IOStatus::Public],
             vec![IOStatus::Party(1)],
-            false,
         )?;
         helper_one_input(
             vec![input_type.clone()],
             op.clone(),
             vec![IOStatus::Shared],
             vec![IOStatus::Party(0), IOStatus::Party(1)],
-            true,
         )?;
-        helper_one_input(vec![input_type], op, vec![IOStatus::Party(0)], vec![], true)?;
+        helper_one_input(
+            vec![input_type.clone()],
+            op.clone(),
+            vec![IOStatus::Party(0)],
+            vec![],
+        )?;
+        helper_one_input(vec![input_type], op, vec![IOStatus::Public], vec![])?;
         Ok(())
     }
 
@@ -1504,7 +1597,6 @@ mod tests {
         op: Operation,
         input_party_map: Vec<IOStatus>,
         output_parties: Vec<IOStatus>,
-        is_output_private: bool,
         include_constant: bool,
     ) -> Result<()> {
         let c = create_context()?;
@@ -1577,7 +1669,6 @@ mod tests {
             plain_inputs,
             mpc_inputs,
             output_parties,
-            is_output_private,
             output_type,
         )?;
         Ok(())
@@ -1590,7 +1681,6 @@ mod tests {
             vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
             vec![IOStatus::Party(0)],
             true,
-            false,
         )?;
         helper_create_ops(
             input_types.clone(),
@@ -1598,7 +1688,6 @@ mod tests {
             vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
             vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
             true,
-            false,
         )?;
         helper_create_ops(
             input_types.clone(),
@@ -1606,14 +1695,12 @@ mod tests {
             vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
             vec![IOStatus::Party(0)],
             true,
-            true,
         )?;
         helper_create_ops(
             input_types.clone(),
             op.clone(),
             vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
             vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
-            true,
             true,
         )?;
 
@@ -1623,7 +1710,6 @@ mod tests {
             vec![IOStatus::Party(0), IOStatus::Public, IOStatus::Party(1)],
             vec![IOStatus::Party(0)],
             true,
-            true,
         )?;
         helper_create_ops(
             input_types.clone(),
@@ -1631,7 +1717,6 @@ mod tests {
             vec![IOStatus::Party(0), IOStatus::Public, IOStatus::Party(1)],
             vec![IOStatus::Party(0)],
             true,
-            false,
         )?;
 
         helper_create_ops(
@@ -1640,7 +1725,6 @@ mod tests {
             vec![IOStatus::Public, IOStatus::Public, IOStatus::Public],
             vec![IOStatus::Party(0)],
             false,
-            false,
         )?;
         helper_create_ops(
             input_types.clone(),
@@ -1648,7 +1732,6 @@ mod tests {
             vec![IOStatus::Public, IOStatus::Public, IOStatus::Public],
             vec![IOStatus::Party(0)],
             false,
-            true,
         )?;
         helper_create_ops(
             input_types.clone(),
@@ -1656,14 +1739,12 @@ mod tests {
             vec![IOStatus::Public, IOStatus::Public, IOStatus::Public],
             vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
             false,
-            true,
         )?;
         helper_create_ops(
             input_types.clone(),
             op.clone(),
             vec![IOStatus::Shared, IOStatus::Shared, IOStatus::Party(0)],
             vec![IOStatus::Party(0), IOStatus::Party(1)],
-            true,
             true,
         )?;
         helper_create_ops(
@@ -1672,6 +1753,12 @@ mod tests {
             vec![IOStatus::Shared, IOStatus::Shared, IOStatus::Party(0)],
             vec![],
             true,
+        )?;
+        helper_create_ops(
+            input_types.clone(),
+            op.clone(),
+            vec![IOStatus::Public, IOStatus::Public, IOStatus::Public],
+            vec![],
             true,
         )?;
         Ok(())

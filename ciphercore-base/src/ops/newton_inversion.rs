@@ -1,6 +1,6 @@
 //! Multiplicative inversion via [the Newton-Raphson method](https://en.wikipedia.org/wiki/Newton%27s_method#Multiplicative_inverses_of_numbers_and_power_series).
 use crate::custom_ops::{CustomOperation, CustomOperationBody, Or};
-use crate::data_types::{array_type, scalar_type, Type, BIT, UINT64};
+use crate::data_types::{array_type, scalar_type, Type, BIT, INT64, UINT64};
 use crate::data_values::Value;
 use crate::errors::Result;
 use crate::graphs::{Context, Graph, GraphAnnotation};
@@ -22,7 +22,8 @@ use serde::{Deserialize, Serialize};
 ///
 /// # Custom operation arguments
 ///
-/// - Node containing an unsigned 64-bit array or scalar to invert
+/// - Node containing an unsigned or signed 64-bit array or scalar to invert
+/// - Negative values are currently unsupported as sign extraction is quite expensive
 /// - (optional) Node containing an array or scalar that serves as an initial approximation of the Newton-Raphson method
 ///
 /// # Custom operation returns
@@ -66,9 +67,10 @@ impl CustomOperationBody for NewtonInversion {
                 "Divisor in NewtonDivision must be a scalar or an array"
             ));
         }
-        if t.get_scalar_type() != UINT64 {
+        let sc = t.get_scalar_type();
+        if sc != UINT64 && sc != INT64 {
             return Err(runtime_error!(
-                "Divisor in NewtonDivision must consist of UINT64's"
+                "Divisor in NewtonDivision must consist of either INT64s or UINT64s"
             ));
         }
         let has_initial_approximation = arguments_types.len() == 2;
@@ -106,8 +108,7 @@ impl CustomOperationBody for NewtonInversion {
         let divisor = g.input(t.clone())?;
         let zero_bit = g.constant(bit_type.clone(), Value::zero_of_type(bit_type.clone()))?;
         let mut approximation = if has_initial_approximation {
-            let initial_approximation = g.input(t)?;
-            initial_approximation.a2b()?
+            g.input(t)?
         } else {
             let divisor_bits = pull_out_bits(divisor.a2b()?)?.array_to_vector()?;
             let mut divisor_bits_reversed = vec![];
@@ -139,13 +140,13 @@ impl CustomOperationBody for NewtonInversion {
                 g.create_vector(bit_type, first_approximation_bits)?
                     .vector_to_array()?,
             )?
-        }
-        .b2a(UINT64)?;
+            .b2a(sc.clone())?
+        };
         // Now, we do Newton approximation for computing 1 / x, where x = divisor / (2 ** cap).
         // The formula for the Newton method is x_{i + 1} = x_i * (2 - d * x_i).
         let two_power_cap_plus_one = g.constant(
-            scalar_type(UINT64),
-            Value::from_scalar(1 << (self.denominator_cap_2k + 1), UINT64)?,
+            scalar_type(sc.clone()),
+            Value::from_scalar(1 << (self.denominator_cap_2k + 1), sc)?,
         )?;
         for _ in 0..self.iterations {
             let x = approximation;
@@ -153,7 +154,7 @@ impl CustomOperationBody for NewtonInversion {
             let new_approximation = mult.multiply(x)?;
             approximation = g.truncate(new_approximation, 1 << self.denominator_cap_2k)?;
         }
-        approximation.a2b()?.set_as_output()?;
+        approximation.set_as_output()?;
         g.finalize()?;
         Ok(g)
     }
@@ -172,16 +173,23 @@ mod tests {
 
     use crate::custom_ops::run_instantiation_pass;
     use crate::custom_ops::CustomOperation;
+    use crate::data_types::ScalarType;
     use crate::evaluators::random_evaluate;
     use crate::graphs::create_context;
 
-    fn scalar_division_helper(divisor: u64, initial_approximation: Option<u64>) -> Result<u64> {
+    fn scalar_division_helper(
+        divisor: u64,
+        initial_approximation: Option<u64>,
+        sc_t: ScalarType,
+    ) -> Result<Value> {
         let c = create_context()?;
         let g = c.create_graph()?;
-        let i = g.input(scalar_type(UINT64))?;
+        let i = g.input(scalar_type(sc_t.clone()))?;
         let o = if let Some(approx) = initial_approximation {
-            let approx_const =
-                g.constant(scalar_type(UINT64), Value::from_scalar(approx, UINT64)?)?;
+            let approx_const = g.constant(
+                scalar_type(sc_t.clone()),
+                Value::from_scalar(approx, sc_t.clone())?,
+            )?;
             g.custom_op(
                 CustomOperation::new(NewtonInversion {
                     iterations: 5,
@@ -197,8 +205,7 @@ mod tests {
                 }),
                 vec![i],
             )?
-        }
-        .b2a(UINT64)?;
+        };
         o.set_as_output()?;
         g.finalize()?;
         g.set_as_main()?;
@@ -206,25 +213,23 @@ mod tests {
         let mapped_c = run_instantiation_pass(c)?;
         let result = random_evaluate(
             mapped_c.get_context().get_main_graph()?,
-            vec![Value::from_scalar(divisor, UINT64)?],
+            vec![Value::from_scalar(divisor, sc_t)?],
         )?;
-        result.to_u64(UINT64)
+        Ok(result)
     }
 
-    fn array_division_helper(divisor: Vec<u64>) -> Result<Vec<u64>> {
+    fn array_division_helper(divisor: Vec<u64>, sc_t: ScalarType) -> Result<Vec<u64>> {
         let c = create_context()?;
         let g = c.create_graph()?;
-        let array_t = array_type(vec![divisor.len() as u64], UINT64);
+        let array_t = array_type(vec![divisor.len() as u64], sc_t.clone());
         let i = g.input(array_t.clone())?;
-        let o = g
-            .custom_op(
-                CustomOperation::new(NewtonInversion {
-                    iterations: 5,
-                    denominator_cap_2k: 10,
-                }),
-                vec![i],
-            )?
-            .b2a(UINT64)?;
+        let o = g.custom_op(
+            CustomOperation::new(NewtonInversion {
+                iterations: 5,
+                denominator_cap_2k: 10,
+            }),
+            vec![i],
+        )?;
         o.set_as_output()?;
         g.finalize()?;
         g.set_as_main()?;
@@ -232,24 +237,45 @@ mod tests {
         let mapped_c = run_instantiation_pass(c)?;
         let result = random_evaluate(
             mapped_c.get_context().get_main_graph()?,
-            vec![Value::from_flattened_array(&divisor, UINT64)?],
+            vec![Value::from_flattened_array(&divisor, sc_t)?],
         )?;
         result.to_flattened_array_u64(array_t)
     }
 
     #[test]
     fn test_newton_division_scalar() {
-        for i in vec![1, 2, 3, 123, 300, 500, 700] {
-            assert!((scalar_division_helper(i, None).unwrap() as i64 - 1024 / i as i64).abs() <= 1);
+        let div_v = vec![1, 2, 3, 123, 300, 500, 700];
+        for i in div_v.clone() {
+            assert!(
+                (scalar_division_helper(i, None, UINT64)
+                    .unwrap()
+                    .to_u64(UINT64)
+                    .unwrap() as i64
+                    - 1024 / i as i64)
+                    .abs()
+                    <= 1
+            );
+
+            assert!(
+                (scalar_division_helper(i, None, INT64)
+                    .unwrap()
+                    .to_i64(INT64)
+                    .unwrap() as i64
+                    - 1024 / i as i64)
+                    .abs()
+                    <= 1
+            );
         }
     }
 
     #[test]
     fn test_newton_division_array() {
         let arr = vec![23, 32, 57, 71, 183, 555];
-        let div = array_division_helper(arr.clone()).unwrap();
+        let div = array_division_helper(arr.clone(), UINT64).unwrap();
+        let i_div = array_division_helper(arr.clone(), INT64).unwrap();
         for i in 0..arr.len() {
             assert!((div[i] as i64 - 1024 / arr[i] as i64).abs() <= 1);
+            assert!((i_div[i] as i64 - 1024 / arr[i] as i64).abs() <= 1);
         }
     }
 
@@ -261,7 +287,20 @@ mod tests {
                 initial_guess *= 2;
             }
             assert!(
-                (scalar_division_helper(i, Some(initial_guess)).unwrap() as i64 - 1024 / i as i64)
+                (scalar_division_helper(i, Some(initial_guess), UINT64)
+                    .unwrap()
+                    .to_u64(UINT64)
+                    .unwrap() as i64
+                    - 1024 / i as i64)
+                    .abs()
+                    <= 1
+            );
+            assert!(
+                (scalar_division_helper(i, Some(initial_guess), INT64)
+                    .unwrap()
+                    .to_i64(INT64)
+                    .unwrap() as i64
+                    - 1024 / i as i64)
                     .abs()
                     <= 1
             );

@@ -1,6 +1,6 @@
 //! Inverse square root approximation via [the Newton-Raphson method](https://en.wikipedia.org/wiki/Newton%27s_method#Square_root).
 use crate::custom_ops::{CustomOperation, CustomOperationBody, Or};
-use crate::data_types::{array_type, scalar_type, Type, BIT, UINT64, INT64};
+use crate::data_types::{array_type, scalar_type, Type, BIT, INT64, UINT64};
 use crate::data_values::Value;
 use crate::errors::Result;
 use crate::graphs::{Context, Graph, GraphAnnotation};
@@ -204,13 +204,19 @@ mod tests {
     use crate::evaluators::random_evaluate;
     use crate::graphs::create_context;
 
-    fn scalar_helper(divisor: u64, initial_approximation: Option<u64>, sc: ScalarType) -> Result<u64> {
+    fn scalar_helper(
+        divisor: u64,
+        initial_approximation: Option<u64>,
+        sc: ScalarType,
+    ) -> Result<u64> {
         let c = create_context()?;
         let g = c.create_graph()?;
         let i = g.input(scalar_type(sc.clone()))?;
         let o = if let Some(approx) = initial_approximation {
-            let approx_const =
-                g.constant(scalar_type(sc.clone()), Value::from_scalar(approx, sc.clone())?)?;
+            let approx_const = g.constant(
+                scalar_type(sc.clone()),
+                Value::from_scalar(approx, sc.clone())?,
+            )?;
             g.custom_op(
                 CustomOperation::new(InverseSqrt {
                     iterations: 5,
@@ -298,8 +304,14 @@ mod tests {
                 initial_guess *= 2;
             }
             let expected = (1024.0 / (i as f64).powf(0.5)) as i64;
-            assert!((scalar_helper(i, Some(initial_guess), UINT64).unwrap() as i64 - expected).abs() <= 1);
-            assert!((scalar_helper(i, Some(initial_guess), INT64).unwrap() as i64 - expected).abs() <= 1);
+            assert!(
+                (scalar_helper(i, Some(initial_guess), UINT64).unwrap() as i64 - expected).abs()
+                    <= 1
+            );
+            assert!(
+                (scalar_helper(i, Some(initial_guess), INT64).unwrap() as i64 - expected).abs()
+                    <= 1
+            );
         }
     }
 
