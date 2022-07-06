@@ -542,7 +542,8 @@ CipherCore provides a variety of built-in basic operations that include
 * arithmetic operations (that can operate on the whole arrays at once):
    * [addition](https://docs.rs/ciphercore-base/latest/ciphercore_base/graphs/struct.Graph.html#method.add), 
    * [subtraction](https://docs.rs/ciphercore-base/latest/ciphercore_base/graphs/struct.Graph.html#method.subtract), 
-   * [multiplication](https://docs.rs/ciphercore-base/latest/ciphercore_base/graphs/struct.Graph.html#method.multiply), 
+   * [multiplication](https://docs.rs/ciphercore-base/latest/ciphercore_base/graphs/struct.Graph.html#method.multiply),
+   * [mixed multiplication of integers and bits](https://docs.rs/ciphercore-base/latest/ciphercore_base/graphs/struct.Graph.html#method.mixed_multiply), 
    * [dot product](https://docs.rs/ciphercore-base/latest/ciphercore_base/graphs/struct.Graph.html#method.dot), 
    * [matrix multiplication](https://docs.rs/ciphercore-base/latest/ciphercore_base/graphs/struct.Graph.html#method.matmul), 
    * [summation of array entries](https://docs.rs/ciphercore-base/latest/ciphercore_base/graphs/struct.Graph.html#method.sum), 
