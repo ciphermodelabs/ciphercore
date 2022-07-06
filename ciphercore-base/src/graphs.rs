@@ -3963,7 +3963,7 @@ mod tests {
             match extract_panic_message(e) {
                 Some(msg) => {
                     if !msg.contains(error_msg) {
-                        panic!("Undesireable panic: {}", msg);
+                        panic!("Undesirable panic: {}", msg);
                     }
                 }
                 None => panic!("Panic of unknown type"),

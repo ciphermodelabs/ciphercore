@@ -113,7 +113,7 @@ fn attach_binary_batchers_sorting(
         // - For groups or classes of size 2^{it}, you would require 'it' rounds
         // of comparisons
         // - The operations are vectorized to leverage the inherent parallelism
-        // - For each group or class to be sorted, intially pairs are formed for
+        // - For each group or class to be sorted, initially pairs are formed for
         // sorting then groups of 4 are formed for sorting, likewise for 8, 16 and so on.
         // - Technically, here, the number of dimensions are 4, however, we will
         // ignore the innermost dimension that corresponds to bits as it would

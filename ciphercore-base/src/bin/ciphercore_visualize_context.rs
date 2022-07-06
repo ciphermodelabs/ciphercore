@@ -26,7 +26,7 @@ fn get_send_anno_info_str(node: Node) -> Result<String> {
                 let comma_req = if send_count != 0 {
                     ", "
                 } else {
-                    // Atleast one `Send(_, _)` annotation present, create a new
+                    // At least one `Send(_, _)` annotation present, create a new
                     // line in preparation for display
                     send_info_str.push_str("\\n");
                     // First `Send(_, _)`, therefore no comma required

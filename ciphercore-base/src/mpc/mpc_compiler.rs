@@ -1012,7 +1012,7 @@ fn uniquify_prf_id(context: Context) -> Result<Context> {
 }
 
 /// Converts a given inlined context to its counterpart that operates on MPC shares and is ready for evaluation.
-/// It includes a call to the MPC compiler, the custom operation instantiator and an inliner with a given configuration.
+/// It includes a call to the MPC compiler, the custom operation instantiation and inlining with a given configuration.
 /// After inlining this function provides a unique input to every PRF node.
 /// The resulting context preserves only the names of input nodes.
 pub fn prepare_for_mpc_evaluation(

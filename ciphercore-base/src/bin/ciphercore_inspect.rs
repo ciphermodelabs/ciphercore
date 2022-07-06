@@ -61,7 +61,7 @@ fn calculate_integer_operations(node: Node) -> Result<u64> {
             // For Matrix Multiplication this is a very rough estimate.
             // The actual amount of calculations depends on the
             // implementation of the third-party linear algebra library used
-            // Following calculations are based on the simple_evalator evaluations
+            // Following calculations are based on the simple_evaluator evaluations
             // And as an approximation some optimizations for rank-1 matrices are ignored
             let dependency0 = node.get_node_dependencies()[0].clone();
             let dependency1 = node.get_node_dependencies()[1].clone();

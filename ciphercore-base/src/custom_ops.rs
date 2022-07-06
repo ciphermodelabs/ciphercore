@@ -128,7 +128,7 @@ pub trait CustomOperationBody: 'static + Debug + DynEqHash + Send + Sync {
 /// A custom operation can be thought of as a polymorphic function, i.e., where the number of inputs and their types can vary.
 ///
 /// Any struct can be a custom operation if it implements the [CustomOperationBody] trait.
-/// Then any such struct can be used to create a [CustomOperation] object that can be addded to a computation graph with [Graph::custom_op].
+/// Then any such struct can be used to create a [CustomOperation] object that can be added to a computation graph with [Graph::custom_op].
 ///
 /// [Clone] trait duplicates the pointer, not the underlying custom operation.
 ///
@@ -648,7 +648,7 @@ pub fn run_instantiation_pass(context: Context) -> Result<MappedContext> {
         }
         Ok(mapping)
     };
-    // Glue necessary instantiations in the order of topsort of
+    // Glue necessary instantiations in the order of toposort of
     // the instantiations graph, and add them to the cache.
     let mut glued_instantiations_cache = HashMap::<_, Graph>::new();
     for instantiations_graph_node in toposort(&instantiations_graph, None)
