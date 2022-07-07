@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+import "value.proto";
+
+package ciphercore;
+
+service DataManagerService {
+    rpc GetValue(GetValueRequest) returns (GetValueResponse) {}
+}
+
+message GetValueRequest {
+    bytes key = 1;
+}
+
+message GetValueResponse {
+    enum GetValueStatus {
+        OK = 0;
+        ERROR = 1;
+    }
+    GetValueStatus status = 1;
+    string error = 2;
+    repeated TypedValue typed_value = 3;
+}
+
+message DataRequest {
+    bytes key = 1;
+}

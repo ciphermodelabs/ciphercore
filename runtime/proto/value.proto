@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package ciphercore;
+
+message Value {
+    oneof value {
+        BytesValue bytes = 1;
+        VectorValue vector = 2;
+    }
+}
+
+message BytesValue {
+    bytes data = 1;
+}
+
+message VectorValue {
+    repeated Value value = 1;
+}
+
+message TypedValue {
+    Value value = 1;
+    string type_json = 2;
+}

@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+import "value.proto";
+
+package ciphercore;
+
+service ResultProviderService {
+    rpc ProvideResult(ProvideResultRequest) returns (ProvideResultResponse) {}
+}
+
+message ProvideResultRequest {
+    string key = 1;
+    string error = 2;
+    TypedValue typed_value = 3;
+}
+
+message ProvideResultResponse {
+    enum ProvideResultStatus {
+        OK = 0;
+        ERROR = 1;
+    }
+    ProvideResultStatus status = 1;
+    string error = 2; 
+}
