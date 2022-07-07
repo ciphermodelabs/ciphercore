@@ -55,6 +55,9 @@ pub enum Operation {
     Add,
     Subtract,
     Multiply,
+    // Elementwise multiplication of integer arrays by bit arrays.
+    // It leaves an integer array element as is or make it zero it depending on a bit array element.
+    MixedMultiply,
     // Dot operation follows the numpy (tensor)dot semantics: https://numpy.org/doc/stable/reference/generated/numpy.dot.html
     Dot,
     // Matmul operation follows the numpy matmul semantics: https://numpy.org/doc/stable/reference/generated/numpy.matmul.html
@@ -587,8 +590,8 @@ impl Graph {
     ///
     /// # Arguments
     ///
-    /// * `a` - node containing the minuend (array of scalar)
-    /// * `b` - node containing the subtrahend (array of scalar)
+    /// * `a` - node containing the minuend (array or scalar)
+    /// * `b` - node containing the subtrahend (array or scalar)
     ///
     /// # Returns
     ///
@@ -616,8 +619,8 @@ impl Graph {
     ///
     /// # Arguments
     ///
-    /// * `a` - node containing the first factor (array of scalar)
-    /// * `b` - node containing the second factor (array of scalar)
+    /// * `a` - node containing the first factor (array or scalar)
+    /// * `b` - node containing the second factor (array or scalar)
     ///
     /// # Returns
     ///
@@ -637,6 +640,37 @@ impl Graph {
     /// ```
     pub fn multiply(&self, a: Node, b: Node) -> Result<Node> {
         self.add_node(vec![a, b], vec![], Operation::Multiply)
+    }
+
+    /// Adds a node that multiplies an integer array or scalar by a binary array or scalar elementwise.
+    /// For each integer element, this operation returns this element or zero depending on the corresponding bit element.
+    ///
+    /// If input shapes are different, the broadcasting rules are applied (see [the NumPy broadcasting rules](https://numpy.org/doc/stable/user/basics.broadcasting.html)). For example, multiplication of two arrays of shapes `[10,1,7]` and `[8,1]` results in an array of shape `[10,8,7]`.
+    ///
+    /// # Arguments
+    ///
+    /// * `a` - node containing an integer array or scalar
+    /// * `b` - node containing a binary array or scalar
+    ///
+    /// # Returns
+    ///
+    /// New mixed multiplication node
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{BIT, INT32, scalar_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t1 = scalar_type(INT32);
+    /// let t2 = scalar_type(BIT);
+    /// let n1 = g.input(t1).unwrap();
+    /// let n2 = g.input(t2).unwrap();
+    /// let n3 = g.mixed_multiply(n1, n2).unwrap();
+    /// ```
+    pub fn mixed_multiply(&self, a: Node, b: Node) -> Result<Node> {
+        self.add_node(vec![a, b], vec![], Operation::MixedMultiply)
     }
 
     /// Adds a node that computes the dot product according to [the NumPy rules](https://numpy.org/doc/stable/reference/generated/numpy.dot.html):
@@ -3007,6 +3041,27 @@ impl Node {
         self.get_graph().multiply(self.clone(), b)
     }
 
+    /// Adds a node to the parent graph that multiplies elementwise the array or scalar associated with the node by a binary array or scalar associated with another node.
+    ///
+    /// Applies [Graph::mixed_multiply] to the parent graph, `this` node and the `b` node.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{BIT, INT32, scalar_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = scalar_type(INT32);
+    /// let bit_t = scalar_type(BIT);
+    /// let n1 = g.input(t).unwrap();
+    /// let n2 = g.input(bit_t).unwrap();
+    /// let n3 = n1.mixed_multiply(n2).unwrap();
+    /// ```
+    pub fn mixed_multiply(&self, b: Node) -> Result<Node> {
+        self.get_graph().mixed_multiply(self.clone(), b)
+    }
+
     /// Adds a node to the parent graph that computes the dot product of arrays or scalars associated with the node and another node.
     ///
     /// Applies [Graph::dot] to the parent graph, `this` node and the `b` node.
@@ -3908,7 +3963,7 @@ mod tests {
             match extract_panic_message(e) {
                 Some(msg) => {
                     if !msg.contains(error_msg) {
-                        panic!("Undesireable panic: {}", msg);
+                        panic!("Undesirable panic: {}", msg);
                     }
                 }
                 None => panic!("Panic of unknown type"),

@@ -65,7 +65,7 @@ pub extern "C" fn scalar_type_get_signed(st_ptr: *const ScalarType) -> CResultVa
 #[no_mangle]
 pub extern "C" fn scalar_type_get_modulus(st_ptr: *const ScalarType) -> CResultVal<u64> {
     scalar_type_method_helper(st_ptr, |st| {
-        st.get_modulus().ok_or_else(|| runtime_error!("no modulu"))
+        st.get_modulus().ok_or_else(|| runtime_error!("no modulus"))
     })
 }
 

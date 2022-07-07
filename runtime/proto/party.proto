@@ -1,0 +1,108 @@
+syntax = "proto3";
+
+import "value.proto";
+
+package ciphercore;
+
+service PartyService {
+    rpc RegisterGraph(RegisterGraphRequest) returns (RegisterGraphResponse) {}
+    rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse) {}
+    rpc FinishSession(FinishSessionRequest) returns (FinishSessionResponse) {}
+    rpc ListSessions(SessionListRequest) returns (SessionListResponse) {}
+    rpc SendValue(stream SendValueRequest) returns (stream SendValueResponse) {}
+}
+
+message SendValueRequest {
+    uint64 node_id = 1;
+    Value data = 2;
+    uint64 party_id = 3;
+    string session_id = 4;
+}
+
+message SendValueResponse {
+    enum SendValueStatus {
+        SUCCESS = 0;
+        DUPLICATE = 1;
+        UNKNOWN_NODE = 2;
+        UNKNOWN_SESSION = 3;
+        WRONG_PARTY = 4;
+        UNKNOWN_ERROR = 5;
+    }
+    SendValueStatus result = 1;
+    string message = 2;
+    uint64 node_id = 3;
+}
+
+message RegisterGraphRequest {
+    // Should we serialize it in a more compact way?
+    bytes graph_json = 1;
+    string graph_id = 2;
+}
+
+message RegisterGraphResponse {
+    enum RegisterGraphStatus {
+        SUCCESS = 0;
+        DUPLICATE = 1;
+        GENERIC_FAILURE = 2;
+    }
+    RegisterGraphStatus result = 1;
+    string message = 2;
+}
+
+message CreateSessionRequest {
+    string session_id = 1;
+    string graph_id = 2;
+    uint64 party_id = 3;
+    // Application-specific settings for input data for this session.
+    bytes data_settings = 4;
+    repeated Address party_address = 5;
+}
+
+message Address {
+    string address = 1;
+    uint32 port = 2;
+}
+
+message CreateSessionResponse {
+    enum CreateSessionStatus {
+        SUCCESS = 0;
+        MISSING_GRAPH = 1;
+        DUPLICATE_SESSION = 2;
+        INVALID_CONFIGURATION = 3;
+        GENERIC_FAILURE = 4;
+    }
+    CreateSessionStatus result = 1;
+    string message = 2;
+}
+
+message FinishSessionRequest {
+    string session_id = 1;
+}
+
+message FinishSessionResponse {
+    enum FinishSessionStatus {
+        SUCCESS = 0;
+        MISSING_SESSION = 1;
+        GENERIC_FAILURE = 2;
+    }
+    FinishSessionStatus result = 1;
+    string message = 2;
+}
+
+message SessionListRequest {
+
+}
+
+message SessionListResponse {
+    enum SessionStatus {
+        CREATED = 0;
+        RUNNING = 1;
+        FINISHED = 2;
+        FAILED = 3;
+    }
+    message SessionEntry {
+        string session_id = 1;
+        SessionStatus status = 2;
+    }
+    repeated SessionEntry session = 1;
+}

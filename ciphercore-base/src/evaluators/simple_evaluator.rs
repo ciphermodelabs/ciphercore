@@ -3,7 +3,7 @@ use crate::bytes::{
     add_u64, add_vectors_u64, multiply_u64, multiply_vectors_u64, subtract_vectors_u64,
 };
 use crate::bytes::{vec_from_bytes, vec_to_bytes};
-use crate::data_types::{array_type, Type};
+use crate::data_types::{array_type, Type, BIT};
 use crate::data_values::Value;
 use crate::errors::Result;
 use crate::evaluators::Evaluator;
@@ -113,6 +113,43 @@ pub(crate) fn evaluate_add_subtract_multiply(
                 )?,
                 _ => panic!("Should not be here"),
             };
+            //unpack bytes from vectors of u64
+            vec_to_bytes(&result_u64, st)?
+        }
+        _ => {
+            return Err(runtime_error!("Not implemented"));
+        }
+    };
+    let result_value = Value::from_bytes(result_bytes);
+    Ok(result_value)
+}
+
+pub(crate) fn evaluate_mixed_multiply(
+    type1: Type,
+    value1: Value,
+    type2: Type,
+    value2: Value,
+    result_type: Type,
+) -> Result<Value> {
+    let result_bytes = match (type1.clone(), type2.clone()) {
+        // scalar types and shapes will be compatible thanks to process_node
+        (Type::Scalar(st), Type::Scalar(_))
+        | (Type::Array(_, st), Type::Scalar(_))
+        | (Type::Scalar(st), Type::Array(_, _))
+        | (Type::Array(_, st), Type::Array(_, _)) => {
+            //pack bytes into vectors of u64
+            let bytes1_u64 = value1
+                .access_bytes(|ref_bytes| Ok(vec_from_bytes(ref_bytes, st.clone())?.to_vec()))?;
+            let bytes2_u64 =
+                value2.access_bytes(|ref_bytes| Ok(vec_from_bytes(ref_bytes, BIT)?.to_vec()))?;
+            let shape1 = type1.get_dimensions();
+            let shape2 = type2.get_dimensions();
+            let shape_res = result_type.get_dimensions();
+            let result_u64 = multiply_vectors_u64(
+                &broadcast_to_shape(&bytes1_u64, &shape1, &shape_res),
+                &broadcast_to_shape(&bytes2_u64, &shape2, &shape_res),
+                st.get_modulus(),
+            )?;
             //unpack bytes from vectors of u64
             vec_to_bytes(&result_u64, st)?
         }
@@ -284,20 +321,27 @@ impl Evaluator for SimpleEvaluator {
             Operation::Input(_) | Operation::Call | Operation::Iterate => {
                 panic!("Should not be here!");
             }
-            Operation::Add | Operation::Subtract | Operation::Multiply => {
+            Operation::Add
+            | Operation::Subtract
+            | Operation::Multiply
+            | Operation::MixedMultiply => {
                 let dependencies = node.get_node_dependencies();
                 let value0_rc = dependencies_values[0].clone();
                 let value1_rc = dependencies_values[1].clone();
                 let type0 = dependencies[0].get_type()?;
                 let type1 = dependencies[1].get_type()?;
-                let result_value = evaluate_add_subtract_multiply(
-                    type0,
-                    value0_rc,
-                    type1,
-                    value1_rc,
-                    node.get_operation(),
-                    node.get_type()?,
-                )?;
+                let result_value = if node.get_operation() == Operation::MixedMultiply {
+                    evaluate_mixed_multiply(type0, value0_rc, type1, value1_rc, node.get_type()?)?
+                } else {
+                    evaluate_add_subtract_multiply(
+                        type0,
+                        value0_rc,
+                        type1,
+                        value1_rc,
+                        node.get_operation(),
+                        node.get_type()?,
+                    )?
+                };
                 Ok(result_value)
             }
             Operation::CreateTuple

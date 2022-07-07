@@ -129,7 +129,7 @@ impl ScalarType {
     /// ```
     pub fn is_valid(&self) -> bool {
         if let Some(m) = self.modulus {
-            //Currently our evalutaor only supports bit_size = 1,8,16,32,64
+            //Currently our evaluator only supports bit_size = 1,8,16,32,64
             let supported_modulus = vec![TWO, TWO.pow(8), TWO.pow(16), TWO.pow(32)];
             let supported =
                 constants::NON_STANDARD_SCALAR_LEN_SUPPORT || supported_modulus.contains(&m);

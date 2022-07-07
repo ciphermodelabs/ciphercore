@@ -34,6 +34,42 @@ pub fn create_type_inference_worker(context: Context) -> TypeInferenceWorker {
     }
 }
 
+fn mixed_multiply_inference(t0: Type, t1: Type) -> Result<Type> {
+    if !t0.is_scalar() && !t0.is_array() {
+        return Err(runtime_error!(
+            "The first argument of mixed multiply is not a scalar or an array"
+        ));
+    }
+    if !t1.is_scalar() && !t1.is_array() {
+        return Err(runtime_error!(
+            "The second argument of mixed multiply is not a scalar or an array"
+        ));
+    }
+
+    if t0.get_scalar_type() == BIT {
+        return Err(runtime_error!(
+            "The scalar type of the first argument shouldn't be BIT"
+        ));
+    }
+    if t1.get_scalar_type() != BIT {
+        return Err(runtime_error!(
+            "The scalar type of the second argument must be BIT"
+        ));
+    }
+
+    if t1.is_scalar() {
+        return Ok(t0);
+    }
+    if t0.is_scalar() {
+        return Ok(array_type(t1.get_shape(), t0.get_scalar_type()));
+    }
+
+    Ok(array_type(
+        broadcast_shapes(t0.get_shape(), t1.get_shape())?,
+        t0.get_scalar_type(),
+    ))
+}
+
 fn dot_type_inference(t0: Type, t1: Type) -> Result<Type> {
     if !t0.is_scalar() && !t0.is_array() {
         return Err(runtime_error!(
@@ -196,6 +232,7 @@ fn get_number_of_node_dependencies(operation: Operation) -> Option<u64> {
         Operation::Add
         | Operation::Subtract
         | Operation::Multiply
+        | Operation::MixedMultiply
         | Operation::Dot
         | Operation::Matmul
         | Operation::VectorGet
@@ -382,6 +419,14 @@ impl TypeInferenceWorker {
                     node_dependencies_types[0].clone(),
                     node_dependencies_types[1].clone(),
                 ])?;
+                self.register_result(node, result.clone())?;
+                Ok(result)
+            }
+            Operation::MixedMultiply => {
+                let result = mixed_multiply_inference(
+                    node_dependencies_types[0].clone(),
+                    node_dependencies_types[1].clone(),
+                )?;
                 self.register_result(node, result.clone())?;
                 Ok(result)
             }
@@ -930,6 +975,62 @@ mod tests {
         let o = graph.add(i1.clone(), i2.clone()).unwrap();
         let t = worker.process_node(o.clone()).unwrap();
         assert_eq!(t, array_type(vec![2, 7, 5], BIT));
+    }
+
+    fn mixed_multiply_helper(t0: Type, t1: Type, expected: Option<Type>) {
+        let context = create_unchecked_context().unwrap();
+        let mut worker = create_type_inference_worker(context.clone());
+        let graph = context.create_graph().unwrap();
+        let i1 = graph.input(t0).unwrap();
+        let i2 = graph.input(t1).unwrap();
+        let o = graph.mixed_multiply(i1.clone(), i2.clone()).unwrap();
+        let t = worker.process_node(o.clone());
+        if let Some(expected_t) = expected {
+            assert_eq!(t.unwrap(), expected_t);
+        } else {
+            assert!(t.is_err());
+        }
+    }
+
+    #[test]
+    fn test_mixed_multiply() {
+        mixed_multiply_helper(
+            array_type(vec![2, 1, 5], INT32),
+            array_type(vec![7, 1], BIT),
+            Some(array_type(vec![2, 7, 5], INT32)),
+        );
+        mixed_multiply_helper(
+            scalar_type(INT32),
+            array_type(vec![7, 1], BIT),
+            Some(array_type(vec![7, 1], INT32)),
+        );
+        mixed_multiply_helper(
+            array_type(vec![2, 1, 5], INT32),
+            scalar_type(BIT),
+            Some(array_type(vec![2, 1, 5], INT32)),
+        );
+
+        // malformed
+        mixed_multiply_helper(
+            array_type(vec![2, 1, 5], BIT),
+            array_type(vec![7, 1], BIT),
+            None,
+        );
+        mixed_multiply_helper(
+            array_type(vec![2, 1, 5], INT32),
+            array_type(vec![7, 1], INT32),
+            None,
+        );
+        mixed_multiply_helper(
+            vector_type(5, scalar_type(INT32)),
+            array_type(vec![7, 1], BIT),
+            None,
+        );
+        mixed_multiply_helper(
+            array_type(vec![7, 1], INT32),
+            vector_type(5, scalar_type(BIT)),
+            None,
+        );
     }
 
     fn test_dot_worker(t0: Type, t1: Type, t2: Type) {

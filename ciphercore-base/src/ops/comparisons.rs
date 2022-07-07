@@ -62,7 +62,7 @@ trait ComparisonCustomOperation: CustomOperationBody {
     /// specific validation
     /// - E.g. see the implementation for this function for `GreaterThan` custom op,
     /// in there, unsigned comparison for single-bit inputs is supported,
-    /// whereas signed comparison requires atleast two bits (one for MSB). This
+    /// whereas signed comparison requires at least two bits (one for MSB). This
     /// signed-operation specific validation is done in the default
     /// `validate_signed_arguments()` function for the trait `NeedsSignedPreprocessing`.
     /// This function's overridden counterpart for `GreaterThan` custom operation
@@ -109,7 +109,7 @@ trait NeedsSignedPreprocessing: CustomOperationBody + ComparisonCustomOperation 
     fn is_signed_custom_operation(&self) -> bool;
 
     /// This function validates if the `arguments_types` are suitable for the
-    /// intended signed custom operation. E.g. there should be atleast `2` bits
+    /// intended signed custom operation. E.g. there should be at least `2` bits
     /// i.e. ( magnitude + sign )
     fn validate_signed_arguments(&self, arguments_types: Vec<Type>) -> Result<()> {
         let mut are_valid_inputs: bool = true;
@@ -256,7 +256,7 @@ trait NeedsSignedPreprocessing: CustomOperationBody + ComparisonCustomOperation 
     }
 }
 
-/// - Certain custom operations are the bulding-blocks for other similar
+/// - Certain custom operations are the building-blocks for other similar
 /// comparison operations
 /// - e.g. GreaterThan, a 'primitive' comparison operation,
 /// can be used to build other comparison operations such as LessThan,

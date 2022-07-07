@@ -622,6 +622,7 @@
 //!    * [addition](https://docs.rs/ciphercore-base/latest/ciphercore_base/graphs/struct.Graph.html#method.add),
 //!    * [subtraction](https://docs.rs/ciphercore-base/latest/ciphercore_base/graphs/struct.Graph.html#method.subtract),
 //!    * [multiplication](https://docs.rs/ciphercore-base/latest/ciphercore_base/graphs/struct.Graph.html#method.multiply),
+//!    * [mixed multiplication of integers and bits](https://docs.rs/ciphercore-base/latest/ciphercore_base/graphs/struct.Graph.html#method.mixed_multiply),
 //!    * [dot product](https://docs.rs/ciphercore-base/latest/ciphercore_base/graphs/struct.Graph.html#method.dot),
 //!    * [matrix multiplication](https://docs.rs/ciphercore-base/latest/ciphercore_base/graphs/struct.Graph.html#method.matmul),
 //!    * [summation of array entries](https://docs.rs/ciphercore-base/latest/ciphercore_base/graphs/struct.Graph.html#method.sum),
@@ -930,9 +931,9 @@ pub mod slices;
 pub mod type_inference;
 pub mod typed_value;
 #[doc(hidden)]
-pub mod version;
-#[doc(hidden)]
 mod typed_value_serialization;
+#[doc(hidden)]
+pub mod version;
 
 #[cfg(test)]
 #[macro_use]
