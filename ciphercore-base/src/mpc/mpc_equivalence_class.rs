@@ -196,6 +196,7 @@ pub(super) fn generate_equivalence_class(
                 Operation::Add
                 | Operation::Subtract
                 | Operation::Multiply
+                | Operation::MixedMultiply
                 | Operation::Dot
                 | Operation::Matmul => {
                     equivalence_classes.insert(
