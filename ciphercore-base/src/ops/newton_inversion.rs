@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// In particular, this operation computes an approximation of 2<sup>denominator_cap_2k</sup> / input.
 ///
-/// Input must be of the scalar type UINT64 and be in (0, 2<sup>denominator_cap_2k - 1</sup>) range.
+/// Input must be of the scalar type UINT64 or INT64 and be in (0, 2<sup>denominator_cap_2k - 1</sup>) range.
 /// The input is also assumed to be small enough (less than 2<sup>32</sup>), otherwise integer overflows
 /// are possible, yielding incorrect results.
 ///
