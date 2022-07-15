@@ -11,6 +11,8 @@ struct CResult_Node graph_subtract(struct Graph *graph_ptr, struct Node *a_ptr, 
 
 struct CResult_Node graph_multiply(struct Graph *graph_ptr, struct Node *a_ptr, struct Node *b_ptr);
 
+struct CResult_Node graph_mixed_multiply(struct Graph *graph_ptr, struct Node *a_ptr, struct Node *b_ptr);
+
 struct CResult_Node graph_dot(struct Graph *graph_ptr, struct Node *a_ptr, struct Node *b_ptr);
 
 struct CResult_Node graph_matmul(struct Graph *graph_ptr, struct Node *a_ptr, struct Node *b_ptr);
