@@ -279,7 +279,7 @@ impl CTypedValue {
         Ok((tv.t, tv.value))
     }
     pub(crate) fn from_type_and_value(t: Type, value: Value) -> Result<CTypedValue> {
-        let tv = TypedValue { value, t };
+        let tv = TypedValue::new(t, value)?;
         let jstr = CStr::from_string(serde_json::to_string(&tv)?)?;
         Ok(CTypedValue { json: jstr })
     }

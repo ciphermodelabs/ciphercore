@@ -23,6 +23,8 @@ struct CResult_Node node_subtract(struct Node *node_ptr, struct Node *b_ptr);
 
 struct CResult_Node node_multiply(struct Node *node_ptr, struct Node *b_ptr);
 
+struct CResult_Node node_mixed_multiply(struct Node *node_ptr, struct Node *b_ptr);
+
 struct CResult_Node node_dot(struct Node *node_ptr, struct Node *b_ptr);
 
 struct CResult_Node node_matmul(struct Node *node_ptr, struct Node *b_ptr);

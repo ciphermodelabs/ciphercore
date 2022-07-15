@@ -7,6 +7,9 @@ use crate::data_types::{
 };
 use crate::data_values::Value;
 use crate::typed_value::TypedValue;
+use crate::typed_value_operations::{
+    FromVectorMode, TypedValueArrayOperations, TypedValueOperations,
+};
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::ser::{SerializeSeq, SerializeStruct};
 use serde::{de, ser};
@@ -38,6 +41,7 @@ impl<'de> Deserialize<'de> for TypedValue {
             Ok(TypedValue {
                 t: tv.0,
                 value: tv.1,
+                name: None,
             })
         }
     }
@@ -290,7 +294,8 @@ impl<'de> Visitor<'de> for SerializedDataModelVisitor {
             Kind::Vector => {
                 if let SerializedDataModel::Vector(v) = value {
                     Ok(SerializedDataModel::Value(
-                        TypedValue::from_vector(v).map_err(de::Error::custom)?,
+                        TypedValue::from_vector(v, FromVectorMode::Vector)
+                            .map_err(de::Error::custom)?,
                     ))
                 } else {
                     Err(de::Error::custom(
@@ -301,7 +306,8 @@ impl<'de> Visitor<'de> for SerializedDataModelVisitor {
             Kind::Tuple => {
                 if let SerializedDataModel::Vector(v) = value {
                     Ok(SerializedDataModel::Value(
-                        TypedValue::from_tuple(v).map_err(de::Error::custom)?,
+                        TypedValue::from_vector(v, FromVectorMode::Tuple)
+                            .map_err(de::Error::custom)?,
                     ))
                 } else {
                     Err(de::Error::custom(
@@ -311,8 +317,16 @@ impl<'de> Visitor<'de> for SerializedDataModelVisitor {
             }
             Kind::NamedTuple => {
                 if let SerializedDataModel::NamedTuple(v) = value {
+                    let new_v: Vec<TypedValue> = v
+                        .iter()
+                        .map(|v| {
+                            TypedValue::new_named(v.1.t.clone(), v.1.value.clone(), v.0.clone())
+                                .map_err(de::Error::custom)
+                        })
+                        .collect::<Result<Vec<TypedValue>, A::Error>>()?;
                     Ok(SerializedDataModel::Value(
-                        TypedValue::from_named_tuple(v).map_err(de::Error::custom)?,
+                        TypedValue::from_vector(new_v, FromVectorMode::Tuple)
+                            .map_err(de::Error::custom)?,
                     ))
                 } else {
                     Err(de::Error::custom(

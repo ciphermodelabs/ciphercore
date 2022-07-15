@@ -931,6 +931,10 @@ pub mod slices;
 pub mod type_inference;
 pub mod typed_value;
 #[doc(hidden)]
+pub mod typed_value_operations;
+#[doc(hidden)]
+pub mod typed_value_secret_shared;
+#[doc(hidden)]
 mod typed_value_serialization;
 #[doc(hidden)]
 pub mod version;

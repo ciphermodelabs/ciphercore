@@ -89,6 +89,14 @@ pub extern "C" fn graph_multiply(
     graph_two_nodes_method_helper(graph_ptr, a_ptr, b_ptr, |g, a, b| g.multiply(a, b))
 }
 #[no_mangle]
+pub extern "C" fn graph_mixed_multiply(
+    graph_ptr: *mut Graph,
+    a_ptr: *mut Node,
+    b_ptr: *mut Node,
+) -> CResult<Node> {
+    graph_two_nodes_method_helper(graph_ptr, a_ptr, b_ptr, |g, a, b| g.mixed_multiply(a, b))
+}
+#[no_mangle]
 pub extern "C" fn graph_dot(
     graph_ptr: *mut Graph,
     a_ptr: *mut Node,
@@ -673,6 +681,10 @@ pub extern "C" fn node_subtract(node_ptr: *mut Node, b_ptr: *mut Node) -> CResul
 #[no_mangle]
 pub extern "C" fn node_multiply(node_ptr: *mut Node, b_ptr: *mut Node) -> CResult<Node> {
     node_one_node_method_helper(node_ptr, b_ptr, |a, b| a.multiply(b))
+}
+#[no_mangle]
+pub extern "C" fn node_mixed_multiply(node_ptr: *mut Node, b_ptr: *mut Node) -> CResult<Node> {
+    node_one_node_method_helper(node_ptr, b_ptr, |a, b| a.mixed_multiply(b))
 }
 #[no_mangle]
 pub extern "C" fn node_dot(node_ptr: *mut Node, b_ptr: *mut Node) -> CResult<Node> {

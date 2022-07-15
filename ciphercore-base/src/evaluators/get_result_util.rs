@@ -166,12 +166,9 @@ pub fn get_evaluator_result<T: Evaluator>(
                 // It allows to pass an array of i32's to a graph
                 // that accepts bit arrays etc.
                 input_values.push(
-                    TypedValue {
-                        value: inputs[i].value.clone(),
-                        t: (*v[0]).clone(),
-                    }
-                    .secret_share(&mut prng)?
-                    .value,
+                    TypedValue::new((*v[0]).clone(), inputs[i].value.clone())?
+                        .secret_share(&mut prng)?
+                        .value,
                 );
             } else {
                 return e;

@@ -793,259 +793,6 @@ impl Value {
             .collect())
     }
 
-    /// Converts `self` to a multi-dimensional array if it is a byte vector, then cast the array entries to `u8`.
-    ///
-    /// # Arguments
-    ///
-    /// `t` - array type used to interpret `self`
-    ///
-    /// # Result
-    ///
-    /// Resulting multi-dimensional array with entries cast to `u8`
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use ciphercore_base::data_values::Value;
-    /// # use ciphercore_base::data_types::{INT32, array_type};
-    /// # use ndarray::array;
-    /// let a = array![[-123, 123], [-456, 456]].into_dyn();
-    /// let v = Value::from_ndarray(a, INT32).unwrap();
-    /// let a = v.to_ndarray_u8(array_type(vec![2, 2], INT32)).unwrap();
-    /// assert_eq!(a, array![[-123i32 as u8, 123i32 as u8], [-456i32 as u8, 456i32 as u8]].into_dyn());
-    /// ```
-    pub fn to_ndarray_u8(&self, t: Type) -> Result<ndarray::ArrayD<u8>> {
-        let arr = self.to_ndarray_u64(t)?;
-        Ok(arr.map(|x| *x as u8))
-    }
-
-    /// Converts `self` to a multi-dimensional array if it is a byte vector, then cast the array entries to `i8`.
-    ///
-    /// # Arguments
-    ///
-    /// `t` - array type used to interpret `self`
-    ///
-    /// # Result
-    ///
-    /// Resulting multi-dimensional array with entries cast to `i8`
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use ciphercore_base::data_values::Value;
-    /// # use ciphercore_base::data_types::{INT32, array_type};
-    /// # use ndarray::array;
-    /// let a = array![[-123, 123], [-456, 456]].into_dyn();
-    /// let v = Value::from_ndarray(a, INT32).unwrap();
-    /// let a = v.to_ndarray_i8(array_type(vec![2, 2], INT32)).unwrap();
-    /// assert_eq!(a, array![[-123i32 as i8, 123i32 as i8], [-456i32 as i8, 456i32 as i8]].into_dyn());
-    /// ```
-    pub fn to_ndarray_i8(&self, t: Type) -> Result<ndarray::ArrayD<i8>> {
-        let arr = self.to_ndarray_u64(t)?;
-        Ok(arr.map(|x| *x as i8))
-    }
-
-    /// Converts `self` to a multi-dimensional array if it is a byte vector, then cast the array entries to `u16`.
-    ///
-    /// # Arguments
-    ///
-    /// `t` - array type used to interpret `self`
-    ///
-    /// # Result
-    ///
-    /// Resulting multi-dimensional array with entries cast to `u16`
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use ciphercore_base::data_values::Value;
-    /// # use ciphercore_base::data_types::{INT32, array_type};
-    /// # use ndarray::array;
-    /// let a = array![[-123, 123], [-456, 456]].into_dyn();
-    /// let v = Value::from_ndarray(a, INT32).unwrap();
-    /// let a = v.to_ndarray_u16(array_type(vec![2, 2], INT32)).unwrap();
-    /// assert_eq!(a, array![[-123i32 as u16, 123i32 as u16], [-456i32 as u16, 456i32 as u16]].into_dyn());
-    /// ```
-    pub fn to_ndarray_u16(&self, t: Type) -> Result<ndarray::ArrayD<u16>> {
-        let arr = self.to_ndarray_u64(t)?;
-        Ok(arr.map(|x| *x as u16))
-    }
-
-    /// Converts `self` to a multi-dimensional array if it is a byte vector, then cast the array entries to `i16`.
-    ///
-    /// # Arguments
-    ///
-    /// `t` - array type used to interpret `self`
-    ///
-    /// # Result
-    ///
-    /// Resulting multi-dimensional array with entries cast to `i16`
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use ciphercore_base::data_values::Value;
-    /// # use ciphercore_base::data_types::{INT32, array_type};
-    /// # use ndarray::array;
-    /// let a = array![[-123, 123], [-456, 456]].into_dyn();
-    /// let v = Value::from_ndarray(a, INT32).unwrap();
-    /// let a = v.to_ndarray_i16(array_type(vec![2, 2], INT32)).unwrap();
-    /// assert_eq!(a, array![[-123i32 as i16, 123i32 as i16], [-456i32 as i16, 456i32 as i16]].into_dyn());
-    /// ```
-    pub fn to_ndarray_i16(&self, t: Type) -> Result<ndarray::ArrayD<i16>> {
-        let arr = self.to_ndarray_u64(t)?;
-        Ok(arr.map(|x| *x as i16))
-    }
-
-    /// Converts `self` to a multi-dimensional array if it is a byte vector, then cast the array entries to `u32`.
-    ///
-    /// # Arguments
-    ///
-    /// `t` - array type used to interpret `self`
-    ///
-    /// # Result
-    ///
-    /// Resulting multi-dimensional array with entries cast to `u32`
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use ciphercore_base::data_values::Value;
-    /// # use ciphercore_base::data_types::{INT32, array_type};
-    /// # use ndarray::array;
-    /// let a = array![[-123, 123], [-456, 456]].into_dyn();
-    /// let v = Value::from_ndarray(a, INT32).unwrap();
-    /// let a = v.to_ndarray_u32(array_type(vec![2, 2], INT32)).unwrap();
-    /// assert_eq!(a, array![[-123i32 as u32, 123i32 as u32], [-456i32 as u32, 456i32 as u32]].into_dyn());
-    /// ```
-    pub fn to_ndarray_u32(&self, t: Type) -> Result<ndarray::ArrayD<u32>> {
-        let arr = self.to_ndarray_u64(t)?;
-        Ok(arr.map(|x| *x as u32))
-    }
-
-    /// Converts `self` to a multi-dimensional array if it is a byte vector, then cast the array entries to `i32`.
-    ///
-    /// # Arguments
-    ///
-    /// `t` - array type used to interpret `self`
-    ///
-    /// # Result
-    ///
-    /// Resulting multi-dimensional array with entries cast to `i32`
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use ciphercore_base::data_values::Value;
-    /// # use ciphercore_base::data_types::{INT32, array_type};
-    /// # use ndarray::array;
-    /// let a = array![[-123, 123], [-456, 456]].into_dyn();
-    /// let v = Value::from_ndarray(a, INT32).unwrap();
-    /// let a = v.to_ndarray_i32(array_type(vec![2, 2], INT32)).unwrap();
-    /// assert_eq!(a, array![[-123i32, 123i32], [-456i32, 456i32]].into_dyn());
-    /// ```
-    pub fn to_ndarray_i32(&self, t: Type) -> Result<ndarray::ArrayD<i32>> {
-        let arr = self.to_ndarray_u64(t)?;
-        Ok(arr.map(|x| *x as i32))
-    }
-
-    /// Converts `self` to a multi-dimensional array if it is a byte vector, then cast the array entries to `u64`.
-    ///
-    /// # Arguments
-    ///
-    /// `t` - array type used to interpret `self`
-    ///
-    /// # Result
-    ///
-    /// Resulting multi-dimensional array with entries cast to `u64`
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use ciphercore_base::data_values::Value;
-    /// # use ciphercore_base::data_types::{INT32, array_type};
-    /// # use ndarray::array;
-    /// let a = array![[-123, 123], [-456, 456]].into_dyn();
-    /// let v = Value::from_ndarray(a, INT32).unwrap();
-    /// let a = v.to_ndarray_u64(array_type(vec![2, 2], INT32)).unwrap();
-    /// assert_eq!(a, array![[-123i32 as u32 as u64, 123i32 as u32 as u64], [-456i32 as u32 as u64, 456i32 as u32 as u64]].into_dyn());
-    /// ```
-    pub fn to_ndarray_u64(&self, t: Type) -> Result<ndarray::ArrayD<u64>> {
-        match t.clone() {
-            Type::Array(shape, _) => {
-                let arr = self.to_flattened_array_u64(t)?;
-                // TODO: for performance reasons, we should use the actual type, not u64.
-                let ndarr = ndarray::Array::from_vec(arr);
-                let shape: Vec<usize> = shape.iter().map(|x| *x as usize).collect();
-                Ok(ndarr.into_shape(shape)?)
-            }
-            _ => Err(runtime_error!("Not an array type")),
-        }
-    }
-
-    /// Converts `self` to a multi-dimensional array if it is a byte vector, then cast the array entries to `u64`.
-    ///
-    /// # Arguments
-    ///
-    /// `t` - array type used to interpret `self`
-    ///
-    /// # Result
-    ///
-    /// Resulting multi-dimensional array with entries cast to `u64`
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use ciphercore_base::data_values::Value;
-    /// # use ciphercore_base::data_types::{BIT, array_type};
-    /// # use ndarray::array;
-    /// let a = array![[false, true], [true, false]].into_dyn();
-    /// let v = Value::from_ndarray(a.clone(), BIT).unwrap();
-    /// let converted = v.to_ndarray_bool(array_type(vec![2, 2], BIT)).unwrap();
-    /// assert_eq!(converted, a);
-    /// ```
-    pub fn to_ndarray_bool(&self, t: Type) -> Result<ndarray::ArrayD<bool>> {
-        match t.clone() {
-            Type::Array(shape, _) => {
-                let arr = self
-                    .to_flattened_array_u8(t)?
-                    .iter()
-                    .map(|x| *x != 0)
-                    .collect();
-                let ndarr = ndarray::Array::from_vec(arr);
-                let shape: Vec<usize> = shape.iter().map(|x| *x as usize).collect();
-                Ok(ndarr.into_shape(shape)?)
-            }
-            _ => Err(runtime_error!("Not an array type")),
-        }
-    }
-
-    /// Converts `self` to a multi-dimensional array if it is a byte vector, then cast the array entries to `i64`.
-    ///
-    /// # Arguments
-    ///
-    /// `t` - array type used to interpret `self`
-    ///
-    /// # Result
-    ///
-    /// Resulting multi-dimensional array with entries cast to `i64`
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use ciphercore_base::data_values::Value;
-    /// # use ciphercore_base::data_types::{INT32, array_type};
-    /// # use ndarray::array;
-    /// let a = array![[-123, 123], [-456, 456]].into_dyn();
-    /// let v = Value::from_ndarray(a, INT32).unwrap();
-    /// let a = v.to_ndarray_i64(array_type(vec![2, 2], INT32)).unwrap();
-    /// assert_eq!(a, array![[-123i32 as u32 as i64, 123i32 as u32 as i64], [-456i32 as u32 as i64, 456i32 as u32 as i64]].into_dyn());
-    /// ```
-    pub fn to_ndarray_i64(&self, t: Type) -> Result<ndarray::ArrayD<i64>> {
-        let arr = self.to_ndarray_u64(t)?;
-        Ok(arr.map(|x| *x as i64))
-    }
-
     /// Checks if `self` is a valid value for a given type.
     ///
     /// # Arguments
@@ -1231,9 +978,10 @@ impl Value {
     /// ```
     /// # use ciphercore_base::data_values::Value;
     /// # use ciphercore_base::data_types::{array_type, INT32};
+    /// # use ciphercore_base::data_values::ToNdarray;
     /// # use ndarray::array;
     /// let v = Value::zero_of_type(array_type(vec![2, 2], INT32));
-    /// let a = v.to_ndarray_i32(array_type(vec![2, 2], INT32)).unwrap();
+    /// let a = ToNdarray::<u8>::to_ndarray(&v,array_type(vec![2, 2], INT32) ).unwrap();
     /// assert_eq!(a, array![[0, 0], [0, 0]].into_dyn());
     /// ```
     pub fn zero_of_type(t: Type) -> Value {
@@ -1278,6 +1026,290 @@ impl Value {
             DATA_VERSION,
             serde_json::to_string(&SerializableValue::from_value(self))?,
         )
+    }
+}
+
+pub trait ToNdarray<T> {
+    fn to_ndarray(&self, t: Type) -> Result<ndarray::ArrayD<T>>;
+}
+
+/// Converts `self` to a multi-dimensional array if it is a byte vector, then cast the array entries to `u8`.
+///
+/// # Arguments
+///
+/// `t` - array type used to interpret `self`
+///
+/// # Result
+///
+/// Resulting multi-dimensional array with entries cast to `u8`
+///
+/// # Examples
+///
+/// ```
+/// # use ciphercore_base::data_values::Value;
+/// # use ciphercore_base::data_values::ToNdarray;
+/// # use ciphercore_base::data_types::{INT32, array_type};
+/// # use ndarray::array;
+/// let a = array![[-123, 123], [-456, 456]].into_dyn();
+/// let v = Value::from_ndarray(a, INT32).unwrap();
+/// let a = ToNdarray::<u8>::to_ndarray(&v, array_type(vec![2, 2], INT32)).unwrap();
+/// assert_eq!(a, array![[-123i32 as u8, 123i32 as u8], [-456i32 as u8, 456i32 as u8]].into_dyn());
+/// ```
+impl ToNdarray<u8> for Value {
+    fn to_ndarray(&self, t: Type) -> Result<ndarray::ArrayD<u8>> {
+        let arr = ToNdarray::<u64>::to_ndarray(self, t)?;
+        Ok(arr.map(|x| *x as u8))
+    }
+}
+
+/// Converts `self` to a multi-dimensional array if it is a byte vector, then cast the array entries to `i8`.
+///
+/// # Arguments
+///
+/// `t` - array type used to interpret `self`
+///
+/// # Result
+///
+/// Resulting multi-dimensional array with entries cast to `i8`
+///
+/// # Examples
+///
+/// ```
+/// # use ciphercore_base::data_values::Value;
+/// # use ciphercore_base::data_types::{INT32, array_type};
+/// # use ciphercore_base::data_values::ToNdarray;
+/// # use ndarray::array;
+/// let a = array![[-123, 123], [-456, 456]].into_dyn();
+/// let v = Value::from_ndarray(a, INT32).unwrap();
+/// let a = ToNdarray::<i8>::to_ndarray(&v,array_type(vec![2, 2], INT32)).unwrap();
+/// assert_eq!(a, array![[-123i32 as i8, 123i32 as i8], [-456i32 as i8, 456i32 as i8]].into_dyn());
+/// ```
+impl ToNdarray<i8> for Value {
+    fn to_ndarray(&self, t: Type) -> Result<ndarray::ArrayD<i8>> {
+        let arr = ToNdarray::<u64>::to_ndarray(self, t)?;
+        Ok(arr.map(|x| *x as i8))
+    }
+}
+
+/// Converts `self` to a multi-dimensional array if it is a byte vector, then cast the array entries to `u16`.
+///
+/// # Arguments
+///
+/// `t` - array type used to interpret `self`
+///
+/// # Result
+///
+/// Resulting multi-dimensional array with entries cast to `u16`
+///
+/// # Examples
+///
+/// ```
+/// # use ciphercore_base::data_values::Value;
+/// # use ciphercore_base::data_types::{INT32, array_type};
+/// # use ciphercore_base::data_values::ToNdarray;
+/// # use ndarray::array;
+/// let a = array![[-123, 123], [-456, 456]].into_dyn();
+/// let v = Value::from_ndarray(a, INT32).unwrap();
+/// let a = ToNdarray::<u16>::to_ndarray(&v,array_type(vec![2, 2], INT32)).unwrap();
+/// assert_eq!(a, array![[-123i32 as u16, 123i32 as u16], [-456i32 as u16, 456i32 as u16]].into_dyn());
+/// ```
+impl ToNdarray<u16> for Value {
+    fn to_ndarray(&self, t: Type) -> Result<ndarray::ArrayD<u16>> {
+        let arr = ToNdarray::<u64>::to_ndarray(self, t)?;
+        Ok(arr.map(|x| *x as u16))
+    }
+}
+
+/// Converts `self` to a multi-dimensional array if it is a byte vector, then cast the array entries to `i16`.
+///
+/// # Arguments
+///
+/// `t` - array type used to interpret `self`
+///
+/// # Result
+///
+/// Resulting multi-dimensional array with entries cast to `i16`
+///
+/// # Examples
+///
+/// ```
+/// # use ciphercore_base::data_values::Value;
+/// # use ciphercore_base::data_types::{INT32, array_type};
+/// # use ciphercore_base::data_values::ToNdarray;
+/// # use ndarray::array;
+/// let a = array![[-123, 123], [-456, 456]].into_dyn();
+/// let v = Value::from_ndarray(a, INT32).unwrap();
+/// let a = ToNdarray::<i16>::to_ndarray(&v,array_type(vec![2, 2], INT32)).unwrap();
+/// assert_eq!(a, array![[-123i32 as i16, 123i32 as i16], [-456i32 as i16, 456i32 as i16]].into_dyn());
+/// ```
+impl ToNdarray<i16> for Value {
+    fn to_ndarray(&self, t: Type) -> Result<ndarray::ArrayD<i16>> {
+        let arr = ToNdarray::<u64>::to_ndarray(self, t)?;
+        Ok(arr.map(|x| *x as i16))
+    }
+}
+
+/// Converts `self` to a multi-dimensional array if it is a byte vector, then cast the array entries to `u32`.
+///
+/// # Arguments
+///
+/// `t` - array type used to interpret `self`
+///
+/// # Result
+///
+/// Resulting multi-dimensional array with entries cast to `u32`
+///
+/// # Examples
+///
+/// ```
+/// # use ciphercore_base::data_values::Value;
+/// # use ciphercore_base::data_types::{INT32, array_type};
+/// # use ciphercore_base::data_values::ToNdarray;
+/// # use ndarray::array;
+/// let a = array![[-123, 123], [-456, 456]].into_dyn();
+/// let v = Value::from_ndarray(a, INT32).unwrap();
+/// let a = ToNdarray::<u32>::to_ndarray(&v,array_type(vec![2, 2], INT32)).unwrap();
+/// assert_eq!(a, array![[-123i32 as u32, 123i32 as u32], [-456i32 as u32, 456i32 as u32]].into_dyn());
+/// ```
+impl ToNdarray<u32> for Value {
+    fn to_ndarray(&self, t: Type) -> Result<ndarray::ArrayD<u32>> {
+        let arr = ToNdarray::<u64>::to_ndarray(self, t)?;
+        Ok(arr.map(|x| *x as u32))
+    }
+}
+
+/// Converts `self` to a multi-dimensional array if it is a byte vector, then cast the array entries to `i32`.
+///
+/// # Arguments
+///
+/// `t` - array type used to interpret `self`
+///
+/// # Result
+///
+/// Resulting multi-dimensional array with entries cast to `i32`
+///
+/// # Examples
+///
+/// ```
+/// # use ciphercore_base::data_values::Value;
+/// # use ciphercore_base::data_types::{INT32, array_type};
+/// # use ciphercore_base::data_values::ToNdarray;
+/// # use ndarray::array;
+/// let a = array![[-123, 123], [-456, 456]].into_dyn();
+/// let v = Value::from_ndarray(a, INT32).unwrap();
+/// let a = ToNdarray::<i32>::to_ndarray(&v,array_type(vec![2, 2], INT32)).unwrap();
+/// assert_eq!(a, array![[-123i32, 123i32], [-456i32, 456i32]].into_dyn());
+/// ```
+impl ToNdarray<i32> for Value {
+    fn to_ndarray(&self, t: Type) -> Result<ndarray::ArrayD<i32>> {
+        let arr = ToNdarray::<u64>::to_ndarray(self, t)?;
+        Ok(arr.map(|x| *x as i32))
+    }
+}
+
+/// Converts `self` to a multi-dimensional array if it is a byte vector, then cast the array entries to `u64`.
+///
+/// # Arguments
+///
+/// `t` - array type used to interpret `self`
+///
+/// # Result
+///
+/// Resulting multi-dimensional array with entries cast to `u64`
+///
+/// # Examples
+///
+/// ```
+/// # use ciphercore_base::data_values::Value;
+/// # use ciphercore_base::data_values::ToNdarray;
+/// # use ciphercore_base::data_types::{INT32, array_type};
+/// # use ndarray::array;
+/// let a = array![[-123, 123], [-456, 456]].into_dyn();
+/// let v = Value::from_ndarray(a, INT32).unwrap();
+/// let a = ToNdarray::<u64>::to_ndarray(&v,array_type(vec![2, 2], INT32)).unwrap();
+/// assert_eq!(a, array![[-123i32 as u32 as u64, 123i32 as u32 as u64], [-456i32 as u32 as u64, 456i32 as u32 as u64]].into_dyn());
+/// ```
+impl ToNdarray<u64> for Value {
+    fn to_ndarray(&self, t: Type) -> Result<ndarray::ArrayD<u64>> {
+        match t.clone() {
+            Type::Array(shape, _) => {
+                let arr = self.to_flattened_array_u64(t)?;
+                // TODO: for performance reasons, we should use the actual type, not u64.
+                let ndarr = ndarray::Array::from_vec(arr);
+                let shape: Vec<usize> = shape.iter().map(|x| *x as usize).collect();
+                Ok(ndarr.into_shape(shape)?)
+            }
+            _ => Err(runtime_error!("Not an array type")),
+        }
+    }
+}
+
+/// Converts `self` to a multi-dimensional array if it is a byte vector, then cast the array entries to `u64`.
+///
+/// # Arguments
+///
+/// `t` - array type used to interpret `self`
+///
+/// # Result
+///
+/// Resulting multi-dimensional array with entries cast to `u64`
+///
+/// # Examples
+///
+/// ```
+/// # use ciphercore_base::data_values::Value;
+/// # use ciphercore_base::data_values::ToNdarray;
+/// # use ciphercore_base::data_types::{BIT, array_type};
+/// # use ndarray::array;
+/// let a = array![[false, true], [true, false]].into_dyn();
+/// let v = Value::from_ndarray(a.clone(), BIT).unwrap();
+/// let converted = ToNdarray::<bool>::to_ndarray(&v,array_type(vec![2, 2], BIT)).unwrap();
+/// assert_eq!(converted, a);
+/// ```
+impl ToNdarray<bool> for Value {
+    fn to_ndarray(&self, t: Type) -> Result<ndarray::ArrayD<bool>> {
+        match t.clone() {
+            Type::Array(shape, _) => {
+                let arr = self
+                    .to_flattened_array_u8(t)?
+                    .iter()
+                    .map(|x| *x != 0)
+                    .collect();
+                let ndarr = ndarray::Array::from_vec(arr);
+                let shape: Vec<usize> = shape.iter().map(|x| *x as usize).collect();
+                Ok(ndarr.into_shape(shape)?)
+            }
+            _ => Err(runtime_error!("Not an array type")),
+        }
+    }
+}
+
+/// Converts `self` to a multi-dimensional array if it is a byte vector, then cast the array entries to `i64`.
+///
+/// # Arguments
+///
+/// `t` - array type used to interpret `self`
+///
+/// # Result
+///
+/// Resulting multi-dimensional array with entries cast to `i64`
+///
+/// # Examples
+///
+/// ```
+/// # use ciphercore_base::data_values::Value;
+/// # use ciphercore_base::data_types::{INT32, array_type};
+/// # use ciphercore_base::data_values::ToNdarray;
+/// # use ndarray::array;
+/// let a = array![[-123, 123], [-456, 456]].into_dyn();
+/// let v = Value::from_ndarray(a, INT32).unwrap();
+/// let a = ToNdarray::<i64>::to_ndarray(&v,array_type(vec![2, 2], INT32)).unwrap();
+/// assert_eq!(a, array![[-123i32 as u32 as i64, 123i32 as u32 as i64], [-456i32 as u32 as i64, 456i32 as u32 as i64]].into_dyn());
+/// ```
+impl ToNdarray<i64> for Value {
+    fn to_ndarray(&self, t: Type) -> Result<ndarray::ArrayD<i64>> {
+        let arr = ToNdarray::<u64>::to_ndarray(self, t)?;
+        Ok(arr.map(|x| *x as i64))
     }
 }
 
@@ -1780,54 +1812,54 @@ mod tests {
         || -> Result<()> {
             {
                 let v = Value::from_scalar(1, BIT)?;
-                let a = v.to_ndarray_bool(array_type(vec![1], BIT))?;
+                let a = ToNdarray::<bool>::to_ndarray(&v, array_type(vec![1], BIT))?;
                 assert_eq!(a.shape(), &[1]);
                 assert_eq!(a[[0]], true);
             }
             {
                 let v = Value::from_scalar(0, BIT)?;
-                let a = v.to_ndarray_bool(array_type(vec![1], BIT))?;
+                let a = ToNdarray::<bool>::to_ndarray(&v, array_type(vec![1], BIT))?;
                 assert_eq!(a.shape(), &[1]);
                 assert_eq!(a[[0]], false);
             }
             let v = Value::from_scalar(-123456, INT32)?;
             {
-                let a = v.to_ndarray_u8(array_type(vec![1], INT32))?;
+                let a = ToNdarray::<u8>::to_ndarray(&v, array_type(vec![1], INT32))?;
                 assert_eq!(a.shape(), &[1]);
                 assert_eq!(a[[0]], -123456i32 as u8);
             }
             {
-                let a = v.to_ndarray_i8(array_type(vec![1], INT32))?;
+                let a = ToNdarray::<i8>::to_ndarray(&v, array_type(vec![1], INT32))?;
                 assert_eq!(a.shape(), &[1]);
                 assert_eq!(a[[0]], -123456i32 as i8);
             }
             {
-                let a = v.to_ndarray_u16(array_type(vec![1], INT32))?;
+                let a = ToNdarray::<u16>::to_ndarray(&v, array_type(vec![1], INT32))?;
                 assert_eq!(a.shape(), &[1]);
                 assert_eq!(a[[0]], -123456i32 as u16);
             }
             {
-                let a = v.to_ndarray_i16(array_type(vec![1], INT32))?;
+                let a = ToNdarray::<i16>::to_ndarray(&v, array_type(vec![1], INT32))?;
                 assert_eq!(a.shape(), &[1]);
                 assert_eq!(a[[0]], -123456i32 as i16);
             }
             {
-                let a = v.to_ndarray_u32(array_type(vec![1], INT32))?;
+                let a = ToNdarray::<u32>::to_ndarray(&v, array_type(vec![1], INT32))?;
                 assert_eq!(a.shape(), &[1]);
                 assert_eq!(a[[0]], -123456i32 as u32);
             }
             {
-                let a = v.to_ndarray_i32(array_type(vec![1], INT32))?;
+                let a = ToNdarray::<i32>::to_ndarray(&v, array_type(vec![1], INT32))?;
                 assert_eq!(a.shape(), &[1]);
                 assert_eq!(a[[0]], -123456i32 as i32);
             }
             {
-                let a = v.to_ndarray_u64(array_type(vec![1], INT32))?;
+                let a = ToNdarray::<u64>::to_ndarray(&v, array_type(vec![1], INT32))?;
                 assert_eq!(a.shape(), &[1]);
                 assert_eq!(a[[0]], 4294843840u64);
             }
             {
-                let a = v.to_ndarray_i64(array_type(vec![1], INT32))?;
+                let a = ToNdarray::<i64>::to_ndarray(&v, array_type(vec![1], INT32))?;
                 assert_eq!(a.shape(), &[1]);
                 assert_eq!(a[[0]], 4294843840i64);
             }

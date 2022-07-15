@@ -375,6 +375,8 @@ struct Graph {
 
   Node multiply(Node a, Node b) const;
 
+  Node mixed_multiply(Node a, Node b) const;
+
   Node dot(Node a, Node b) const;
 
   Node matmul(Node a, Node b) const;
@@ -487,6 +489,8 @@ struct Node {
   Node subtract(Node b) const;
 
   Node multiply(Node b) const;
+
+  Node mixed_multiply(Node b) const;
 
   Node dot(Node b) const;
 
@@ -648,6 +652,11 @@ Node Graph::subtract(Node a, Node b) const {
 
 Node Graph::multiply(Node a, Node b) const {
   auto result = CCipherCore::graph_multiply(body->g, a.body->n, b.body->n);
+  return Node(extract_ok(result), *this);
+}
+
+Node Graph::mixed_multiply(Node a, Node b) const {
+  auto result = CCipherCore::graph_mixed_multiply(body->g, a.body->n, b.body->n);
   return Node(extract_ok(result), *this);
 }
 
@@ -921,6 +930,7 @@ enum class OperationKind {
   Add,
   Subtract,
   Multiply,
+  MixedMultiply
   Dot,
   Matmul,
   Truncate,
@@ -963,6 +973,9 @@ pybind11::object convert_operation(CCipherCore::COperation *operation) {
   }
   if (operation->tag == CCipherCore::Multiply) {
     return pybind11::make_tuple(OperationKind::Multiply);
+  }
+  if (operation->tag == CCipherCore::MixedMultiply) {
+    return pybind11::make_tuple(OperationKind::MixedMultiply);
   }
   if (operation->tag == CCipherCore::Dot) {
     return pybind11::make_tuple(OperationKind::Dot);
@@ -1110,6 +1123,11 @@ Node Node::subtract(Node b) const {
 
 Node Node::multiply(Node b) const {
   auto result = CCipherCore::node_multiply(body->n, b.body->n);
+  return Node(extract_ok(result), parent_graph);
+}
+
+Node Node::mixed_multiply(Node b) const {
+  auto result = CCipherCore::node_mixed_multiply(body->n, b.body->n);
   return Node(extract_ok(result), parent_graph);
 }
 
@@ -1261,6 +1279,7 @@ PYBIND11_MODULE(ciphercore_native, m) {
       .def("add", &PyCipherCore::Graph::add)
       .def("subtract", &PyCipherCore::Graph::subtract)
       .def("multiply", &PyCipherCore::Graph::multiply)
+      .def("mixed_multiply", &PyCipherCore::Graph::mixed_multiply)
       .def("dot", &PyCipherCore::Graph::dot)
       .def("matmul", &PyCipherCore::Graph::matmul)
       .def("truncate", &PyCipherCore::Graph::truncate)
@@ -1311,6 +1330,7 @@ PYBIND11_MODULE(ciphercore_native, m) {
       .def("add", &PyCipherCore::Node::add)
       .def("subtract", &PyCipherCore::Node::subtract)
       .def("multiply", &PyCipherCore::Node::multiply)
+      .def("mixed_multiply", &PyCipherCore::Node::mixed_multiply)
       .def("dot", &PyCipherCore::Node::dot)
       .def("matmul", &PyCipherCore::Node::matmul)
       .def("truncate", &PyCipherCore::Node::truncate)
@@ -1348,6 +1368,7 @@ PYBIND11_MODULE(ciphercore_native, m) {
       .value("Add", PyCipherCore::OperationKind::Add)
       .value("Subtract", PyCipherCore::OperationKind::Subtract)
       .value("Multiply", PyCipherCore::OperationKind::Multiply)
+      .value("MixedMultiply", PyCipherCore::OperationKind::MixedMultiply)
       .value("Dot", PyCipherCore::OperationKind::Dot)
       .value("Matmul", PyCipherCore::OperationKind::Matmul)
       .value("Truncate", PyCipherCore::OperationKind::Truncate)

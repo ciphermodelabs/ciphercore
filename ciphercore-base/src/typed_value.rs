@@ -1,15 +1,20 @@
-use std::ops::Not;
-
 use crate::bytes::{add_vectors_u64, subtract_vectors_u64, vec_from_bytes, vec_to_bytes};
 use crate::data_types::{
     array_type, get_size_in_bits, get_types_vector, is_valid_shape, named_tuple_type, scalar_type,
     tuple_type, vector_type, ArrayShape, ScalarType, Type, BIT, INT16, INT32, INT64, INT8, UINT16,
     UINT32, UINT64, UINT8,
 };
+use crate::data_values;
 use crate::data_values::Value;
 use crate::errors::Result;
 use crate::random::PRNG;
+use crate::typed_value_operations::{
+    extend_helper, get_helper, get_sub_vector_helper, insert_helper, pop_helper, push_helper,
+    remove_helper, FromVectorMode, ToNdarray, TypedValueArrayOperations, TypedValueOperations,
+};
+
 use json::{object, object::Object, JsonValue};
+use std::ops::Not;
 
 macro_rules! to_json_aux {
     ($v:expr, $t:expr, $cnv:ident) => {
@@ -32,80 +37,457 @@ macro_rules! to_json_array_aux {
 pub struct TypedValue {
     pub value: Value,
     pub t: Type,
+    pub name: Option<String>,
 }
 
-/// Converts `self` to a multi-dimensional array with the corresponding type.
-///
-/// # Result
-///
-/// Resulting multi-dimensional array with the corresponding type.
-///
-/// # Examples
-///
-/// ```
-/// # use ciphercore_base::data_types::{INT32, array_type};
-/// # use ciphercore_base::typed_value::{ToNdarray, TypedValue};
-/// # use ndarray::array;
-/// let a = array![[-123, 123], [-456, 456]].into_dyn();
-/// let v = TypedValue::from_ndarray(a, INT32).unwrap();
-/// let a = ToNdarray::<i32>::to_ndarray(&v).unwrap();
-/// assert_eq!(a, array![[-123i32, 123i32], [-456i32, 456i32]].into_dyn());
-/// ```
-pub trait ToNdarray<T> {
-    fn to_ndarray(&self) -> Result<ndarray::ArrayD<T>>;
-}
+impl TypedValueOperations<TypedValue> for TypedValue {
+    /// Returns Type of `self`
+    ///
+    /// # Returns
+    ///
+    /// Type of the TypedValue
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::typed_value::TypedValue;
+    /// # use ciphercore_base::typed_value_operations::TypedValueOperations;
+    /// # use ciphercore_base::data_types::{scalar_type,INT32};
+    /// let tv = TypedValue::from_scalar(1, INT32).unwrap();
+    /// assert!(tv.get_type().eq(&scalar_type(INT32)));
+    /// ```
+    fn get_type(&self) -> Type {
+        self.t.clone()
+    }
+    /// Checks equality of `self` with another type value.
+    ///
+    /// # Returns
+    ///
+    /// True if `self` == `other` false otherwise
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::typed_value::TypedValue;
+    /// # use ciphercore_base::typed_value_operations::TypedValueOperations;
+    /// # use ciphercore_base::data_types::{scalar_type,INT32};
+    /// let tv1 = TypedValue::from_scalar(1, INT32).unwrap();
+    /// let tv2 = TypedValue::from_scalar(1, INT32).unwrap();
+    /// assert!(tv1.is_equal(&tv2).unwrap());
+    /// ```
+    fn is_equal(&self, other: &Self) -> Result<bool> {
+        const TWO: u8 = 2;
+        let t = self.t.clone();
+        if other.t != t {
+            return Ok(false);
+        }
+        let type_size_in_bits = get_size_in_bits(t.clone())?;
+        match t {
+            Type::Scalar(_) | Type::Array(_, _) => {
+                let self_bytes = self
+                    .value
+                    .access_bytes(|ref_bytes| Ok(ref_bytes.to_vec()))?;
+                let other_bytes = other
+                    .value
+                    .access_bytes(|ref_bytes| Ok(ref_bytes.to_vec()))?;
+                let value_size_in_bytes = self_bytes.len();
+                let r: u32 = (type_size_in_bits % 8).try_into()?;
+                let mut complete_bytes = value_size_in_bytes;
+                if r != 0 {
+                    complete_bytes -= 1;
+                }
+                for i in 0..complete_bytes {
+                    if self_bytes[i] != other_bytes[i] {
+                        return Ok(false);
+                    }
+                }
+                if self_bytes[value_size_in_bytes - 1] % TWO.pow(r)
+                    != other_bytes[value_size_in_bytes - 1] % TWO.pow(r)
+                {
+                    return Ok(false);
+                }
+                Ok(true)
+            }
+            Type::Vector(_, _) | Type::Tuple(_) | Type::NamedTuple(_) => {
+                let types_vector = get_types_vector(t)?;
+                let self_value_vector = self.value.access_vector(|vec| Ok(vec.clone()))?;
+                let other_value_vector = other.value.access_vector(|vec| Ok(vec.clone()))?;
+                // we are sure that types_vector.len() == self_value_vector.len() == other_value_vector.len()
+                // because in generating TypedValue we recursively call check_type for all values.
+                for i in 0..types_vector.len() {
+                    let typed_value1 =
+                        TypedValue::new((*types_vector[i]).clone(), self_value_vector[i].clone())?;
+                    let typed_value2 =
+                        TypedValue::new((*types_vector[i]).clone(), other_value_vector[i].clone())?;
+                    if !typed_value1.is_equal(&typed_value2)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+        }
+    }
+    /// Converts `self` to a vector of typed values or return an error if `self` is a byte vector.
+    ///
+    /// # Returns
+    ///
+    /// Extracted vector of values
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::typed_value::TypedValue;
+    /// # use ciphercore_base::typed_value_operations::{TypedValueOperations,FromVectorMode};
+    /// # use ciphercore_base::data_types::{scalar_type,INT32};
+    ///
+    /// let v = vec![TypedValue::from_scalar(1,INT32).unwrap(),
+    ///     TypedValue::from_scalar(2,INT32).unwrap(),
+    ///     TypedValue::from_scalar(3,INT32).unwrap()];
+    /// let tv1 = TypedValue::from_vector(v.clone(), FromVectorMode::Vector).unwrap();
+    /// let v2 = tv1.to_vector().unwrap();
+    /// assert!(v.iter().zip(v2.iter()).all(|(a,b)| a==b))
+    /// ```
+    fn to_vector(&self) -> Result<Vec<TypedValue>> {
+        let vec_val = self.value.to_vector()?;
+        let mut res = vec![];
+        match &self.t {
+            Type::Tuple(ts) => {
+                if ts.len() != vec_val.len() {
+                    return Err(runtime_error!("Inconsistent number of elements!"));
+                }
+                for (t, value) in ts.iter().zip(vec_val.iter()) {
+                    res.push(TypedValue::new(t.as_ref().clone(), value.clone())?);
+                }
+                Ok(res)
+            }
+            Type::Vector(n, t) => {
+                if *n != (vec_val.len() as u64) {
+                    return Err(runtime_error!("Inconsistent number of elements!"));
+                }
+                let mut res = vec![];
+                for val in vec_val {
+                    res.push(TypedValue::new(t.as_ref().clone(), val)?);
+                }
+                Ok(res)
+            }
+            Type::NamedTuple(n_ts) => {
+                if n_ts.len() != vec_val.len() {
+                    return Err(runtime_error!("Inconsistent number of elements!"));
+                }
+                for (n_t, value) in n_ts.iter().zip(vec_val.iter()) {
+                    res.push(TypedValue::new_named(
+                        n_t.1.as_ref().clone(),
+                        value.clone(),
+                        n_t.0.clone(),
+                    )?);
+                }
+                Ok(res)
+            }
+            _ => {
+                return Err(runtime_error!("Not a vector!"));
+            }
+        }
+    }
 
-impl ToNdarray<bool> for TypedValue {
-    fn to_ndarray(&self) -> Result<ndarray::ArrayD<bool>> {
-        self.value.to_ndarray_bool(self.t.clone())
+    /// Constructs a typed value in ciphercore vector or tuple format from a vector of other typed values.
+    ///
+    ///
+    /// # Arguments
+    ///
+    /// `v` - vector of typed values
+    ///  `mode` - how to decide type of output. if `FromVectorMode::Vector` passed, it constructs a
+    ///     ciphercore vector typed value. If `FromVectorMode::Tuple` passed, it construncts a ciphercore
+    ///     tuple typed value, And if `FromVectorMode::AutoDetection` passed, it decides based on the type
+    ///     of input typed values, if they are all the same type it constructs a vector, otherwise a tuple.
+    ///
+    /// # Returns
+    ///
+    /// New typed value constructed from `v`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::data_types::INT32;
+    /// # use ciphercore_base::typed_value::TypedValue;
+    /// # use ciphercore_base::typed_value_operations::{TypedValueOperations,FromVectorMode};
+    /// let v = TypedValue::from_vector(
+    ///     vec![
+    ///         TypedValue::from_scalar(1, INT32).unwrap(),
+    ///         TypedValue::from_scalar(423532, INT32).unwrap(),
+    ///         TypedValue::from_scalar(-91, INT32).unwrap()],FromVectorMode::Vector).unwrap();
+    /// ```
+    fn from_vector(v: Vec<TypedValue>, mode: FromVectorMode) -> Result<TypedValue> {
+        match mode {
+            FromVectorMode::Vector => vector_from_vector_helper(v),
+            FromVectorMode::Tuple => tuple_from_vector_helper(v),
+            FromVectorMode::AutoDetetion => {
+                let val_type = v[0].t.clone();
+                if v.iter().all(|x| x.t.eq(&val_type)) {
+                    vector_from_vector_helper(v)
+                } else {
+                    tuple_from_vector_helper(v)
+                }
+            }
+        }
+    }
+    /// If `self` is Vector or Tuple or NamedTuple, gets index_th element of the collection.
+    /// Retruns error if `self` is Scalar or Array.
+    /// Returns error on out of bound access
+    ///
+    /// # Arguments
+    ///
+    /// `index` - index of the element in the vector or tuple
+    ///
+    /// # Returns
+    ///
+    /// index_th element of the collection
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::data_types::{INT32,BIT};
+    /// # use ciphercore_base::typed_value::TypedValue;
+    /// # use ciphercore_base::typed_value_operations::{TypedValueOperations,FromVectorMode};
+    /// let tv = TypedValue::from_vector(
+    ///          vec![TypedValue::from_scalar(1, BIT).unwrap(),
+    ///          TypedValue::from_scalar(-91, INT32).unwrap()],FromVectorMode::Tuple).unwrap();
+    /// let tv1 = tv.get(1).unwrap();
+    /// assert!(tv1.eq(&TypedValue::from_scalar(-91, INT32).unwrap()));
+    /// ```
+    fn get(&self, index: usize) -> Result<TypedValue> {
+        get_helper::<TypedValue>(self, index)
+    }
+    /// If `self` is Vector or Tuple or NamedTuple, insert to_insert_element to index_th position of the collection.
+    /// Retrun error if `self` is Scalar or Array.
+    /// Returns error on out of bound access
+    /// If inserting to a vector the Type of to_insert_element should match the Type of exisiting vector's elements
+    ///
+    /// # Arguments
+    ///
+    /// `index` - index of the element in the vector or tuple
+    /// `to_insert_element` - element to insert
+    ///
+    /// # Returns
+    ///
+    /// ()
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::data_types::{INT32,BIT,UINT64};
+    /// # use ciphercore_base::typed_value::TypedValue;
+    /// # use ciphercore_base::typed_value_operations::{TypedValueOperations,FromVectorMode};
+    /// let mut tv = TypedValue::from_vector(
+    ///          vec![TypedValue::from_scalar(1, BIT).unwrap(),
+    ///          TypedValue::from_scalar(-91, INT32).unwrap()], FromVectorMode::Tuple).unwrap();
+    /// tv.insert(TypedValue::from_scalar(2,UINT64).unwrap(),1).unwrap();
+    /// ```
+    fn insert(&mut self, to_insert_element: TypedValue, index: usize) -> Result<()> {
+        *self = insert_helper::<TypedValue>(self, to_insert_element, index)?;
+        Ok(())
+    }
+    /// If `self` is Vector or Tuple or NamedTuple, push to_insert_element to the end of the collection.
+    /// Retrun error if `self` is Scalar or Array.
+    /// If pushing to a vector, the Type of to_insert_element should match the Type of exisiting vector's elements
+    /// Please note that call to this function copies all the data, as a result pushing N elements
+    /// has quadratic complexity.
+    ///
+    /// # Arguments
+    ///
+    /// `index` - index of the element in the vector or tuple
+    /// `to_insert_element` - element to insert
+    ///
+    /// # Returns
+    ///
+    /// ()
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::data_types::{INT32,BIT,UINT64};
+    /// # use ciphercore_base::typed_value::TypedValue;
+    /// # use ciphercore_base::typed_value_operations::{TypedValueOperations,FromVectorMode};
+    /// let mut tv = TypedValue::from_vector(
+    ///          vec![TypedValue::from_scalar(1, BIT).unwrap(),
+    ///          TypedValue::from_scalar(-91, INT32).unwrap()], FromVectorMode::Tuple).unwrap();
+    /// tv.push(TypedValue::from_scalar(2,UINT64).unwrap()).unwrap();
+    /// ```
+    fn push(&mut self, to_insert_element: TypedValue) -> Result<()> {
+        *self = push_helper::<TypedValue>(self, to_insert_element)?;
+        Ok(())
+    }
+    /// If `self` is Vector or Tuple or NamedTuple, it extends to_extend_collection to the end of the `self`
+    /// Retrun error if `self` is Scalar or Array.
+    /// If extending to a vector the Type of to_extend_collection should match the Type of `self` vector's elements
+    ///
+    /// # Arguments
+    ///
+    /// `index` - index of the element in the vector or tuple
+    /// `to_extend_collection` - A Vector, Tuple, or NamedTuple to extend to `self`
+    ///
+    /// # Returns
+    ///
+    /// ()
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::data_types::{INT32,BIT,UINT64};
+    /// # use ciphercore_base::typed_value::TypedValue;
+    /// # use ciphercore_base::typed_value_operations::{TypedValueOperations,FromVectorMode};
+    /// let mut tv = TypedValue::from_vector(
+    ///          vec![TypedValue::from_scalar(1, BIT).unwrap(),
+    ///          TypedValue::from_scalar(-91, INT32).unwrap()], FromVectorMode::Tuple).unwrap();
+    /// let  to_extend_tv = TypedValue::from_vector(
+    ///          vec![TypedValue::from_scalar(2, UINT64).unwrap(),
+    ///          TypedValue::from_scalar(0, BIT).unwrap()], FromVectorMode::Tuple).unwrap();
+    /// tv.extend(to_extend_tv).unwrap();
+    /// ```
+    fn extend(&mut self, to_extend_collection: TypedValue) -> Result<()> {
+        *self = extend_helper::<TypedValue>(self, to_extend_collection)?;
+        Ok(())
+    }
+    /// If `self` is Vector or Tuple or NamedTuple, it removes index_th item of the `self`
+    /// Retrun error if `self` is Scalar or Array.
+    /// Returns error on out of bound remove
+    ///
+    /// # Arguments
+    ///
+    /// `index` - index of the element in the vector or tuple
+    ///
+    /// # Returns
+    ///
+    /// ()
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::data_types::{INT32,BIT,UINT64};
+    /// # use ciphercore_base::typed_value::TypedValue;
+    /// # use ciphercore_base::typed_value_operations::{TypedValueOperations,FromVectorMode};
+    /// let mut tv = TypedValue::from_vector(
+    ///          vec![TypedValue::from_scalar(1, BIT).unwrap(),
+    ///          TypedValue::from_scalar(-91, INT32).unwrap()], FromVectorMode::Tuple).unwrap();
+    /// tv.remove(0).unwrap();
+    /// ```
+    fn remove(&mut self, index: usize) -> Result<()> {
+        *self = remove_helper::<TypedValue>(self, index)?;
+        Ok(())
+    }
+    /// If `self` is Vector or Tuple or NamedTuple, it gets then removes index_th item of the `self`
+    /// Retrun error if `self` is Scalar or Array.
+    /// Returns errro on out of bound remove
+    ///
+    /// # Arguments
+    ///
+    /// `index` - index of the element in the vector or tuple
+    ///
+    /// # Returns
+    ///
+    /// ()
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::data_types::{INT32,BIT,UINT64};
+    /// # use ciphercore_base::typed_value::TypedValue;
+    /// # use ciphercore_base::typed_value_operations::{TypedValueOperations,FromVectorMode};
+    /// let mut tv = TypedValue::from_vector(
+    ///          vec![TypedValue::from_scalar(1, BIT).unwrap(),
+    ///          TypedValue::from_scalar(-91, INT32).unwrap()], FromVectorMode::Tuple).unwrap();
+    /// let tv1 = tv.pop(0).unwrap();
+    /// assert!(tv1.eq(&TypedValue::from_scalar(1, BIT).unwrap()));
+    /// ```
+    fn pop(&mut self, index: usize) -> Result<TypedValue> {
+        let (out1, out2) = pop_helper::<TypedValue>(self, index)?;
+        *self = out2;
+        Ok(out1)
+    }
+    /// If `self` is Vector or Tuple or NamedTuple, it gets a same collection of typed value with a subset of `self` elements
+    /// Retrun error if `self` is Scalar or Array.
+    /// Returns error on out of bound remove
+    ///
+    /// # Arguments
+    ///
+    /// `start_index_option` - start index of the element in the vector or tuple, default value is `0` if `None` passed
+    /// `start_index_option` - end index of the element in the vector or tuple, default value is end of the vector or tuple if `None` passed
+    /// `step_option - step, default value is `1` if `None` passed
+    /// # Returns
+    ///
+    /// A TypedValue which is a sub-vector of TypedValues
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::data_types::{INT32,BIT,UINT64};
+    /// # use ciphercore_base::typed_value::TypedValue;
+    /// # use ciphercore_base::typed_value_operations::{TypedValueOperations,FromVectorMode};
+    /// let tv = TypedValue::from_vector(
+    ///          vec![TypedValue::from_scalar(1, INT32).unwrap(),
+    ///          TypedValue::from_scalar(3, INT32).unwrap(),
+    ///          TypedValue::from_scalar(4, INT32).unwrap(),
+    ///          TypedValue::from_scalar(5, INT32).unwrap(),
+    ///          TypedValue::from_scalar(6, INT32).unwrap(),
+    ///          TypedValue::from_scalar(7, INT32).unwrap()],
+    ///          FromVectorMode::Vector).unwrap();
+    /// let tv1 = tv.get_sub_vector(Some(1),None,Some(2)).unwrap();
+    /// ```
+    fn get_sub_vector(
+        &self,
+        start_index_option: Option<usize>,
+        end_index_option: Option<usize>,
+        step_option: Option<usize>,
+    ) -> Result<TypedValue> {
+        get_sub_vector_helper::<TypedValue>(self, start_index_option, end_index_option, step_option)
     }
 }
 
-impl ToNdarray<u8> for TypedValue {
-    fn to_ndarray(&self) -> Result<ndarray::ArrayD<u8>> {
-        self.value.to_ndarray_u8(self.t.clone())
+impl TypedValueArrayOperations<TypedValue> for TypedValue {
+    /// Constructs a typed value from a multi-dimensional bit or integer array.
+    ///
+    /// # Arguments
+    ///
+    /// * `x` - array to be converted to a typed value, can have entries of any standard integer type
+    /// * `st` - scalar type corresponding to the entries of `x`
+    ///
+    /// # Returns
+    ///
+    /// New value constructed from `x`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::data_types::BIT;
+    /// # use ciphercore_base::typed_value::TypedValue;
+    /// # use ndarray::array;
+    /// # use ciphercore_base::typed_value_operations::TypedValueArrayOperations;
+    /// let a = array![[false, true, true, false], [true, false, false, true]].into_dyn();
+    /// let v = TypedValue::from_ndarray(a, BIT).unwrap();
+    /// v.value.access_bytes(|bytes| {
+    ///     assert_eq!(*bytes, vec![150]);
+    ///
+    ///     Ok(())
+    /// }).unwrap();
+    /// ```
+    fn from_ndarray<T: TryInto<u64> + Not<Output = T> + TryInto<u8> + Copy>(
+        a: ndarray::ArrayD<T>,
+        st: ScalarType,
+    ) -> Result<Self> {
+        let t = array_type(a.shape().iter().map(|x| *x as u64).collect(), st.clone());
+        Ok(TypedValue {
+            t,
+            value: Value::from_ndarray(a, st)?,
+            name: None,
+        })
     }
 }
 
-impl ToNdarray<u16> for TypedValue {
-    fn to_ndarray(&self) -> Result<ndarray::ArrayD<u16>> {
-        self.value.to_ndarray_u16(self.t.clone())
-    }
-}
-
-impl ToNdarray<u32> for TypedValue {
-    fn to_ndarray(&self) -> Result<ndarray::ArrayD<u32>> {
-        self.value.to_ndarray_u32(self.t.clone())
-    }
-}
-
-impl ToNdarray<u64> for TypedValue {
-    fn to_ndarray(&self) -> Result<ndarray::ArrayD<u64>> {
-        self.value.to_ndarray_u64(self.t.clone())
-    }
-}
-
-impl ToNdarray<i8> for TypedValue {
-    fn to_ndarray(&self) -> Result<ndarray::ArrayD<i8>> {
-        self.value.to_ndarray_i8(self.t.clone())
-    }
-}
-
-impl ToNdarray<i16> for TypedValue {
-    fn to_ndarray(&self) -> Result<ndarray::ArrayD<i16>> {
-        self.value.to_ndarray_i16(self.t.clone())
-    }
-}
-
-impl ToNdarray<i32> for TypedValue {
-    fn to_ndarray(&self) -> Result<ndarray::ArrayD<i32>> {
-        self.value.to_ndarray_i32(self.t.clone())
-    }
-}
-
-impl ToNdarray<i64> for TypedValue {
-    fn to_ndarray(&self) -> Result<ndarray::ArrayD<i64>> {
-        self.value.to_ndarray_i64(self.t.clone())
+impl<T> ToNdarray<T> for TypedValue
+where
+    data_values::Value: data_values::ToNdarray<T>,
+{
+    fn to_ndarray(&self) -> Result<ndarray::ArrayD<T>> {
+        data_values::ToNdarray::<T>::to_ndarray(&self.value, self.t.clone())
     }
 }
 
@@ -144,9 +526,54 @@ impl TypedValue {
                 return Err(runtime_error!("Cannot check type: {:?}", type_check));
             }
         };
-        Ok(TypedValue { value, t })
+        Ok(TypedValue {
+            value,
+            t,
+            name: None,
+        })
     }
 
+    /// Creates a typed value from a given type, value and name.
+    /// Checks that the value is a valid for the given type.
+    /// Note: check might be not sufficient.
+    ///
+    /// # Arguments
+    ///
+    /// `t` - the type
+    /// `value` - the value
+    /// `name` - the name (can be used to costruct named tuple)
+    ///
+    /// # Returns
+    ///
+    /// New typed value constructed from the given type,value and name.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::data_types::{INT32, Type};
+    /// # use ciphercore_base::data_values::Value;
+    /// # use ciphercore_base::typed_value::TypedValue;
+    /// let t = Type::Scalar(INT32);
+    /// let v = TypedValue::new_named(t.clone(), Value::zero_of_type(t.clone()), "name".to_owned()).unwrap();
+    /// ```
+    pub fn new_named(t: Type, value: Value, name: String) -> Result<Self> {
+        let type_check = value.check_type(t.clone());
+        match type_check {
+            Ok(flag) => {
+                if !flag {
+                    return Err(runtime_error!("Value doesn't match type"));
+                }
+            }
+            Err(_) => {
+                return Err(runtime_error!("Cannot check type: {:?}", type_check));
+            }
+        };
+        Ok(TypedValue {
+            value,
+            t,
+            name: Some(name),
+        })
+    }
     /// Generates a typed value of a given type with all-zero bytes.
     ///
     /// # Arguments
@@ -162,15 +589,17 @@ impl TypedValue {
     /// ```
     /// # use ciphercore_base::data_types::{array_type, INT32};
     /// # use ciphercore_base::typed_value::TypedValue;
+    /// # use ciphercore_base::typed_value_operations::ToNdarray;
     /// # use ndarray::array;
     /// let v = TypedValue::zero_of_type(array_type(vec![2, 2], INT32));
-    /// let a = v.value.to_ndarray_i32(array_type(vec![2, 2], INT32)).unwrap();
+    /// let a = ToNdarray::<i32>::to_ndarray(&v).unwrap();
     /// assert_eq!(a, array![[0, 0], [0, 0]].into_dyn());
     /// ```
     pub fn zero_of_type(t: Type) -> Self {
         TypedValue {
             value: Value::zero_of_type(t.clone()),
             t,
+            name: None,
         }
     }
 
@@ -203,6 +632,7 @@ impl TypedValue {
         Ok(TypedValue {
             t: Type::Scalar(st.clone()),
             value: Value::from_scalar(x, st)?,
+            name: None,
         })
     }
 
@@ -230,205 +660,6 @@ impl TypedValue {
         } else {
             Err(runtime_error!("Cannot convert type {:?} to u64", self.t))
         }
-    }
-
-    /// Constructs a typed value from a vector of tuples: (name, typed_value).
-    ///
-    /// # Arguments
-    ///
-    /// `v` - vector of tuples: (name, typed_value)
-    ///
-    /// # Returns
-    ///
-    /// New typed value constructed from `v`
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use ciphercore_base::data_types::{BIT, INT32};
-    /// # use ciphercore_base::typed_value::TypedValue;
-    /// let v = TypedValue::from_named_tuple(
-    ///     vec![
-    ///         ("a".to_string(), TypedValue::from_scalar(1, BIT).unwrap()),
-    ///         ("second".to_string(), TypedValue::from_scalar(-91, INT32).unwrap())]);
-    /// ```
-    pub fn from_named_tuple(v: Vec<(String, TypedValue)>) -> Result<Self> {
-        let t = named_tuple_type(v.iter().map(|v| (v.0.clone(), v.1.t.clone())).collect());
-        let val_vec = v.iter().map(|v| v.1.value.clone()).collect();
-        Ok(TypedValue {
-            t,
-            value: Value::from_vector(val_vec),
-        })
-    }
-
-    /// Constructs a typed value from a vector.
-    /// Typed values can have different types
-    ///
-    /// # Arguments
-    ///
-    /// `v` - vector of typed_values
-    ///
-    /// # Returns
-    ///
-    /// New typed value constructed from `v`
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use ciphercore_base::data_types::{BIT, INT32};
-    /// # use ciphercore_base::typed_value::TypedValue;
-    /// let v = TypedValue::from_tuple(
-    ///     vec![TypedValue::from_scalar(1, BIT).unwrap(),
-    ///          TypedValue::from_scalar(-91, INT32).unwrap()]);
-    /// ```
-    pub fn from_tuple(v: Vec<TypedValue>) -> Result<Self> {
-        let t = tuple_type(v.iter().map(|v| v.t.clone()).collect());
-        let val_vec = v.iter().map(|v| v.value.clone()).collect();
-        Ok(TypedValue {
-            t,
-            value: Value::from_vector(val_vec),
-        })
-    }
-
-    /// Constructs a typed value from a vector of other typed values.
-    /// All typed values must have the same type.
-    ///
-    /// # Arguments
-    ///
-    /// `v` - vector of typed values
-    ///
-    /// # Returns
-    ///
-    /// New typed value constructed from `v`
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use ciphercore_base::data_types::INT32;
-    /// # use ciphercore_base::typed_value::TypedValue;
-    /// let v = TypedValue::from_vector(
-    ///     vec![
-    ///         TypedValue::from_scalar(1, INT32).unwrap(),
-    ///         TypedValue::from_scalar(423532, INT32).unwrap(),
-    ///         TypedValue::from_scalar(-91, INT32).unwrap()]);
-    /// ```
-    pub fn from_vector(v: Vec<TypedValue>) -> Result<Self> {
-        let val_type = if v.is_empty() {
-            tuple_type(vec![])
-        } else {
-            v[0].t.clone()
-        };
-        let t = vector_type(v.len() as u64, val_type.clone());
-        let mut val_vec = vec![];
-        for val in v {
-            if !val.t.eq(&val_type) {
-                return Err(runtime_error!(
-                    "Can not distinguish the type: vector has different types"
-                ));
-            }
-            val_vec.push(val.value);
-        }
-        Ok(TypedValue {
-            t,
-            value: Value::from_vector(val_vec),
-        })
-    }
-    /// Converts `self` to a vector of values or return an error if `self` is a byte vector.
-    ///
-    /// # Returns
-    ///
-    /// Extracted vector of values
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use ciphercore_base::data_values::Value;
-    /// let v = Value::from_vector(
-    ///     vec![
-    ///         Value::from_vector(vec![]),
-    ///         Value::from_bytes(vec![1, 2, 3])]);
-    /// let vv = v.to_vector().unwrap();
-    /// assert_eq!(vv.len(), 2);
-    /// vv[0].access_vector(|v| {
-    ///     assert_eq!(*v, Vec::<Value>::new());
-    ///     Ok(())
-    /// }).unwrap();
-    /// vv[1].access_bytes(|bytes| {
-    ///     assert_eq!(*bytes, vec![1, 2, 3]);
-    ///     Ok(())
-    /// }).unwrap();
-    /// ```
-    pub fn to_vector(&self) -> Result<Vec<TypedValue>> {
-        let vec_val = self.value.to_vector()?;
-        let mut res = vec![];
-        match &self.t {
-            Type::Tuple(ts) => {
-                if ts.len() != vec_val.len() {
-                    return Err(runtime_error!("Inconsistent number of elements!"));
-                }
-                for (t, value) in ts.iter().zip(vec_val.iter()) {
-                    res.push(TypedValue::new(t.as_ref().clone(), value.clone())?);
-                }
-                Ok(res)
-            }
-            Type::Vector(n, t) => {
-                if *n != (vec_val.len() as u64) {
-                    return Err(runtime_error!("Inconsistent number of elements!"));
-                }
-                let mut res = vec![];
-                for val in vec_val {
-                    res.push(TypedValue::new(t.as_ref().clone(), val)?);
-                }
-                Ok(res)
-            }
-            Type::NamedTuple(n_ts) => {
-                if n_ts.len() != vec_val.len() {
-                    return Err(runtime_error!("Inconsistent number of elements!"));
-                }
-                for (n_t, value) in n_ts.iter().zip(vec_val.iter()) {
-                    res.push(TypedValue::new(n_t.1.as_ref().clone(), value.clone())?);
-                }
-                Ok(res)
-            }
-            _ => {
-                return Err(runtime_error!("Not a vector!"));
-            }
-        }
-    }
-
-    /// Constructs a typed value from a multi-dimensional bit or integer array.
-    ///
-    /// # Arguments
-    ///
-    /// * `x` - array to be converted to a typed value, can have entries of any standard integer type
-    /// * `st` - scalar type corresponding to the entries of `x`
-    ///
-    /// # Returns
-    ///
-    /// New value constructed from `x`
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use ciphercore_base::data_types::BIT;
-    /// # use ciphercore_base::typed_value::TypedValue;
-    /// # use ndarray::array;
-    /// let a = array![[false, true, true, false], [true, false, false, true]].into_dyn();
-    /// let v = TypedValue::from_ndarray(a, BIT).unwrap();
-    /// v.value.access_bytes(|bytes| {
-    ///     assert_eq!(*bytes, vec![150]);
-    ///     Ok(())
-    /// }).unwrap();
-    /// ```
-    pub fn from_ndarray<T: TryInto<u64> + Not<Output = T> + TryInto<u8> + Copy>(
-        a: ndarray::ArrayD<T>,
-        st: ScalarType,
-    ) -> Result<Self> {
-        let t = array_type(a.shape().iter().map(|x| *x as u64).collect(), st.clone());
-        Ok(TypedValue {
-            t,
-            value: Value::from_ndarray(a, st)?,
-        })
     }
 
     pub fn from_json(j: &JsonValue) -> Result<Self> {
@@ -639,6 +870,7 @@ impl TypedValue {
         Ok(TypedValue {
             t: tuple_type(vec![self.t.clone(), self.t.clone(), self.t.clone()]),
             value: Value::from_vector(vals),
+            name: None,
         })
     }
 
@@ -652,14 +884,17 @@ impl TypedValue {
             TypedValue {
                 t: tuple_type(vec![self.t.clone(), self.t.clone(), self.t.clone()]),
                 value: Value::from_vector(vec![v[0].clone(), v[1].clone(), garbage[2].clone()]),
+                name: None,
             },
             TypedValue {
                 t: tuple_type(vec![self.t.clone(), self.t.clone(), self.t.clone()]),
                 value: Value::from_vector(vec![garbage[0].clone(), v[1].clone(), v[2].clone()]),
+                name: None,
             },
             TypedValue {
                 t: tuple_type(vec![self.t.clone(), self.t.clone(), self.t.clone()]),
                 value: Value::from_vector(vec![v[0].clone(), garbage[1].clone(), v[2].clone()]),
+                name: None,
             },
         ])
     }
@@ -692,59 +927,6 @@ impl TypedValue {
             }
         } else {
             return Err(runtime_error!("Not a secret-shared type/value"));
-        }
-    }
-
-    pub fn is_equal(&self, other: &Self) -> Result<bool> {
-        const TWO: u8 = 2;
-        let t = self.t.clone();
-        if other.t != t {
-            return Ok(false);
-        }
-        let type_size_in_bits = get_size_in_bits(t.clone())?;
-        match t {
-            Type::Scalar(_) | Type::Array(_, _) => {
-                let self_bytes = self
-                    .value
-                    .access_bytes(|ref_bytes| Ok(ref_bytes.to_vec()))?;
-                let other_bytes = other
-                    .value
-                    .access_bytes(|ref_bytes| Ok(ref_bytes.to_vec()))?;
-                let value_size_in_bytes = self_bytes.len();
-                let r: u32 = (type_size_in_bits % 8).try_into()?;
-                let mut complete_bytes = value_size_in_bytes;
-                if r != 0 {
-                    complete_bytes -= 1;
-                }
-                for i in 0..complete_bytes {
-                    if self_bytes[i] != other_bytes[i] {
-                        return Ok(false);
-                    }
-                }
-                if self_bytes[value_size_in_bytes - 1] % TWO.pow(r)
-                    != other_bytes[value_size_in_bytes - 1] % TWO.pow(r)
-                {
-                    return Ok(false);
-                }
-                Ok(true)
-            }
-            Type::Vector(_, _) | Type::Tuple(_) | Type::NamedTuple(_) => {
-                let types_vector = get_types_vector(t)?;
-                let self_value_vector = self.value.access_vector(|vec| Ok(vec.clone()))?;
-                let other_value_vector = other.value.access_vector(|vec| Ok(vec.clone()))?;
-                // we are sure that types_vector.len() == self_value_vector.len() == other_value_vector.len()
-                // because in generating TypedValue we recursively call check_type for all values.
-                for i in 0..types_vector.len() {
-                    let typed_value1 =
-                        TypedValue::new((*types_vector[i]).clone(), self_value_vector[i].clone())?;
-                    let typed_value2 =
-                        TypedValue::new((*types_vector[i]).clone(), other_value_vector[i].clone())?;
-                    if !typed_value1.is_equal(&typed_value2)? {
-                        return Ok(false);
-                    }
-                }
-                Ok(true)
-            }
         }
     }
 }
@@ -873,7 +1055,7 @@ fn scalar_type_from_json(o: &Object) -> Result<ScalarType> {
         .parse::<ScalarType>()
 }
 
-fn generalized_subtract(v: Value, v0: Value, t: Type) -> Result<Value> {
+pub fn generalized_subtract(v: Value, v0: Value, t: Type) -> Result<Value> {
     match t {
         Type::Scalar(st) | Type::Array(_, st) => {
             let v_raw = v.access_bytes(|bytes| vec_from_bytes(bytes, st.clone()))?;
@@ -923,7 +1105,7 @@ fn generalized_subtract(v: Value, v0: Value, t: Type) -> Result<Value> {
     }
 }
 
-fn generalized_add(v: Value, v0: Value, t: Type) -> Result<Value> {
+pub fn generalized_add(v: Value, v0: Value, t: Type) -> Result<Value> {
     match t {
         Type::Scalar(st) | Type::Array(_, st) => {
             let v_raw = v.access_bytes(|bytes| vec_from_bytes(bytes, st.clone()))?;
@@ -973,6 +1155,48 @@ fn generalized_add(v: Value, v0: Value, t: Type) -> Result<Value> {
     }
 }
 
+fn vector_from_vector_helper(v: Vec<TypedValue>) -> Result<TypedValue> {
+    let val_type = if v.is_empty() {
+        tuple_type(vec![])
+    } else {
+        v[0].t.clone()
+    };
+
+    let t = vector_type(v.len() as u64, val_type.clone());
+    let mut val_vec = vec![];
+    for val in v {
+        if !val.t.eq(&val_type) {
+            return Err(runtime_error!(
+                "Can not distinguish the type: vector has different types"
+            ));
+        }
+        val_vec.push(val.value);
+    }
+    Ok(TypedValue {
+        t,
+        value: Value::from_vector(val_vec),
+        name: None,
+    })
+}
+fn tuple_from_vector_helper(v: Vec<TypedValue>) -> Result<TypedValue> {
+    let named = v.iter().all(|x| x.name.is_some());
+    let unnamed = v.iter().all(|x| x.name.is_none());
+    if unnamed {
+        let t = tuple_type(v.iter().map(|v| v.t.clone()).collect());
+        let val_vec = v.iter().map(|v| v.value.clone()).collect();
+        Ok(TypedValue::new(t, Value::from_vector(val_vec))?)
+    } else if named {
+        let t = named_tuple_type(
+            v.iter()
+                .map(|v| (v.name.clone().unwrap(), v.t.clone()))
+                .collect(),
+        );
+        let val_vec = v.iter().map(|v| v.value.clone()).collect();
+        Ok(TypedValue::new(t, Value::from_vector(val_vec))?)
+    } else {
+        Err(runtime_error!("Can not mix named and unnamed tuple"))
+    }
+}
 #[cfg(test)]
 mod tests {
     use std::ops::Add;
@@ -1769,21 +1993,45 @@ mod tests {
     }
     #[test]
     fn test_create_from_vector() {
-        assert!(TypedValue::from_vector(vec![
-            TypedValue::from_scalar(0, BIT).unwrap(),
-            TypedValue::from_scalar(73, INT32).unwrap(),
-        ])
+        assert!(TypedValue::from_vector(
+            vec![
+                TypedValue::from_scalar(0, BIT).unwrap(),
+                TypedValue::from_scalar(73, INT32).unwrap(),
+            ],
+            FromVectorMode::Vector
+        )
         .is_err());
 
-        let v = TypedValue::from_vector(vec![
-            TypedValue::from_scalar(0, INT32).unwrap(),
-            TypedValue::from_scalar(73, INT32).unwrap(),
-        ])
+        let v = TypedValue::from_vector(
+            vec![
+                TypedValue::from_scalar(0, INT32).unwrap(),
+                TypedValue::from_scalar(73, INT32).unwrap(),
+            ],
+            FromVectorMode::Vector,
+        )
         .unwrap();
+        let v2 = TypedValue::from_vector(
+            vec![
+                TypedValue::from_scalar(0, INT32).unwrap(),
+                TypedValue::from_scalar(73, INT32).unwrap(),
+            ],
+            FromVectorMode::AutoDetetion,
+        )
+        .unwrap();
+        assert!(v2.is_equal(&v).unwrap());
         let entries = v.to_vector().unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].to_u64().unwrap(), 0);
         assert_eq!(entries[1].to_u64().unwrap(), 73);
+        let v3 = TypedValue::from_vector(
+            vec![
+                TypedValue::from_scalar(0, BIT).unwrap(),
+                TypedValue::from_scalar(73, INT32).unwrap(),
+            ],
+            FromVectorMode::AutoDetetion,
+        )
+        .unwrap();
+        assert!(v3.t.is_tuple());
     }
     #[test]
     fn test_ndarray() {
@@ -1793,6 +2041,373 @@ mod tests {
             let b = ToNdarray::<i32>::to_ndarray(&v)?;
             assert_eq!(b.shape(), vec![2, 3]);
             assert_eq!(b.into_raw_vec(), vec![10, -20, 30, 40, -50, 60]);
+            Ok(())
+        }()
+        .unwrap();
+    }
+    #[test]
+    fn test_get() {
+        //test get from tuple success/failure
+        || -> Result<()> {
+            let t0 = tuple_type(vec![scalar_type(UINT8), scalar_type(UINT16)]);
+            let zero0 = TypedValue::zero_of_type(t0);
+            let res_ok = zero0.get(1);
+            //ok case
+            assert!(res_ok.is_ok());
+            let tv_expected = TypedValue::from_scalar(0, UINT16)?;
+            assert!(tv_expected.is_equal(&res_ok?)?);
+            // out of bound access case
+            let res_err = zero0.get(4);
+            assert!(res_err.is_err());
+            Ok(())
+        }()
+        .unwrap();
+        //test get from vector success/failure
+        || -> Result<()> {
+            let t0 = vector_type(2, scalar_type(UINT8));
+            let zero0 = TypedValue::zero_of_type(t0);
+            let res_ok = zero0.get(1);
+            //ok case
+            assert!(res_ok.is_ok());
+            let tv_expected = TypedValue::from_scalar(0, UINT8)?;
+            assert!(tv_expected.is_equal(&res_ok?)?);
+            // out of bound access case
+            let res_err = zero0.get(4);
+            assert!(res_err.is_err());
+            Ok(())
+        }()
+        .unwrap();
+    }
+    #[test]
+    fn test_insert() {
+        //test insert to tuple success/failure
+        || -> Result<()> {
+            let t0 = tuple_type(vec![scalar_type(UINT8), scalar_type(UINT16)]);
+            let mut zero0 = TypedValue::zero_of_type(t0);
+            let to_insert = TypedValue::from_scalar(20, UINT32)?;
+            let res_ok = zero0.insert(to_insert.clone(), 1);
+            //ok case
+            assert!(res_ok.is_ok());
+            let t_expected = tuple_type(vec![
+                scalar_type(UINT8),
+                scalar_type(UINT32),
+                scalar_type(UINT16),
+            ]);
+            let value_expected = Value::from_vector(vec![
+                Value::from_scalar(0, UINT8).unwrap(),
+                Value::from_scalar(20, UINT32).unwrap(),
+                Value::from_scalar(0, UINT16).unwrap(),
+            ]);
+            let tv_expected = TypedValue::new(t_expected, value_expected)?;
+            assert!(tv_expected.is_equal(&zero0)?);
+            // out of bound insert case
+            let res_err = zero0.insert(to_insert, 4);
+            assert!(res_err.is_err());
+            Ok(())
+        }()
+        .unwrap();
+        //test insert to vector success/failure
+        || -> Result<()> {
+            let t0 = vector_type(2, scalar_type(UINT8));
+            let mut zero0 = TypedValue::zero_of_type(t0);
+            let to_insert = TypedValue::from_scalar(20, UINT8)?;
+            let res_ok = zero0.insert(to_insert.clone(), 1);
+            //ok case
+            assert!(res_ok.is_ok());
+            let t_expected = vector_type(3, scalar_type(UINT8));
+            let value_expected = Value::from_vector(vec![
+                Value::from_scalar(0, UINT8).unwrap(),
+                Value::from_scalar(20, UINT8).unwrap(),
+                Value::from_scalar(0, UINT8).unwrap(),
+            ]);
+            let tv_expected = TypedValue::new(t_expected, value_expected)?;
+            assert!(tv_expected.is_equal(&zero0)?);
+            // out of bound insert case
+            let res_err = zero0.insert(to_insert, 4);
+            assert!(res_err.is_err());
+            // wrong type insert case
+            let to_insert = TypedValue::from_scalar(20, UINT16)?;
+            let res_err = zero0.insert(to_insert, 1);
+            assert!(res_err.is_err());
+
+            Ok(())
+        }()
+        .unwrap();
+        //test insert to incompatible types
+        || -> Result<()> {
+            //insert to scalar
+            let t0 = scalar_type(UINT8);
+            let mut zero0 = TypedValue::zero_of_type(t0);
+            let to_insert = TypedValue::from_scalar(20, UINT8)?;
+            let res_err = zero0.insert(to_insert.clone(), 1);
+            assert!(res_err.is_err());
+            //insert to array
+            let t0 = array_type(vec![2, 2], UINT8);
+            let mut zero0 = TypedValue::zero_of_type(t0);
+            let to_insert = TypedValue::from_scalar(20, UINT8)?;
+            let res_err = zero0.insert(to_insert.clone(), 1);
+            assert!(res_err.is_err());
+            Ok(())
+        }()
+        .unwrap();
+    }
+    #[test]
+    fn test_push() {
+        //test push to tuple success
+        || -> Result<()> {
+            let t0 = tuple_type(vec![scalar_type(UINT8), scalar_type(UINT16)]);
+            let mut zero0 = TypedValue::zero_of_type(t0);
+            let to_insert = TypedValue::from_scalar(20, UINT32)?;
+            let res_ok = zero0.push(to_insert.clone());
+            //ok case
+            assert!(res_ok.is_ok());
+            let tv_expected = TypedValue::from_vector(
+                vec![
+                    TypedValue::from_scalar(0, UINT8).unwrap(),
+                    TypedValue::from_scalar(0, UINT16).unwrap(),
+                    TypedValue::from_scalar(20, UINT32).unwrap(),
+                ],
+                FromVectorMode::Tuple,
+            )
+            .unwrap();
+            assert!(tv_expected.is_equal(&zero0)?);
+            Ok(())
+        }()
+        .unwrap();
+        //test push to tuple fail
+        || -> Result<()> {
+            let t0 = tuple_type(vec![scalar_type(UINT8), scalar_type(UINT16)]);
+            let mut zero0 = TypedValue::zero_of_type(t0);
+            let mut to_insert = TypedValue::from_scalar(20, UINT32)?;
+            to_insert.name = Some("name".to_owned());
+            let res_ok = zero0.push(to_insert.clone());
+            //err case
+            assert!(res_ok.is_err());
+            Ok(())
+        }()
+        .unwrap();
+        //test push to named tuple success
+        || -> Result<()> {
+            let t0 = named_tuple_type(vec![
+                ("name1".to_owned(), scalar_type(UINT8)),
+                ("name2".to_owned(), scalar_type(UINT16)),
+            ]);
+            let mut zero0 = TypedValue::zero_of_type(t0);
+            let mut to_insert = TypedValue::from_scalar(20, UINT32)?;
+            to_insert.name = Some("name".to_owned());
+            let res_ok = zero0.push(to_insert.clone());
+            //ok case
+            assert!(res_ok.is_ok());
+            let mut tv1 = TypedValue::from_scalar(0, UINT8).unwrap();
+            tv1.name = Some("name1".to_owned());
+            let mut tv2 = TypedValue::from_scalar(0, UINT16).unwrap();
+            tv2.name = Some("name2".to_owned());
+            let tv3 = to_insert.clone();
+            let tv_expected =
+                TypedValue::from_vector(vec![tv1, tv2, tv3], FromVectorMode::Tuple).unwrap();
+            assert!(tv_expected.is_equal(&zero0)?);
+            Ok(())
+        }()
+        .unwrap();
+    }
+    #[test]
+    fn test_remove() {
+        //test remove from tuple
+        || -> Result<()> {
+            let mut tv = TypedValue::from_vector(
+                vec![
+                    TypedValue::from_scalar(0, UINT8).unwrap(),
+                    TypedValue::from_scalar(0, UINT16).unwrap(),
+                    TypedValue::from_scalar(20, UINT32).unwrap(),
+                ],
+                FromVectorMode::Tuple,
+            )
+            .unwrap();
+            tv.remove(2)?;
+            let tv_expected = TypedValue::from_vector(
+                vec![
+                    TypedValue::from_scalar(0, UINT8).unwrap(),
+                    TypedValue::from_scalar(0, UINT16).unwrap(),
+                ],
+                FromVectorMode::Tuple,
+            )
+            .unwrap();
+            assert!(tv_expected.is_equal(&tv)?);
+            //failure case : out of bound
+            assert!(tv.remove(2).is_err());
+            Ok(())
+        }()
+        .unwrap();
+    }
+    #[test]
+    fn test_pop() {
+        //test pop from vector
+        || -> Result<()> {
+            let mut tv = TypedValue::from_vector(
+                vec![
+                    TypedValue::from_scalar(0, UINT8).unwrap(),
+                    TypedValue::from_scalar(0, UINT8).unwrap(),
+                    TypedValue::from_scalar(20, UINT8).unwrap(),
+                ],
+                FromVectorMode::Vector,
+            )
+            .unwrap();
+            let element = tv.pop(2)?;
+            let tv_expected = TypedValue::from_vector(
+                vec![
+                    TypedValue::from_scalar(0, UINT8).unwrap(),
+                    TypedValue::from_scalar(0, UINT8).unwrap(),
+                ],
+                FromVectorMode::Vector,
+            )
+            .unwrap();
+            assert!(tv_expected.is_equal(&tv)?);
+            assert!(element.is_equal(&TypedValue::from_scalar(20, UINT8).unwrap())?);
+            //failure case : out of bound
+            assert!(tv.pop(2).is_err());
+            Ok(())
+        }()
+        .unwrap();
+    }
+    #[test]
+    fn test_extend() {
+        //test extend vector to vector
+        || -> Result<()> {
+            let mut tv = TypedValue::from_vector(
+                vec![
+                    TypedValue::from_scalar(0, UINT8).unwrap(),
+                    TypedValue::from_scalar(10, UINT8).unwrap(),
+                    TypedValue::from_scalar(20, UINT8).unwrap(),
+                ],
+                FromVectorMode::Vector,
+            )
+            .unwrap();
+            let tv_to_extend = TypedValue::from_vector(
+                vec![
+                    TypedValue::from_scalar(30, UINT8).unwrap(),
+                    TypedValue::from_scalar(40, UINT8).unwrap(),
+                ],
+                FromVectorMode::Vector,
+            )
+            .unwrap();
+            let tv_expected = TypedValue::from_vector(
+                vec![
+                    TypedValue::from_scalar(0, UINT8).unwrap(),
+                    TypedValue::from_scalar(10, UINT8).unwrap(),
+                    TypedValue::from_scalar(20, UINT8).unwrap(),
+                    TypedValue::from_scalar(30, UINT8).unwrap(),
+                    TypedValue::from_scalar(40, UINT8).unwrap(),
+                ],
+                FromVectorMode::Vector,
+            )
+            .unwrap();
+            tv.extend(tv_to_extend)?;
+            assert!(tv_expected.is_equal(&tv)?);
+            Ok(())
+        }()
+        .unwrap();
+        //test extend incompatible vector to vector: failure
+        || -> Result<()> {
+            let mut tv = TypedValue::from_vector(
+                vec![
+                    TypedValue::from_scalar(0, UINT8).unwrap(),
+                    TypedValue::from_scalar(10, UINT8).unwrap(),
+                    TypedValue::from_scalar(20, UINT8).unwrap(),
+                ],
+                FromVectorMode::Vector,
+            )
+            .unwrap();
+            let tv_to_extend = TypedValue::from_vector(
+                vec![
+                    TypedValue::from_scalar(30, UINT16).unwrap(),
+                    TypedValue::from_scalar(40, UINT16).unwrap(),
+                ],
+                FromVectorMode::Vector,
+            )
+            .unwrap();
+            let res = tv.extend(tv_to_extend);
+            assert!(res.is_err());
+            Ok(())
+        }()
+        .unwrap();
+        //test extend incompatible vector to tuple: success
+        || -> Result<()> {
+            let mut tv = TypedValue::from_vector(
+                vec![
+                    TypedValue::from_scalar(0, UINT8).unwrap(),
+                    TypedValue::from_scalar(10, UINT8).unwrap(),
+                    TypedValue::from_scalar(20, UINT8).unwrap(),
+                ],
+                FromVectorMode::Tuple,
+            )
+            .unwrap();
+            let tv_to_extend = TypedValue::from_vector(
+                vec![
+                    TypedValue::from_scalar(30, UINT16).unwrap(),
+                    TypedValue::from_scalar(40, UINT16).unwrap(),
+                ],
+                FromVectorMode::Vector,
+            )
+            .unwrap();
+            let res = tv.extend(tv_to_extend);
+            assert!(res.is_ok());
+            let tv_expected = TypedValue::from_vector(
+                vec![
+                    TypedValue::from_scalar(0, UINT8).unwrap(),
+                    TypedValue::from_scalar(10, UINT8).unwrap(),
+                    TypedValue::from_scalar(20, UINT8).unwrap(),
+                    TypedValue::from_scalar(30, UINT16).unwrap(),
+                    TypedValue::from_scalar(40, UINT16).unwrap(),
+                ],
+                FromVectorMode::Tuple,
+            )
+            .unwrap();
+            assert!(tv.is_equal(&tv_expected)?);
+            Ok(())
+        }()
+        .unwrap();
+    }
+    #[test]
+    fn test_get_sub_vector() {
+        || -> Result<()> {
+            let tv = TypedValue::from_vector(
+                vec![
+                    TypedValue::from_scalar(0, UINT16).unwrap(),
+                    TypedValue::from_scalar(1, UINT16).unwrap(),
+                    TypedValue::from_scalar(2, UINT16).unwrap(),
+                    TypedValue::from_scalar(3, UINT16).unwrap(),
+                    TypedValue::from_scalar(4, UINT16).unwrap(),
+                    TypedValue::from_scalar(5, UINT16).unwrap(),
+                    TypedValue::from_scalar(6, UINT16).unwrap(),
+                    TypedValue::from_scalar(7, UINT16).unwrap(),
+                ],
+                FromVectorMode::Vector,
+            )
+            .unwrap();
+            let sub_v = tv.get_sub_vector(None, None, Some(2))?;
+
+            let tv_expected = TypedValue::from_vector(
+                vec![
+                    TypedValue::from_scalar(0, UINT16).unwrap(),
+                    TypedValue::from_scalar(2, UINT16).unwrap(),
+                    TypedValue::from_scalar(4, UINT16).unwrap(),
+                    TypedValue::from_scalar(6, UINT16).unwrap(),
+                ],
+                FromVectorMode::Vector,
+            )
+            .unwrap();
+            assert!(sub_v.is_equal(&tv_expected)?);
+
+            let res = tv.get_sub_vector(None, Some(12), Some(1));
+            assert!(res.is_err());
+
+            let sub_v2 = tv.get_sub_vector(Some(1), None, Some(20))?;
+            let tv_expected2 = TypedValue::from_vector(
+                vec![TypedValue::from_scalar(1, UINT16).unwrap()],
+                FromVectorMode::Vector,
+            )
+            .unwrap();
+            assert!(sub_v2.is_equal(&tv_expected2)?);
             Ok(())
         }()
         .unwrap();

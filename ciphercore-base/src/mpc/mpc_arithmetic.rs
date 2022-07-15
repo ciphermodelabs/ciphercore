@@ -1,9 +1,10 @@
-use crate::custom_ops::CustomOperationBody;
+use crate::custom_ops::{CustomOperation, CustomOperationBody};
 use crate::data_types::Type;
 use crate::data_values::Value;
 use crate::errors::Result;
 use crate::graphs::{Context, Graph, Node, NodeAnnotation, Operation};
 use crate::mpc::mpc_compiler::{check_private_tuple, get_zero_shares, PARTIES};
+use crate::mpc::utils::ObliviousTransfer;
 
 use serde::{Deserialize, Serialize};
 
@@ -170,6 +171,7 @@ fn bilinear_product(l: Node, r: Node, op: Operation) -> Result<Node> {
         Operation::Multiply => l.multiply(r),
         Operation::Dot => l.dot(r),
         Operation::Matmul => l.matmul(r),
+        Operation::MixedMultiply => l.mixed_multiply(r),
         _ => Err(runtime_error!("Not a bilinear product")),
     }
 }
@@ -354,16 +356,200 @@ impl CustomOperationBody for MatmulMPC {
     }
 }
 
+// Accepts at least 2 arguments including integer arrays/scalars and binary arrays/scalars that must be multiplied.
+// If bits are in the secret shared form, then PRF keys must be provided.
+#[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
+pub(super) struct MixedMultiplyMPC {}
+
+// Mixed multiply of integers known to some party and secret shared bits.
+// Let c and b = (b_1, b_2, b_3) be public integers and secret shares of private bits, respectively.
+// Let party S be the party knowing a.
+// Let party R be the party with index equal to (party S index) - 1.
+// Let party H be the party with index equal to (party S index) + 1.
+// In this case, the following protocol is applied:
+// 1. Parties R and S sample pseudo-random r_s.
+// 2. Parties S and H sample pseudo-random r_h.
+// 3. Party S  creates two messages using its shares b_s, b_h of b:
+//    - m_0 = (b_s XOR b_h) * c - r_s - r_h;
+//    - m_1 = NOT(b_s XOR b_h) * c - r_s - r_h.
+//    Note that (m_(b_r), r_s, r_h) is the sharing of b * c
+// 4. Since parties R and H know b_r and party S knows m_0, m_1,
+//    they run the oblivious transfer protocol, which results in party R receiving m_(b_r).
+// 5. Party R shares m_(b_r) with party H.
+//    As a result, each party has 2 shares of the output sharing (m_(b_r), r_s, r_h).
+fn multiply_bits_by_public_integers(
+    c: Node,
+    b: Node,
+    integer_owner_id: u64,
+    prf_keys: Node,
+) -> Result<Node> {
+    let g = c.get_graph();
+
+    let party_s_id = integer_owner_id;
+    let party_h_id = (integer_owner_id + 1) % (PARTIES as u64);
+    let party_r_id = PARTIES as u64 - party_s_id - party_h_id;
+
+    // Extract second and third PRF keys, which are known to parties R, S and parties S, H, respectively.
+    let key_rs = prf_keys.tuple_get(party_s_id)?;
+    let key_sh = prf_keys.tuple_get(party_h_id)?;
+
+    // Compute (b_s XOR b_h) * c
+    let bs_xor_bh = b.tuple_get(party_s_id)?.add(b.tuple_get(party_h_id)?)?;
+    let bs_xor_bh_times_c = c.mixed_multiply(bs_xor_bh)?;
+
+    // 1. Parties R and S sample pseudo-random r_s.
+    let rs = g.prf(key_rs, 0, bs_xor_bh_times_c.get_type()?)?;
+    // 2. Parties S and H sample pseudo-random r_h.
+    let rh = g.prf(key_sh.clone(), 0, bs_xor_bh_times_c.get_type()?)?;
+    // 3. Party S  creates two messages using its shares b_s, b_h of b:
+    //    - m_0 = (b_s XOR b_h) * c - r_s - r_h;
+    //    - m_1 = NOT(b_s XOR b_h) * c - r_s - r_h = c - (b_s XOR b_h) * c - r_s - r_h.
+    //    Note that (m_(b_r), r_s, r_h) is the sharing of b * c
+    let m0 = bs_xor_bh_times_c
+        .subtract(rs.clone())?
+        .subtract(rh.clone())?;
+    let m1 = c
+        .subtract(bs_xor_bh_times_c)?
+        .subtract(rs.clone())?
+        .subtract(rh.clone())?;
+    // 4. Since parties R and H know b_r and party S knows m_0, m_1,
+    //    they run the oblivious transfer protocol, which result in party R receiving m_(b_r).
+    let br = b.tuple_get(party_r_id)?;
+    let m_br = g.custom_op(
+        CustomOperation::new(ObliviousTransfer {
+            sender_id: party_s_id,
+            receiver_id: party_r_id,
+        }),
+        vec![m0, m1, br, key_sh],
+    )?;
+    // 5. Party R shares m_(b_r) with party H.
+    let sent_m_br = m_br
+        .nop()?
+        .add_annotation(NodeAnnotation::Send(party_r_id, party_h_id))?;
+    // As a result, each party has 2 shares of the output sharing (m_(b_r), r_s, r_h).
+    let mut shares = vec![sent_m_br; 3];
+    shares[party_s_id as usize] = rs;
+    shares[party_h_id as usize] = rh;
+    g.create_tuple(shares)
+}
+
+#[typetag::serde]
+impl CustomOperationBody for MixedMultiplyMPC {
+    fn instantiate(&self, context: Context, argument_types: Vec<Type>) -> Result<Graph> {
+        // Panics since:
+        // - the user has no direct access to this function.
+        // - the MPC compiler should pass the correct number of arguments
+        // and this panic should never happen.
+        if !(2..=3).contains(&argument_types.len()) {
+            panic!("MixedMultiplyMPC should have either 2 or 3 inputs");
+        }
+        let g = context.create_graph()?;
+        let t_a = argument_types[0].clone();
+        let t_b = argument_types[1].clone();
+        let a = g.input(t_a.clone())?;
+        let b = g.input(t_b.clone())?;
+
+        // If an input is private, i.e. a tuple of 3 elements (a0, a1, a2), then
+        // the parties can access the following elements:
+        // 1st party -> a0, a1;
+        // 2nd party -> a1, a2;
+        // 3rd party -> a2, a0.
+        match (t_a, t_b) {
+            (Type::Tuple(v_a), Type::Tuple(v_b)) => {
+                // Both integers and bits are private.
+                // In this case, parties engage in two instances of the above protocol to obtain [a0 * b] and [(a1+a2) * b].
+                // In the former instance, the integer owner is party 0, which knows the share a0.
+                // In the latter one, the integer owner is party 1, which knows both shares a1 and a2; thus, it can compute their sum.
+                // The final step is to sum shares [a0 * b] and [(a1+a2) * b], which yields [a0 * b + (a1+a2) * b] = [a * b]
+                check_private_tuple(v_a)?;
+                check_private_tuple(v_b)?;
+                // Panics since:
+                // - the user has no direct access to this function,
+                // - the MPC compiler should pass the correct number of arguments
+                // and this panic should never happen.
+                if argument_types.len() != 3 {
+                    panic!("MixedMultiply with two private inputs should be provided a tuple of PRF keys");
+                }
+                let prf_type = argument_types[2].clone();
+                let prf_keys = g.input(prf_type)?;
+
+                let a0 = a.tuple_get(0)?;
+                let a1_plus_a2 = a.tuple_get(1)?.add(a.tuple_get(2)?)?;
+
+                let a0_times_b =
+                    multiply_bits_by_public_integers(a0, b.clone(), 0, prf_keys.clone())?;
+                let a1_plus_a2_times_b =
+                    multiply_bits_by_public_integers(a1_plus_a2, b, 1, prf_keys)?;
+
+                let mut ab_shares = vec![];
+                for i in 0..PARTIES as u64 {
+                    let ab_i = a0_times_b
+                        .tuple_get(i)?
+                        .add(a1_plus_a2_times_b.tuple_get(i)?)?;
+                    ab_shares.push(ab_i);
+                }
+                g.create_tuple(ab_shares)?.set_as_output()?;
+            }
+            (Type::Tuple(v_a), Type::Array(_, _) | Type::Scalar(_)) => {
+                // Integers are private, bits are public.
+                // This means that output should be either private integers or zeros that can be computed locally.
+                check_private_tuple(v_a)?;
+                mixed_product(a, b, g.clone(), Operation::MixedMultiply, false)?;
+            }
+            (Type::Array(_, _) | Type::Scalar(_), Type::Tuple(v1)) => {
+                // Integers are public, bits are private.
+                // In this case, bits are multiplied by public integers using the above protocol with party 1 having a role of the integer owner.
+                check_private_tuple(v1)?;
+                // Panics since:
+                // - the user has no direct access to this function,
+                // - the MPC compiler should pass the correct number of arguments
+                // and this panic should never happen.
+                if argument_types.len() != 3 {
+                    panic!(
+                        "MixedMultiply with private bits should be provided a tuple of PRF keys"
+                    );
+                }
+                let prf_type = argument_types[2].clone();
+                let prf_keys = g.input(prf_type)?;
+
+                // All parties know a including party 1
+                let o = multiply_bits_by_public_integers(a, b, 1, prf_keys)?;
+
+                o.set_as_output()?;
+            }
+            (Type::Array(_, _) | Type::Scalar(_), Type::Array(_, _) | Type::Scalar(_)) => {
+                // Both integers and bits are public.
+                // No MPC-specific compilation is needed.
+                let o = a.mixed_multiply(b)?;
+                o.set_as_output()?;
+            }
+            _ => {
+                panic!("Inconsistency with type checker");
+            }
+        }
+        g.finalize()
+    }
+
+    fn get_name(&self) -> String {
+        "MixedMultiplyMPC".to_owned()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::bytes::subtract_vectors_u64;
-    use crate::data_types::{array_type, tuple_type, ArrayShape, ScalarType, INT32, UINT32};
+    use crate::custom_ops::run_instantiation_pass;
+    use crate::data_types::{
+        array_type, scalar_type, tuple_type, ArrayShape, ScalarType, BIT, INT32, UINT32,
+    };
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
     use crate::graphs::create_context;
-    use crate::inline::inline_ops::{InlineConfig, InlineMode};
-    use crate::mpc::mpc_compiler::{prepare_for_mpc_evaluation, IOStatus};
+    use crate::inline::inline_ops::{inline_operations, InlineConfig, InlineMode};
+    use crate::mpc::mpc_compiler::{generate_prf_key_triple, prepare_for_mpc_evaluation, IOStatus};
+    use crate::mpc::mpc_equivalence_class::{generate_equivalence_class, EquivalenceClasses};
+    use std::sync::Arc;
 
     fn prepare_arithmetic_context(
         input_party_map: Vec<IOStatus>,
@@ -375,8 +561,14 @@ mod tests {
         let c = create_context()?;
         let g = c.create_graph()?;
         let mut types = vec![];
-        for shape in dims {
-            types.push(array_type(shape, st.clone()));
+        if op == Operation::MixedMultiply {
+            types.push(array_type(dims[0].clone(), st.clone()));
+            types.push(array_type(dims[1].clone(), BIT));
+            types.push(array_type(dims[2].clone(), BIT));
+        } else {
+            for shape in dims {
+                types.push(array_type(shape, st.clone()));
+            }
         }
         let i1 = g.input(types[0].clone())?;
         i1.set_name("Input 1")?;
@@ -391,7 +583,7 @@ mod tests {
                 let a1 = i1.subtract(i2)?;
                 a1.subtract(g.input(types[2].clone())?)?
             }
-            Operation::Multiply | Operation::Dot | Operation::Matmul => {
+            Operation::Multiply | Operation::Dot | Operation::Matmul | Operation::MixedMultiply => {
                 let a1 = bilinear_product(i1, i2, op.clone())?;
                 bilinear_product(a1, g.input(types[2].clone())?, op)?
             }
@@ -425,7 +617,7 @@ mod tests {
     fn prepare_arithmetic_input(
         input: Vec<Vec<u64>>,
         input_status: Vec<IOStatus>,
-        st: ScalarType,
+        st: Vec<ScalarType>,
     ) -> Result<Vec<Value>> {
         let mut res = vec![];
         for i in 0..3 {
@@ -437,15 +629,15 @@ mod tests {
                     panic!("Use non-empty input");
                 }
                 let threes = vec![3; n];
-                let first_share = subtract_vectors_u64(&input[i], &threes, st.get_modulus())?;
-                v.push(Value::from_flattened_array(&first_share, st.clone())?);
+                let first_share = subtract_vectors_u64(&input[i], &threes, st[i].get_modulus())?;
+                v.push(Value::from_flattened_array(&first_share, st[i].clone())?);
                 for j in 1..PARTIES {
                     let share = vec![j; n];
-                    v.push(Value::from_flattened_array(&share, st.clone())?);
+                    v.push(Value::from_flattened_array(&share, st[i].clone())?);
                 }
                 res.push(Value::from_vector(v));
             } else {
-                res.push(Value::from_flattened_array(&input[i], st.clone())?);
+                res.push(Value::from_flattened_array(&input[i], st[i].clone())?);
             }
         }
         Ok(res)
@@ -513,7 +705,7 @@ mod tests {
             )?;
             let mpc_graph = mpc_context.get_main_graph()?;
 
-            let inputs = prepare_arithmetic_input(input, input_status, st.clone())?;
+            let inputs = prepare_arithmetic_input(input, input_status, vec![st.clone(); 3])?;
 
             check_arithmetic_output(
                 mpc_graph,
@@ -696,7 +888,7 @@ mod tests {
                     (6..6 + flat_dims).collect(),
                 ],
                 input_status,
-                st.clone(),
+                vec![st.clone(); 3],
             )?;
 
             let expected = match op.clone() {
@@ -751,6 +943,7 @@ mod tests {
 
         Ok(())
     }
+
     #[test]
     fn test_multiply() {
         bilinear_product_helper(Operation::Multiply, vec![2]).unwrap();
@@ -764,5 +957,129 @@ mod tests {
     #[test]
     fn test_matmul() {
         bilinear_product_helper(Operation::Matmul, vec![2, 2]).unwrap();
+    }
+
+    #[test]
+    fn test_mixed_multiply_correctness() {
+        || -> Result<()> {
+            let dims = vec![2, 2];
+            let helper =
+                |input_status: Vec<IOStatus>, output_parties: Vec<IOStatus>| -> Result<()> {
+                    let st = INT32;
+                    let mpc_context = prepare_arithmetic_context(
+                        input_status.clone(),
+                        output_parties.clone(),
+                        Operation::MixedMultiply,
+                        st.clone(),
+                        vec![dims.clone(); 3],
+                    )?;
+                    let mpc_graph = mpc_context.get_main_graph()?;
+
+                    let inputs = prepare_arithmetic_input(
+                        vec![vec![2, 3, 4, 5], vec![1, 1, 0, 1], vec![0, 1, 1, 1]],
+                        input_status,
+                        vec![st.clone(), BIT, BIT],
+                    )?;
+
+                    let expected = vec![0, 3, 0, 5];
+
+                    check_arithmetic_output(
+                        mpc_graph,
+                        inputs,
+                        expected,
+                        st,
+                        dims.clone(),
+                        output_parties,
+                    )?;
+
+                    Ok(())
+                };
+
+            helper(
+                vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
+                vec![IOStatus::Party(0)],
+            )?;
+            helper(
+                vec![IOStatus::Public, IOStatus::Party(0), IOStatus::Public],
+                vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
+            )?;
+            helper(
+                vec![IOStatus::Public, IOStatus::Public, IOStatus::Party(0)],
+                vec![IOStatus::Party(0), IOStatus::Party(1)],
+            )?;
+            helper(
+                vec![IOStatus::Public, IOStatus::Public, IOStatus::Public],
+                vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
+            )?;
+            helper(
+                vec![IOStatus::Public, IOStatus::Party(0), IOStatus::Public],
+                vec![],
+            )?;
+            helper(
+                vec![IOStatus::Public, IOStatus::Public, IOStatus::Public],
+                vec![],
+            )?;
+
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    #[test]
+    fn test_mixed_multiply_communication() {
+        || -> Result<()> {
+            let c = create_context()?;
+            let g = c.create_graph()?;
+            let input_type1 = tuple_type(vec![scalar_type(INT32); 3]);
+            let input_type2 = tuple_type(vec![scalar_type(BIT); 3]);
+            let i1 = g.input(input_type1)?;
+            let i2 = g.input(input_type2)?;
+            let prf_keys = {
+                let keys_vec = generate_prf_key_triple(g.clone())?;
+                g.create_tuple(keys_vec)?
+            };
+            let o = g.custom_op(
+                CustomOperation::new(MixedMultiplyMPC {}),
+                vec![i1, i2, prf_keys],
+            )?;
+            o.set_as_output()?;
+            g.finalize()?;
+            g.set_as_main()?;
+            c.finalize()?;
+
+            let instantiated_c = run_instantiation_pass(c)?.context;
+            let inlined_c = inline_operations(
+                instantiated_c.clone(),
+                InlineConfig {
+                    default_mode: InlineMode::Simple,
+                    ..Default::default()
+                },
+            )?;
+            let result_class = generate_equivalence_class(
+                inlined_c.clone(),
+                vec![vec![IOStatus::Shared, IOStatus::Shared]],
+            )?;
+
+            let share0_12 = EquivalenceClasses::Atomic(vec![vec![0], vec![1, 2]]);
+            let share1_02 = EquivalenceClasses::Atomic(vec![vec![1], vec![0, 2]]);
+            let share2_01 = EquivalenceClasses::Atomic(vec![vec![2], vec![0, 1]]);
+            let shared = EquivalenceClasses::Vector(vec![
+                Arc::new(share1_02.clone()),
+                Arc::new(share2_01.clone()),
+                Arc::new(share0_12.clone()),
+            ]);
+
+            let main_graph = inlined_c.get_main_graph()?;
+            let output_node_id = main_graph.get_output_node()?.get_id();
+
+            // Output should be shared. TODO: test other nodes
+            assert_eq!(
+                *result_class.get(&(0, output_node_id)).unwrap(),
+                shared.clone()
+            );
+
+            Ok(())
+        }()
+        .unwrap();
     }
 }
