@@ -588,7 +588,8 @@ The following custom operations are already implemented within CipherCore:
    * [minimum](https://docs.rs/ciphercore-base/latest/ciphercore_base/ops/min_max/struct.Min.html),
 * [multiplexer](https://docs.rs/ciphercore-base/latest/ciphercore_base/ops/multiplexer/struct.Mux.html),
 * [multiplicative inverse](https://docs.rs/ciphercore-base/latest/ciphercore_base/ops/newton_inversion/struct.NewtonInversion.html),
-* [inverse square root](https://docs.rs/ciphercore-base/latest/ciphercore_base/ops/inverse_sqrt/struct.InverseSqrt.html).
+* [inverse square root](https://docs.rs/ciphercore-base/latest/ciphercore_base/ops/inverse_sqrt/struct.InverseSqrt.html),
+* [sorting of binary strings](https://docs.rs/ciphercore-base/latest/ciphercore_base/ops/sorting/struct.Sort.html).
 
 # CLI Tools
 
