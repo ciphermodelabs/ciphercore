@@ -1,12 +1,13 @@
 //! Multiplicative inversion via [the Newton-Raphson method](https://en.wikipedia.org/wiki/Newton%27s_method#Multiplicative_inverses_of_numbers_and_power_series).
 use crate::custom_ops::{CustomOperation, CustomOperationBody, Or};
 use crate::data_types::{array_type, scalar_type, Type, BIT, INT64, UINT64};
-use crate::data_values::Value;
 use crate::errors::Result;
 use crate::graphs::{Context, Graph, GraphAnnotation};
 use crate::ops::utils::{pull_out_bits, put_in_bits};
 
 use serde::{Deserialize, Serialize};
+
+use super::utils::{constant_scalar, multiply_fixed_point, zeros};
 
 /// A structure that defines the custom operation NewtonInversion that computes an inversion of a number via [the Newton-Raphson method](https://en.wikipedia.org/wiki/Newton%27s_method#Multiplicative_inverses_of_numbers_and_power_series).
 ///
@@ -106,19 +107,17 @@ impl CustomOperationBody for NewtonInversion {
 
         let g = context.create_graph()?;
         let divisor = g.input(t.clone())?;
-        let zero_bit = g.constant(bit_type.clone(), Value::zero_of_type(bit_type.clone()))?;
+        let zero_bit = zeros(&g, bit_type.clone())?;
         let mut approximation = if has_initial_approximation {
             g.input(t)?
         } else {
             let divisor_bits = pull_out_bits(divisor.a2b()?)?.array_to_vector()?;
             let mut divisor_bits_reversed = vec![];
             for i in 0..self.denominator_cap_2k {
-                let index = g.constant(
-                    scalar_type(UINT64),
-                    Value::from_scalar(self.denominator_cap_2k - i - 1, UINT64)?,
-                )?;
+                let index = constant_scalar(&g, self.denominator_cap_2k - i - 1, UINT64)?;
                 divisor_bits_reversed.push(divisor_bits.vector_get(index)?);
             }
+            // TODO: this can be optimized with MixedMultiply (make `highest_one_bit` graph return the arithmetic node right away).
             let highest_one_bit = g
                 .iterate(
                     g_highest_one_bit,
@@ -131,7 +130,7 @@ impl CustomOperationBody for NewtonInversion {
                 let bit = if i >= self.denominator_cap_2k {
                     zero_bit.clone()
                 } else {
-                    let index = g.constant(scalar_type(UINT64), Value::from_scalar(i, UINT64)?)?;
+                    let index = constant_scalar(&g, i, UINT64)?;
                     highest_one_bit.vector_get(index)?
                 };
                 first_approximation_bits.push(bit);
@@ -144,15 +143,11 @@ impl CustomOperationBody for NewtonInversion {
         };
         // Now, we do Newton approximation for computing 1 / x, where x = divisor / (2 ** cap).
         // The formula for the Newton method is x_{i + 1} = x_i * (2 - d * x_i).
-        let two_power_cap_plus_one = g.constant(
-            scalar_type(sc.clone()),
-            Value::from_scalar(1 << (self.denominator_cap_2k + 1), sc)?,
-        )?;
+        let two_power_cap_plus_one = constant_scalar(&g, 1 << (self.denominator_cap_2k + 1), sc)?;
         for _ in 0..self.iterations {
             let x = approximation;
             let mult = two_power_cap_plus_one.subtract(x.multiply(divisor.clone())?)?;
-            let new_approximation = mult.multiply(x)?;
-            approximation = g.truncate(new_approximation, 1 << self.denominator_cap_2k)?;
+            approximation = multiply_fixed_point(mult, x, self.denominator_cap_2k)?;
         }
         approximation.set_as_output()?;
         g.finalize()?;
@@ -174,6 +169,7 @@ mod tests {
     use crate::custom_ops::run_instantiation_pass;
     use crate::custom_ops::CustomOperation;
     use crate::data_types::ScalarType;
+    use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
     use crate::graphs::create_context;
 
@@ -186,10 +182,7 @@ mod tests {
         let g = c.create_graph()?;
         let i = g.input(scalar_type(sc_t.clone()))?;
         let o = if let Some(approx) = initial_approximation {
-            let approx_const = g.constant(
-                scalar_type(sc_t.clone()),
-                Value::from_scalar(approx, sc_t.clone())?,
-            )?;
+            let approx_const = constant_scalar(&g, approx, sc_t.clone())?;
             g.custom_op(
                 CustomOperation::new(NewtonInversion {
                     iterations: 5,

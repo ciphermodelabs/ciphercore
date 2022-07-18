@@ -2,7 +2,6 @@
 use crate::broadcast::broadcast_shapes;
 use crate::custom_ops::{CustomOperation, CustomOperationBody, Not, Or};
 use crate::data_types::{array_type, scalar_type, tuple_type, vector_type, ArrayShape, Type, BIT};
-use crate::data_values::Value;
 use crate::errors::Result;
 use crate::graphs::*;
 use crate::ops::utils::pull_out_bits;
@@ -10,6 +9,8 @@ use crate::ops::utils::validate_arguments_in_broadcast_bit_ops;
 use std::cmp::Ordering;
 
 use serde::{Deserialize, Serialize};
+
+use super::utils::zeros;
 
 /// Given an array_shape, this function returns the array's trailing
 /// axis' (or the innermost/last dimension's) length
@@ -314,16 +315,12 @@ trait PrimitiveComparisonCustomOperation: ComparisonCustomOperation {
         let (bit_vect_len1, new_shape1, new_array_type1, mult_dim_op1) =
             preprocess_comparison_args(arguments_types[1].clone())?;
 
-        let constant_type: Type;
-        let const_zeroed_bytes: Value;
-        if mult_dim_op0 || mult_dim_op1 {
+        let constant_type = if mult_dim_op0 || mult_dim_op1 {
             let constant_shape = broadcast_shapes(new_shape0, new_shape1)?;
-            constant_type = array_type(constant_shape, BIT);
-            const_zeroed_bytes = Value::zero_of_type(constant_type.clone());
+            array_type(constant_shape, BIT)
         } else {
-            constant_type = scalar_type(BIT);
-            const_zeroed_bytes = Value::zero_of_type(constant_type.clone());
-        }
+            scalar_type(BIT)
+        };
 
         let bit_level_comparison_graph = self.get_bit_lvl_graph(
             context.clone(),
@@ -348,7 +345,7 @@ trait PrimitiveComparisonCustomOperation: ComparisonCustomOperation {
             let b = graph_comp_n_bits.tuple_get(inputs, 1)?;
             let azb = graph_comp_n_bits.zip(vec![a, b])?;
 
-            let prev_r = graph_comp_n_bits.constant(constant_type, const_zeroed_bytes)?;
+            let prev_r = zeros(&graph_comp_n_bits, constant_type)?;
 
             let r_tuple = graph_comp_n_bits.iterate(bit_level_comparison_graph, prev_r, azb)?;
             let r = graph_comp_n_bits.tuple_get(r_tuple, 0)?;
@@ -905,6 +902,7 @@ mod tests {
     use crate::data_types::{
         array_type, ScalarType, INT16, INT32, INT64, INT8, UINT16, UINT32, UINT64, UINT8,
     };
+    use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
     use crate::graphs::create_context;
 
