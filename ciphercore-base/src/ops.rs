@@ -8,6 +8,7 @@ pub mod inverse_sqrt;
 pub mod min_max;
 pub mod multiplexer;
 pub mod newton_inversion;
+pub mod pwl;
 pub mod sorting;
 pub mod taylor_exponent;
 #[doc(hidden)]

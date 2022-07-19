@@ -145,7 +145,12 @@ fn get_slice_shape_1d(dimension: u64, slice_element: SliceElement) -> Result<Opt
                     break;
                 }
                 if current < 0 || current >= dimension as i64 {
-                    return Err(runtime_error!("Slicing index is out of bounds"));
+                    return Err(runtime_error!(
+                        "Slicing index is out of bounds: {} not in [{}, {})",
+                        current,
+                        0,
+                        dimension
+                    ));
                 }
                 counter += 1;
                 current += step;
