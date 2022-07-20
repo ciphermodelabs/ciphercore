@@ -7,6 +7,7 @@ use crate::inline::data_structures::{log_depth_sum, CombineOp};
 use crate::inline::inline_common::{
     pick_prefix_sum_algorithm, DepthOptimizationLevel, InlineState,
 };
+use crate::ops::utils::{constant_scalar, zeros};
 
 const MAX_ALLOWED_STATE_BITS: u64 = 4;
 
@@ -108,9 +109,7 @@ pub(super) fn inline_iterate_small_state(
     // Precompute the transformation of initial_state, which is needed to
     // extract states from the transformation matrices. See extract_state_from_mapping()
     // for more detailed explanation.
-    let unused_node = inliner
-        .output_graph()
-        .constant(scalar_type(BIT), Value::zero_of_type(scalar_type(BIT)))?;
+    let unused_node = zeros(&inliner.output_graph(), scalar_type(BIT))?;
     let initial_state_one_hot = if single_bit {
         unused_node.clone()
     } else {
@@ -196,11 +195,8 @@ pub(super) fn inline_iterate_small_state(
                     state_type.clone(),
                 )?
             };
-            let input = inputs_node.vector_get(
-                inliner
-                    .output_graph()
-                    .constant(scalar_type(UINT64), Value::from_scalar(i, UINT64)?)?,
-            )?;
+            let input =
+                inputs_node.vector_get(constant_scalar(&inliner.output_graph(), i, UINT64)?)?;
             inliner.assign_input_nodes(graph.clone(), vec![state, input])?;
             let output = inliner.recursively_inline_graph(graph.clone())?;
             inliner.unassign_nodes(graph.clone())?;
@@ -260,7 +256,7 @@ fn extract_state_from_mapping(
         let g = mapping.get_graph();
         let out0 = mapping.tuple_get(0)?;
         let out1 = mapping.tuple_get(1)?;
-        let one = g.constant(scalar_type(BIT), Value::from_scalar(1, BIT)?)?;
+        let one = constant_scalar(&g, 1, BIT)?;
         let not_initial_state = initial_state.add(one)?;
         out0.multiply(not_initial_state)?
             .add(out1.multiply(initial_state)?)

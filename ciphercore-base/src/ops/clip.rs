@@ -9,6 +9,8 @@ use crate::ops::utils::{pull_out_bits, put_in_bits};
 
 use serde::{Deserialize, Serialize};
 
+use super::utils::zeros;
+
 /// A structure that defines the custom operation Clip2K that computes elementwise the following clipping function:
 /// - 0 if input <= 0,
 /// - input if 0 < input < 2<sup>k</sup>,
@@ -83,7 +85,7 @@ impl CustomOperationBody for Clip2K {
         let input = g.input(input_type)?;
         let input_bits = pull_out_bits(input)?;
         let is_negative = input_bits.get(vec![num_bits - 1])?;
-        let zero_bit = g.constant(bit_type.clone(), Value::zero_of_type(bit_type.clone()))?;
+        let zero_bit = zeros(&g, bit_type.clone())?;
         let all_ones = Value::from_bytes(vec![
             255u8;
             ((get_size_in_bits(bit_type.clone())? + 7) / 8)

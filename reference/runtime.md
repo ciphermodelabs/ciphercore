@@ -8,14 +8,76 @@ The runtime consists of three different entities: *compute nodes* (the runtime i
 
 ![b](images/runtime.svg)
 
-## Prepackaged example runtime
+## Pre-packaged runtime example
 We provide a Docker container with a pre-packaged runtime which can be used to do the following: execute a given computation graph once on a given input. This can be useful for trying it out or benchmarking; however, real-life applications often require more complex logic.
 
-**TODO(Anna)**: add instructions on how to run it.
+TL;DR: there is a single [bash script](https://github.com/ciphermodelabs/ciphercore/blob/main/runtime/example/scripts/do_all.sh) which can run everything end-to-end.
+```bash
+sh runtime/example/scripts/do_all.sh /tmp/ciphercore
+```
+But it's possible to perform the steps manually as outlined below. 
+
+For the networking we use 9 ports. For each party it is: ``provide data'' port (42{#party}1), ``get result'' port (42{#party}2), ``computation'' port (42{#party}3).
+Feel free to change the scripts in order to use any other ports. (Please note that compute nodes should get the correct ports corresponding for the data and result.)
+<details>
+  <summary>All ports which are used</summary>
+  ```
+  4201, 4202, 4203, 4211, 4212, 4213, 4221, 4222, 4223
+  ```
+</details>
+
+It is assumed that all scripts are running from the root of this repository (ciphercore/).
+0. Set up your WORK_DIR:
+```bash
+export WORK_DIR="/tmp/ciphercore" # Or any other dir
+mkdir -p "$WORK_DIR"
+mkdir -p "$WORK_DIR"/data
+```
+1. Pull docker from our private repo ([contact us](https://www.ciphermode.tech/contact-us) to get the token).
+```bash
+docker login -u runtimecm
+docker pull ciphermodelabs/runtime_example:latest
+```
+2. Generate [certificates](#certificates).
+```bash
+docker run --rm -u $(id -u):$(id -g) -v "$WORK_DIR":/mnt/external ciphermodelabs/runtime_example:latest /usr/local/ciphercore/run.sh generate_certs certificates/ localhost
+```
+`localhost` — this is the TLS domain, in real-world deployments, the runtime wouldn't work if domains don't match, but for the purposes of the example, we always override it to localhost.
+3. Generate computation graph and data.
+Computation could be performed via any graphs produced by the CipherCore compiler (see more about [compiling graphs](https://github.com/ciphermodelabs/ciphercore/blob/main/reference/main.md#working-with-the-graph-using-cli-tools)).
+We provide two examples:
+* the median of the sequence on the secret-shared input  (each party doesn't have access to the data);
+```bash
+cp -rf runtime/example/data/median/* "$WORK_DIR"/data/
+```
+* two millionaires problem with revealed input. 
+```bash
+cp -rf runtime/example/data/two_millionaires/* "$WORK_DIR"/data/
+```
+Note that there are two conceptually different cases: secret-shared inputs, and inputs provided by one of the parties. However, in both cases we ask all parties to provide the input — if they don't have it, they should provide any value of the correct type (e.g. zeros or a random value).
+4. Start data nodes using the following script.
+```bash
+sh runtime/example/scripts/run_data_nodes.sh
+```
+5. Start compute nodes using the following script.
+```bash
+sh runtime/example/scripts/run_compute_nodes.sh
+```
+6. Run secure computation.
+```bash
+sh runtime/example/scripts/run_orchestrator.sh
+```
+After the end of the computation, the result for each party will be printed. Parties, which are not supposed to see the result, see random ``garbage''.
+
+Now you can also try to use different data/graphs without restarting everything. Just update the corresponding files in folder `$WORK_DIR/data` and call `run_orchestrator.sh` once more
+7. Once done, don't forget to stop all processes to release ports.
+```bash
+sh runtime/example/scripts/tear_down.sh
+```
 
 ## Implementation of application-specific data and orchestrator nodes
 
-For more complex scenarions, one has to do some additional implementation work. We provide a universal binary for compute nodes, while the implementation of the data nodes and orchestrator(s) has to be application-specific. In most cases, the implementation is fairly straightforward. The interaction of data & orchestrator nodes with compute nodes is done via the following [gRPC](https://en.wikipedia.org/wiki/GRPC) interfaces (gRPC is available in many languages, not just Rust).
+For more complex scenarios, one has to do some additional implementation work. We provide a universal binary for compute nodes, while the implementation of the data nodes and orchestrator(s) has to be application-specific. In most cases, the implementation is fairly straightforward. The interaction of data & orchestrator nodes with compute nodes is done via the following [gRPC](https://en.wikipedia.org/wiki/GRPC) interfaces (gRPC is available in many languages, not just Rust).
 
 Specifications for the gRPC protocols can be found in the following files:
 
@@ -27,7 +89,7 @@ The overall process is structured as follows. Each computation is represented as
 * Orchestrator first has to call the `RegisterGraph` RPC method of a compute node, to upload the computation graph to each compute node (once per graph, the same graph can be re-used in different sessions);
 * Then, it has to call `CreateSession`, providing the id of the registered graph, as well as keys for data nodes (party-specific), and addresses of other compute nodes;
 * Compute nodes retrieve their inputs from the data nodes, connect to each other, interactively run the computation protocol, and send the results back to data nodes;
-* Once the compuation is finished, the session should be removed with the `FinishSession` call to free up the memory. Multiple sessions can run in parallel.
+* Once the computation is finished, the session should be removed with the `FinishSession` call to free up the memory. Multiple sessions can run in parallel.
 
 Data nodes and orchestrator can be separate, or combined in any way. However, compute nodes must be separate, moreover,
 
@@ -48,7 +110,7 @@ In real-life use-cases, sometimes an additional level of certificate hierarchy m
 
 ## Example of a custom runtime
 
-For this example, we implement all three data nodes and orchestrator in a single Python script (not suitable for real-life deployments). We'll use the graph and inputs from the Rust example: the graph describes the compuation of a median element in an array, and the input is this array secret-shared between the parties.
+For this example, we implement all three data nodes and orchestrator in a single Python script (not suitable for real-life deployments). We'll use the graph and inputs from the Rust example: the graph describes the computation of a median element in an array, and the input is this array secret-shared between the parties.
 
 ### Python-based data nodes and orchestrator
 
@@ -205,7 +267,7 @@ for i, stub in enumerate(stubs):
 print('Created sessions')
 ```
 
-Finally, we need to wait for the session to finish, which we do by repeatedly querying the list of sesssions, and checking if they're still running:
+Finally, we need to wait for the session to finish, which we do by repeatedly querying the list of sessions, and checking if they're still running:
 
 ```python
 while True:
@@ -224,7 +286,7 @@ for stub in stubs:
     _ = stub.FinishSession(party_pb2.FinishSessionRequest(session_id=sess_id))
 ```
 
-Note that once everything is done, we need to call `FinishSession` to free up the memory. It doesn't matter for this example, but might matter for more compicated flows (e.g. ML model training).
+Note that once everything is done, we need to call `FinishSession` to free up the memory. It doesn't matter for this example, but might matter for more complicated flows (e.g. ML model training).
 
 ### Running everything
 

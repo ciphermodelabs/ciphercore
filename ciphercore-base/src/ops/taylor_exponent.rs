@@ -1,15 +1,17 @@
 //! Exp(x) approximation relying on Taylor series expansion.
 use crate::custom_ops::{CustomOperation, CustomOperationBody};
 use crate::data_types::{array_type, scalar_type, vector_type, Type, BIT, INT64};
-use crate::data_values::Value;
 use crate::errors::Result;
-use crate::graphs::{Context, Graph, Node, SliceElement};
+use crate::graphs::{Context, Graph, SliceElement};
 use crate::ops::utils::{pull_out_bits, put_in_bits};
 
 use serde::{Deserialize, Serialize};
 
 use super::comparisons::LessThanEqualTo;
 use super::newton_inversion::NewtonInversion;
+use super::utils::{
+    constant_scalar, multiply_bit_and_number, multiply_fixed_point, zeros, zeros_like,
+};
 
 /// A structure that defines the custom operation TaylorExponent that computes an approximate exp(x / (2 ** fixed_precision)) * (2 ** fixed_precision) using Taylor expansion.
 ///
@@ -83,13 +85,8 @@ impl CustomOperationBody for TaylorExponent {
         // Below, we compute 2 ** (arg / ln(2)) rather than exp(arg).
         // `x` is arg * ln(2).
         let one_over_ln2_int = (((1 << self.fixed_precision_points) as f64) / 2.0_f64.ln()) as u64;
-        let one_over_ln2 = g.constant(
-            scalar_type(sc.clone()),
-            Value::from_scalar(one_over_ln2_int, sc.clone())?,
-        )?;
-        let x = arg
-            .multiply(one_over_ln2)?
-            .truncate(1 << self.fixed_precision_points)?;
+        let one_over_ln2 = constant_scalar(&g, one_over_ln2_int, sc.clone())?;
+        let x = multiply_fixed_point(arg, one_over_ln2, self.fixed_precision_points)?;
 
         let mut x_bits = pull_out_bits(x.a2b()?)?;
         let msb = x_bits.get(vec![63])?;
@@ -101,15 +98,12 @@ impl CustomOperationBody for TaylorExponent {
         // Note that if we're looking at the int part, we're computing the product of 2 ** (2 ** k) if k'th bit is 1.
         // Hence, it doesn't make sense to consider k >= 6.
         let max_exp_bits = 6;
-        let one = g.constant(scalar_type(sc.clone()), Value::from_scalar(1, sc.clone())?)?;
+        let one = constant_scalar(&g, 1, sc.clone())?;
         let mut exp_integer = one.clone();
         for i in self.fixed_precision_points..self.fixed_precision_points + max_exp_bits {
             let bit = x_bits.get(vec![i])?;
             let j = i - self.fixed_precision_points;
-            let p2 = g.constant(
-                scalar_type(sc.clone()),
-                Value::from_scalar(1_u64 << (1_u64 << j), sc.clone())?,
-            )?;
+            let p2 = constant_scalar(&g, 1_u64 << (1_u64 << j), sc.clone())?;
             // `term` is 1 if bit is not set, and 2 ** (2 ** j) otherwise.
             let term = multiply_bit_and_number(bit.clone(), p2.subtract(one.clone())?)?
                 .add(one.clone())?;
@@ -128,11 +122,7 @@ impl CustomOperationBody for TaylorExponent {
             ])?;
             let mut bits_before_point_shape = x_bits.get_type()?.get_shape();
             bits_before_point_shape[0] = 64 - self.fixed_precision_points;
-            let bits_before_point_type = array_type(bits_before_point_shape, BIT);
-            let zero_bits_before_point = g.constant(
-                bits_before_point_type.clone(),
-                Value::zero_of_type(bits_before_point_type),
-            )?;
+            let zero_bits_before_point = zeros(&g, array_type(bits_before_point_shape, BIT))?;
             let stacked_frac_bits = g.create_tuple(vec![
                 bits_after_point.array_to_vector()?,
                 zero_bits_before_point.array_to_vector()?,
@@ -142,20 +132,11 @@ impl CustomOperationBody for TaylorExponent {
                 .b2a(sc.clone())?;
 
             // Now, we want 2 ** x = exp(x * ln(2)) = \sum_i (ln(2) * x) ** i / i!
-            let mut exp_fractional =
-                g.constant(x_frac.get_type()?, Value::zero_of_type(x_frac.get_type()?))?;
-            let mut coef = g.constant(
-                scalar_type(sc.clone()),
-                Value::from_scalar(1 << self.fixed_precision_points, sc.clone())?,
-            )?;
+            let mut exp_fractional = zeros_like(x_frac.clone())?;
+            let mut coef = constant_scalar(&g, 1 << self.fixed_precision_points, sc.clone())?;
             let ln2_int = (2_f64.ln() * ((1 << self.fixed_precision_points) as f64)) as u64;
-            let ln2 = g.constant(
-                scalar_type(sc.clone()),
-                Value::from_scalar(ln2_int, sc.clone())?,
-            )?;
-            let y = x_frac
-                .multiply(ln2)?
-                .truncate(1 << self.fixed_precision_points)?;
+            let ln2 = constant_scalar(&g, ln2_int, sc.clone())?;
+            let y = multiply_fixed_point(x_frac, ln2, self.fixed_precision_points)?;
             for i in 0..self.taylor_terms {
                 exp_fractional = exp_fractional.add(coef.clone())?;
                 if i < self.taylor_terms - 1 {
@@ -183,12 +164,8 @@ impl CustomOperationBody for TaylorExponent {
             vec![exp.clone()],
         )?;
         // If exp is larger than fixed_precision_points * 2, inversion could overflow. In such case, we should return 0.
-        let upper_bound_for_inversion = g
-            .constant(
-                scalar_type(sc.clone()),
-                Value::from_scalar(1 << (2 * self.fixed_precision_points), sc)?,
-            )?
-            .a2b()?;
+        let upper_bound_for_inversion =
+            constant_scalar(&g, 1 << (2 * self.fixed_precision_points), sc)?.a2b()?;
         let exp_bits = exp.a2b()?;
         let inversion_overflow_bit = g.custom_op(
             CustomOperation::new(LessThanEqualTo {
@@ -215,25 +192,13 @@ impl CustomOperationBody for TaylorExponent {
     }
 }
 
-fn multiply_bit_and_number(bit: Node, number: Node) -> Result<Node> {
-    // TODO: this function can be made much more efficient.
-    let g = bit.get_graph();
-    let mut bits = vec![bit.clone()];
-    let zero = g.constant(bit.get_type()?, Value::zero_of_type(bit.get_type()?))?;
-    for _ in 1..64 {
-        bits.push(zero.clone());
-    }
-    let bit_arithmetic =
-        put_in_bits(g.create_vector(bit.get_type()?, bits)?.vector_to_array()?)?.b2a(INT64)?;
-    bit_arithmetic.multiply(number)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     use crate::custom_ops::run_instantiation_pass;
     use crate::custom_ops::CustomOperation;
+    use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
     use crate::graphs::create_context;
 

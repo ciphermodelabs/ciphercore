@@ -2,12 +2,13 @@
 use crate::broadcast::broadcast_shapes;
 use crate::custom_ops::CustomOperationBody;
 use crate::data_types::{array_type, scalar_type, tuple_type, Type, BIT};
-use crate::data_values::Value;
 use crate::errors::Result;
 use crate::graphs::{Context, Graph, GraphAnnotation};
 use crate::ops::utils::{pull_out_bits, put_in_bits, validate_arguments_in_broadcast_bit_ops};
 
 use serde::{Deserialize, Serialize};
+
+use super::utils::zeros;
 
 /// A structure that defines the custom operation BinaryAdd that implements the binary adder.
 ///
@@ -103,7 +104,7 @@ impl CustomOperationBody for BinaryAdd {
         let pulled_out_and_bits = pull_out_bits(and_bits)?.array_to_vector()?;
         let zip_xor_and = g.zip(vec![pulled_out_xor_bits, pulled_out_and_bits])?;
 
-        let zero_bit = g.constant(output_type.clone(), Value::zero_of_type(output_type))?;
+        let zero_bit = zeros(&g, output_type)?;
         let pulled_out_carries_vec = g.iterate(ps_g, zero_bit, zip_xor_and)?.tuple_get(1)?;
         let pulled_out_carries = pulled_out_carries_vec.vector_to_array()?;
         let carries = put_in_bits(pulled_out_carries)?;

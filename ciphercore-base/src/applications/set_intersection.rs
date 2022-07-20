@@ -3,11 +3,11 @@ use crate::applications::sorting::create_binary_batchers_sorting_graph;
 use crate::custom_ops::CustomOperation;
 use crate::custom_ops::Or;
 use crate::data_types::{array_type, scalar_size_in_bits, vector_type, ScalarType, Type, BIT};
-use crate::data_values::Value;
 use crate::errors::Result;
 use crate::graphs::*;
 use crate::ops::comparisons::Equal;
 use crate::ops::multiplexer::Mux;
+use crate::ops::utils::zeros_like;
 use crate::ops::utils::{pull_out_bits, put_in_bits};
 
 // Depending on the input bit node, selects either an input node or a dummy node with zeros.
@@ -18,9 +18,7 @@ fn select_duplicate_helper(node: Node, bit_node: Node) -> Result<Node> {
     // Extract the graph of the input node
     let g = node.get_graph();
     // Constant node with zero values
-    let t = node.get_type()?;
-    let dummy_value = Value::zero_of_type(t.clone());
-    let dummy_node = g.constant(t.clone(), dummy_value)?;
+    let dummy_node = zeros_like(node.clone())?;
     // Reshape the bit node to correctly select input or dummy elements with bits in the bit node
     // The bit node has shape [n], while the input node and the dummy node have shape [n, b].
     // Due to [the NumPy broadcasting rules](https://numpy.org/doc/stable/user/basics.broadcasting.html),
@@ -31,10 +29,10 @@ fn select_duplicate_helper(node: Node, bit_node: Node) -> Result<Node> {
     // Depending on the equality bit choose the first node or the dummy node
     let selected_node = g.custom_op(
         CustomOperation::new(Mux {}),
-        vec![reshaped_bit_node, node, dummy_node],
+        vec![reshaped_bit_node, node.clone(), dummy_node],
     )?;
     // Extract the shape of the input node
-    let input_shape = t.get_shape();
+    let input_shape = node.get_type()?.get_shape();
     // Extract the number of bits of each bitstring in the input node
     let b = input_shape[input_shape.len() - 1];
     // Put bits of the selected node (input or dummy one) to the first dimension,
