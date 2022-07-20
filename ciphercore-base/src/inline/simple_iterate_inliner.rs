@@ -1,8 +1,8 @@
-use crate::data_types::{scalar_type, Type, UINT64};
-use crate::data_values::Value;
+use crate::data_types::{Type, UINT64};
 use crate::errors::Result;
 use crate::graphs::{Graph, Node};
 use crate::inline::inline_common::InlineState;
+use crate::ops::utils::constant_scalar;
 
 pub(super) fn inline_iterate_simple(
     graph: Graph,
@@ -19,11 +19,8 @@ pub(super) fn inline_iterate_simple(
         }
     };
     for i in 0..inputs_len {
-        let current_input = inputs_node.vector_get(
-            inliner
-                .output_graph()
-                .constant(scalar_type(UINT64), Value::from_scalar(i, UINT64)?)?,
-        )?;
+        let current_input =
+            inputs_node.vector_get(constant_scalar(&inliner.output_graph(), i, UINT64)?)?;
         inliner.assign_input_nodes(graph.clone(), vec![state.clone(), current_input.clone()])?;
         let result = inliner.recursively_inline_graph(graph.clone())?;
         inliner.unassign_nodes(graph.clone())?;

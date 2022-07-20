@@ -1,12 +1,13 @@
 //! Inverse square root approximation via [the Newton-Raphson method](https://en.wikipedia.org/wiki/Newton%27s_method#Square_root).
 use crate::custom_ops::{CustomOperation, CustomOperationBody, Or};
 use crate::data_types::{array_type, scalar_type, Type, BIT, INT64, UINT64};
-use crate::data_values::Value;
 use crate::errors::Result;
 use crate::graphs::{Context, Graph, GraphAnnotation};
 use crate::ops::utils::{pull_out_bits, put_in_bits};
 
 use serde::{Deserialize, Serialize};
+
+use super::utils::{constant_scalar, multiply_fixed_point, zeros};
 
 /// A structure that defines the custom operation InverseSqrt that computes an approximate inverse square root using Newton iterations.
 ///
@@ -116,7 +117,7 @@ impl CustomOperationBody for InverseSqrt {
 
         let g = context.create_graph()?;
         let divisor = g.input(t.clone())?;
-        let zero_bit = g.constant(bit_type.clone(), Value::zero_of_type(bit_type.clone()))?;
+        let zero_bit = zeros(&g, bit_type.clone())?;
         let mut approximation = if has_initial_approximation {
             g.input(t)?
         } else {
@@ -127,19 +128,14 @@ impl CustomOperationBody for InverseSqrt {
                 // Namely, consider divisor to have digits (d_0, ..., d_31) in base-4. Then, if d_k is the highest
                 // non-zero digit, our approximation will be 2 ** (cap - k).
                 // Indeed, 4 ** k <= divisor < 4 ** (k + 1), so 2 ** (-k - 1) < 1 / sqrt(divisor) < 2 ** -k.
-                let index1 = g.constant(
-                    scalar_type(UINT64),
-                    Value::from_scalar(2 * self.denominator_cap_2k - 2 * i - 1, UINT64)?,
-                )?;
-                let index2 = g.constant(
-                    scalar_type(UINT64),
-                    Value::from_scalar(2 * self.denominator_cap_2k - 2 * i - 2, UINT64)?,
-                )?;
+                let index1 = constant_scalar(&g, 2 * self.denominator_cap_2k - 2 * i - 1, UINT64)?;
+                let index2 = constant_scalar(&g, 2 * self.denominator_cap_2k - 2 * i - 2, UINT64)?;
                 let bit1 = divisor_bits.vector_get(index1)?;
                 let bit2 = divisor_bits.vector_get(index2)?;
                 let bit = g.custom_op(CustomOperation::new(Or {}), vec![bit1, bit2])?;
                 divisor_bits_reversed.push(bit);
             }
+            // TODO: this can be optimized with MixedMultiply (make `highest_one_bit` graph return the arithmetic node right away).
             let highest_one_bit = g
                 .iterate(
                     g_highest_one_bit,
@@ -152,7 +148,7 @@ impl CustomOperationBody for InverseSqrt {
                 let bit = if i >= self.denominator_cap_2k {
                     zero_bit.clone()
                 } else {
-                    let index = g.constant(scalar_type(UINT64), Value::from_scalar(i, UINT64)?)?;
+                    let index = constant_scalar(&g, i, UINT64)?;
                     highest_one_bit.vector_get(index)?
                 };
                 first_approximation_bits.push(bit);
@@ -166,10 +162,7 @@ impl CustomOperationBody for InverseSqrt {
         // Now, we do Newton approximation for computing 1 / sqrt(x), where x = divisor / (2 ** cap).
         // We use F(t) = 1 / (t ** 2) - d;
         // The formula for the Newton method is x_{i + 1} = x_i * (3 / 2 - d / 2 * x_i * x_i).
-        let three_halves = g.constant(
-            scalar_type(sc.clone()),
-            Value::from_scalar(3 << (self.denominator_cap_2k - 1), sc)?,
-        )?;
+        let three_halves = constant_scalar(&g, 3 << (self.denominator_cap_2k - 1), sc)?;
         for _ in 0..self.iterations {
             let x = approximation;
             // We have two terms: 3/2 and divisor * x * x / 2. Since x is multiplied by
@@ -178,8 +171,7 @@ impl CustomOperationBody for InverseSqrt {
             let ax2_norm = g.truncate(ax2, 1 << (self.denominator_cap_2k + 1))?;
 
             let mult = three_halves.subtract(ax2_norm)?;
-            let new_approximation = mult.multiply(x)?;
-            approximation = g.truncate(new_approximation, 1 << self.denominator_cap_2k)?;
+            approximation = multiply_fixed_point(mult, x, self.denominator_cap_2k)?;
         }
         approximation.set_as_output()?;
         g.finalize()?;
@@ -201,6 +193,7 @@ mod tests {
     use crate::custom_ops::run_instantiation_pass;
     use crate::custom_ops::CustomOperation;
     use crate::data_types::ScalarType;
+    use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
     use crate::graphs::create_context;
 
@@ -213,10 +206,7 @@ mod tests {
         let g = c.create_graph()?;
         let i = g.input(scalar_type(sc.clone()))?;
         let o = if let Some(approx) = initial_approximation {
-            let approx_const = g.constant(
-                scalar_type(sc.clone()),
-                Value::from_scalar(approx, sc.clone())?,
-            )?;
+            let approx_const = constant_scalar(&g, approx, sc.clone())?;
             g.custom_op(
                 CustomOperation::new(InverseSqrt {
                     iterations: 5,
