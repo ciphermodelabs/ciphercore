@@ -57,6 +57,7 @@ use std::sync::Arc;
 /// ```
 ///
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Hash)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ScalarType {
     /// Indicates if the scalar is signed.
     pub signed: bool,
@@ -367,6 +368,7 @@ pub type ArrayShape = Vec<u64>;
 
 /// This enum represents the input or output type of a computation [Node](crate::graphs::Node) within the parent computational [Graph](crate::graphs::Graph).
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Hash)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum Type {
     /// Each scalar corresponds to a signed or an unsigned number modulo `m`, where `m` = {2, 2<sup>8</sup>, 2<sup>16</sup>, 2<sup>32</sup>, 2<sup>64</sup>}.
     ///
