@@ -2,6 +2,7 @@
 use ciphercore_base::errors::Result;
 use ciphercore_base::graphs::*;
 use clap::Parser;
+use std::fmt::Write;
 use std::fs;
 
 fn get_graphviz_node_ref(node: Node) -> String {
@@ -32,10 +33,12 @@ fn get_send_anno_info_str(node: Node) -> Result<String> {
                     // First `Send(_, _)`, therefore no comma required
                     ""
                 };
-                send_info_str.push_str(&format!(
+                write!(
+                    send_info_str,
                     "{}Send[{}->{}]",
                     comma_req, sender_id, receiver_id
-                ));
+                )
+                .unwrap();
                 send_count += 1;
             }
         }

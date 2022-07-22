@@ -4,6 +4,7 @@ use crate::errors::CiphercoreBaseError;
 use crate::errors::Result;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::fmt::Write;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -922,10 +923,10 @@ fn form_array_shape_str(array_shape: ArrayShape) -> String {
     array_shape_str.push('[');
     let mut dim_len_iter = array_shape.iter();
     if let Some(&d) = dim_len_iter.next() {
-        array_shape_str.push_str(&format!("{}", d));
+        write!(array_shape_str, "{}", d).unwrap();
     }
     for dimension_length in dim_len_iter {
-        array_shape_str.push_str(&format!(", {}", dimension_length));
+        write!(array_shape_str, ", {}", dimension_length).unwrap();
     }
     array_shape_str.push(']');
     array_shape_str
@@ -946,7 +947,7 @@ fn form_tuple_vec_type_str(vec_type_pointer: Vec<TypePointer>) -> String {
         vec_type_str.push_str(&((**type_pointer).clone().to_string()));
     }
     for type_pointer in vec_type_pointer_iter {
-        vec_type_str.push_str(&format!(", {}", (**type_pointer).clone()));
+        write!(vec_type_str, ", {}", (**type_pointer).clone()).unwrap();
     }
     vec_type_str
 }
@@ -981,7 +982,7 @@ impl fmt::Display for ScalarType {
             } else {
                 scalar_type_string.push('u');
             }
-            scalar_type_string.push_str(&format!("{}", bit_size));
+            write!(scalar_type_string, "{}", bit_size).unwrap();
         }
         write!(f, "{}", scalar_type_string)
     }
@@ -1009,24 +1010,23 @@ impl FromStr for ScalarType {
 
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let type_string: String;
-        match &*self {
+        let type_string = match &*self {
             Type::Scalar(scalar_type) => {
-                type_string = format!("{}", scalar_type);
+                format!("{}", scalar_type)
             }
             Type::Array(shape, scalar_type) => {
-                type_string = form_array_type_str(shape.clone(), scalar_type.clone());
+                form_array_type_str(shape.clone(), scalar_type.clone())
             }
             Type::Vector(number_of_components, element_type) => {
-                type_string = form_vector_type_str(*number_of_components, element_type.clone());
+                form_vector_type_str(*number_of_components, element_type.clone())
             }
             Type::Tuple(element_types) => {
-                type_string = format!("({})", form_tuple_vec_type_str(element_types.clone()));
+                format!("({})", form_tuple_vec_type_str(element_types.clone()))
             }
             Type::NamedTuple(elements) => {
-                type_string = format!("({})", form_named_tuple_vec_type_str(elements.clone()));
+                format!("({})", form_named_tuple_vec_type_str(elements.clone()))
             }
-        }
+        };
         write!(f, "{}", type_string)
     }
 }

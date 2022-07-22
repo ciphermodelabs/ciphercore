@@ -26,13 +26,12 @@ fn get_innermost_dim_len(array_shape: ArrayShape) -> u64 {
 /// - mult_dim_op: Value is `true` if argument has two or more dimensions else false
 fn preprocess_comparison_args(argument_type: Type) -> Result<(u64, ArrayShape, Type, bool)> {
     let shape = argument_type.get_shape();
-    let bit_vect_len: u64;
     let new_arg_shape: ArrayShape;
     let new_arg_type: Type;
     let mult_dim_op: bool;
     let shape_len: u64 = shape.len() as u64;
 
-    bit_vect_len = get_innermost_dim_len(shape.clone());
+    let bit_vect_len = get_innermost_dim_len(shape.clone());
     match shape_len.cmp(&1) {
         Ordering::Equal => {
             new_arg_shape = vec![];
