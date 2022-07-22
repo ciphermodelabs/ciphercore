@@ -34,7 +34,7 @@ fn get_send_anno_info_str(node: Node) -> Result<String> {
                     ""
                 };
                 write!(
-                    send_info_str,
+                    &mut send_info_str,
                     "{}Send[{}->{}]",
                     comma_req, sender_id, receiver_id
                 )
