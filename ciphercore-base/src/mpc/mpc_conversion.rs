@@ -397,7 +397,7 @@ fn add_3_bitstrings(
 ) -> Result<Node> {
     // Reduce addition of three values to two values via the full adder circuit.
     // Given 3 bitstrings a, b and c, Add(a,b,c) = Add(carry << 1, xor_123),
-    // where xor_123 = a AND b XOR c AND (a XOR b), carry = a XOR b XOR c
+    // where carry = a AND b XOR c AND (a XOR b), xor_123 = a XOR b XOR c
     // and Add is the binary adder.
 
     // a XOR b

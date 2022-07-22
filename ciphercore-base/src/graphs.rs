@@ -474,7 +474,7 @@ impl Graph {
             let type_checking_result = result.get_type();
             if type_checking_result.is_err() {
                 self.remove_last_node(result)?;
-                return Err(type_checking_result.err().expect("Should not be here"));
+                return Err(type_checking_result.expect_err("Should not be here"));
             }
             let type_result = type_checking_result?;
 
@@ -494,7 +494,7 @@ impl Graph {
             let size_checking_result = context.try_update_total_size(result.clone());
             if size_checking_result.is_err() {
                 self.remove_last_node(result)?;
-                return Err(size_checking_result.err().expect("Should not be here"));
+                return Err(size_checking_result.expect_err("Should not be here"));
             }
         }
         Ok(result)
@@ -2207,16 +2207,11 @@ impl Context {
     }
 
     fn try_update_total_size(&self, node: Node) -> Result<()> {
-        let node_type: Type;
-        match node.get_operation() {
-            Operation::Input(input_type) => {
-                node_type = input_type;
-            }
-            Operation::Constant(t, _) => {
-                node_type = t;
-            }
+        let node_type = match node.get_operation() {
+            Operation::Input(input_type) => input_type,
+            Operation::Constant(t, _) => t,
             _ => return Ok(()),
-        }
+        };
         if !node_type.is_valid() {
             return Err(runtime_error!("Node with an invalid type: {:?}", node_type));
         }
@@ -2760,7 +2755,7 @@ impl Context {
             .nodes_annotations
             .get(&(graph_id, node_id))
             .cloned()
-            .unwrap_or_else(Vec::new))
+            .unwrap_or_default())
     }
 
     fn add_graph_annotation(&self, graph: &Graph, annotation: GraphAnnotation) -> Result<Context> {
@@ -2794,7 +2789,7 @@ impl Context {
             .graphs_annotations
             .get(&graph.get_id())
             .cloned()
-            .unwrap_or_else(Vec::new))
+            .unwrap_or_default())
     }
 }
 

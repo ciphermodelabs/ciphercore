@@ -5,9 +5,9 @@ use crate::graphs::{Node, SliceElement};
 use crate::ops::utils::pull_out_bits;
 
 pub struct PWLConfig {
-    log_buckets: u64,
-    flatten_left: bool,
-    flatten_right: bool,
+    pub log_buckets: u64,
+    pub flatten_left: bool,
+    pub flatten_right: bool,
 }
 
 /// This helper approximates any given function with a piecewise-linear approximation.
