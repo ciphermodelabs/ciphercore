@@ -35,8 +35,7 @@ fn flatten_value(value: Value) -> Vec<Value> {
             |vector| {
                 Ok(vector
                     .iter()
-                    .map(|x| flatten_value(x.clone()))
-                    .flatten()
+                    .flat_map(|x| flatten_value(x.clone()))
                     .collect())
             },
         )

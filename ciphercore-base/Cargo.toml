@@ -26,6 +26,7 @@ env_logger = "0.9.0"
 clap = { version = "3.0.14", features = ["derive"] }
 ndarray = "0.15.1"
 json = "0.12.4"
+arbitrary = { version = "1", optional = true, features = ["derive"] }
 
 [dev-dependencies]
 serde_test = "1.0.130"

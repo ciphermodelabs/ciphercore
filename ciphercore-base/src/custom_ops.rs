@@ -14,6 +14,7 @@ use petgraph::graph::{DiGraph, NodeIndex};
 use std::any::{Any, TypeId};
 use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::fmt::Debug;
+use std::fmt::Write;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
@@ -387,7 +388,7 @@ impl ContextMappings {
     /// Panics if `old_graph` is not inserted
     pub fn remove_graph(&mut self, old_graph: Graph) {
         assert!(
-            !self.graph_mapping.remove(&old_graph).is_none(),
+            self.graph_mapping.remove(&old_graph).is_some(),
             "Graph is not in graph_mapping"
         );
     }
@@ -395,7 +396,7 @@ impl ContextMappings {
     /// Panics if `old_node` is not inserted
     pub fn remove_node(&mut self, old_node: Node) {
         assert!(
-            !self.node_mapping.remove(&old_node).is_none(),
+            self.node_mapping.remove(&old_node).is_some(),
             "Node is not isn node_mapping"
         );
     }
@@ -460,7 +461,7 @@ impl Instantiation {
             } else {
                 name.push_str(", ");
             }
-            name.push_str(&format!("{}", t));
+            write!(name, "{}", t).unwrap();
         }
         name.push('>');
         name
