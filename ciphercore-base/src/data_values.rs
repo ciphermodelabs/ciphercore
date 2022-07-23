@@ -1316,7 +1316,7 @@ impl ToNdarray<i64> for Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::constants;
+    use crate::constants::type_size_limit_constants;
     use crate::data_types::{
         array_type, create_scalar_type, named_tuple_type, scalar_type, tuple_type, vector_type,
         BIT, INT32, INT64, INT8, UINT16, UINT32, UINT64, UINT8,
@@ -1362,7 +1362,7 @@ mod tests {
         check_type_test_worker_fail(&v, tuple_type(vec![]));
         let v = Value::from_bytes(vec![0, 0, 0]);
         check_type_test_worker_fail(&v, tuple_type(vec![]));
-        if constants::NON_STANDARD_SCALAR_LEN_SUPPORT {
+        if type_size_limit_constants::NON_STANDARD_SCALAR_LEN_SUPPORT {
             let v = Value::from_bytes(vec![0]);
             check_type_test_worker(&v, scalar_type(create_scalar_type(false, Some(253))));
             check_type_test_worker(&v, scalar_type(create_scalar_type(false, Some(254))));
@@ -1699,7 +1699,7 @@ mod tests {
         let result = get_types_vector(t);
         assert!(result.is_ok());
         let t = vector_type(
-            constants::TYPES_VECTOR_LENGTH_LIMIT as u64 + 1,
+            type_size_limit_constants::TYPES_VECTOR_LENGTH_LIMIT as u64 + 1,
             scalar_type(UINT16),
         );
         let result = get_types_vector(t);

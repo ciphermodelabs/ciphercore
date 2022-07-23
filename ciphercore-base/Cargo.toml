@@ -35,6 +35,7 @@ bincode = "1.3.3"
 [features]
 default = []
 nightly-features = []
+fuzzing = []
 
 [[bin]]
 name = "ciphercore_compile"

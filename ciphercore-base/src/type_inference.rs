@@ -1757,7 +1757,7 @@ mod tests {
         assert!(e.is_err());
     }
 
-    use crate::constants;
+    use crate::constants::type_size_limit_constants;
     #[test]
     fn test_b2a() {
         test_b2a_worker(
@@ -1770,7 +1770,7 @@ mod tests {
         test_b2a_worker_fail(array_type(vec![10, 20, 1], BIT), BIT);
         test_b2a_worker_fail(array_type(vec![10, 20, 1], INT32), INT32);
         test_b2a_worker_fail(array_type(vec![10, 40], BIT), INT32);
-        if constants::NON_STANDARD_SCALAR_LEN_SUPPORT {
+        if type_size_limit_constants::NON_STANDARD_SCALAR_LEN_SUPPORT {
             let t = create_scalar_type(false, Some(126));
             test_b2a_worker(array_type(vec![7], BIT), t.clone(), scalar_type(t.clone()));
             test_b2a_worker(

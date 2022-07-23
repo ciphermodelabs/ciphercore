@@ -1,5 +1,5 @@
 //! Types used within CipherCore and related functions.
-use crate::constants;
+use crate::constants::type_size_limit_constants;
 use crate::errors::CiphercoreBaseError;
 use crate::errors::Result;
 use serde::{Deserialize, Serialize};
@@ -133,8 +133,8 @@ impl ScalarType {
         if let Some(m) = self.modulus {
             //Currently our evaluator only supports bit_size = 1,8,16,32,64
             let supported_modulus = vec![TWO, TWO.pow(8), TWO.pow(16), TWO.pow(32)];
-            let supported =
-                constants::NON_STANDARD_SCALAR_LEN_SUPPORT || supported_modulus.contains(&m);
+            let supported = type_size_limit_constants::NON_STANDARD_SCALAR_LEN_SUPPORT
+                || supported_modulus.contains(&m);
             supported && (m > 2 || (m == 2 && !self.signed))
         } else {
             true
@@ -1202,7 +1202,7 @@ pub(super) fn get_size_estimation_in_bits(t: Type) -> Result<u64> {
         }
     };
     result
-        .checked_add(constants::TYPE_MEMORY_OVERHEAD)
+        .checked_add(type_size_limit_constants::TYPE_MEMORY_OVERHEAD)
         .ok_or_else(|| runtime_error!("add overflow!"))
 }
 
@@ -1253,7 +1253,7 @@ pub(super) fn get_size_estimation_in_bits(t: Type) -> Result<u64> {
 pub fn get_types_vector(t: Type) -> Result<Vec<TypePointer>> {
     match t {
         Type::Vector(length, element_type) => {
-            if length > constants::TYPES_VECTOR_LENGTH_LIMIT as u64 {
+            if length > type_size_limit_constants::TYPES_VECTOR_LENGTH_LIMIT as u64 {
                 return Err(runtime_error!(
                     "Vector length is greater than TYPES_VECTOR_LENGTH_LIMIT!"
                 ));
@@ -1266,7 +1266,7 @@ pub fn get_types_vector(t: Type) -> Result<Vec<TypePointer>> {
         }
         Type::Tuple(types) => {
             let length = types.len();
-            if length > constants::TYPES_VECTOR_LENGTH_LIMIT {
+            if length > type_size_limit_constants::TYPES_VECTOR_LENGTH_LIMIT {
                 return Err(runtime_error!(
                     "Tuple length is greater than TYPES_VECTOR_LENGTH_LIMIT!"
                 ));
@@ -1279,7 +1279,7 @@ pub fn get_types_vector(t: Type) -> Result<Vec<TypePointer>> {
         }
         Type::NamedTuple(names_types) => {
             let length = names_types.len();
-            if length > constants::TYPES_VECTOR_LENGTH_LIMIT {
+            if length > type_size_limit_constants::TYPES_VECTOR_LENGTH_LIMIT {
                 return Err(runtime_error!(
                     "NamedTuple length is greater than TYPES_VECTOR_LENGTH_LIMIT!"
                 ));
