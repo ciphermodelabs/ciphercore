@@ -38,7 +38,10 @@ pub fn create_millionaires_graph(context: Context) -> Result<Graph> {
     // For each millionaire, convert integer value to binary array in order to perform comparison.
     // Add custom operation to the graph specifying the custom operation and its arguments: `first_millionaire` and `second_millionaire`.
     // This operation will compute the bit `(first_millionaire > second_millionaire)`.
-    let output = g.custom_op(op, vec![first_millionaire.a2b()?, second_millionaire.a2b()?])?;
+    let output = g.custom_op(
+        op,
+        vec![first_millionaire.a2b()?, second_millionaire.a2b()?],
+    )?;
 
     // Before computation, every graph should be finalized, which means that it should have a designated output node.
     // This can be done by calling `g.set_output_node(output)?` or as below.
