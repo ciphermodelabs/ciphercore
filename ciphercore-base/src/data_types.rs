@@ -499,7 +499,7 @@ pub const VOID_TYPE: Type = Type::Tuple(vec![]);
 /// # Returns
 ///
 /// `true`, if the input array shape `s` is valid, otherwise `false`
-pub(super) fn is_valid_shape(s: ArrayShape) -> bool {
+pub fn is_valid_shape(s: ArrayShape) -> bool {
     if s.is_empty() {
         return false;
     }
