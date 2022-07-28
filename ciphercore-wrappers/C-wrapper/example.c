@@ -30,6 +30,15 @@ int test_wellformed_cases() {
    Node * n4 = UNWRAP(node_res);
    node_res = graph_multiply(graph, n1, n2);
    Node * n5 = UNWRAP(node_res);
+   
+   type_res = scalar_type(&UINT64);
+   Type * tt1 = UNWRAP(type_res);
+   node_res = graph_input(graph, tt1);
+   Node * nn1 = UNWRAP(node_res);
+
+   node_res = graph_input(graph, tt1);
+   node_res = graph_mixed_multiply(graph, nn1, n2);
+   Node * nn5 = UNWRAP(node_res);
    node_res = graph_dot(graph, n1, n2);
    Node * n6 = UNWRAP(node_res);
 //   node_res = graph_matmul(graph, n1, n2);// will panic because of type checker
@@ -194,16 +203,19 @@ int test_wellformed_cases() {
    
 
    type_destroy(t1);
+   type_destroy(tt1);
    type_destroy(t2);
    type_destroy(t3);
    type_destroy(t4);
    type_destroy(t5);
 
    node_destroy(n1);
+   node_destroy(nn1);
    node_destroy(n2);
    node_destroy(n3);
    node_destroy(n4);
    node_destroy(n5);
+   node_destroy(nn5);
    node_destroy(n6);
    node_destroy(n7);
    node_destroy(n8);

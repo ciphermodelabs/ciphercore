@@ -65,6 +65,7 @@ typedef enum COperation_Tag {
   Add,
   Subtract,
   Multiply,
+  MixedMultiply,
   Dot,
   Matmul,
   Truncate,
