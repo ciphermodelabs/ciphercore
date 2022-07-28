@@ -4,4 +4,5 @@ members = [
     "ciphercore-utils",
     "ciphercore-base",
     "ciphercore-adapters",
+    "ciphercore-wrappers/python",
 ]

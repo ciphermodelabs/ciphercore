@@ -22,7 +22,6 @@ use crate::version::{VersionedData, DATA_VERSION};
 /// This enum represents different types of slice elements that are used to create indexing slices (see [Slice] and [Graph::get_slice]).
 ///
 /// The semantics is similar to [the NumPy slice indexing](https://numpy.org/doc/stable/user/basics.indexing.html).
-
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SliceElement {
     /// Single index of a given array dimension.
