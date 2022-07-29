@@ -1,6 +1,6 @@
 //! Minimum of an integer array
 use crate::custom_ops::CustomOperation;
-use crate::data_types::{array_type, scalar_size_in_bits, ScalarType, BIT};
+use crate::data_types::{array_type, ScalarType, BIT};
 use crate::errors::Result;
 use crate::graphs::{Context, Graph, SliceElement};
 use crate::ops::min_max::Min;
@@ -23,18 +23,20 @@ pub fn create_minimum_graph(context: Context, n: u64, st: ScalarType) -> Result<
     // Create a graph in a given context that will be used for finding the minimum
     let g = context.create_graph()?;
 
-    // Create the type of the input array with `n` elements.
-    // To find the minimum of an array, we resort to the custom operation Min (see ops.rs) that accepts only binary input.
-    let input_type = if st == BIT {
-        array_type(vec![1 << n], BIT)
-    } else {
-        let st_size = scalar_size_in_bits(st.clone());
-        array_type(vec![1 << n, st_size], BIT)
-    };
+    // Create the type of the input array with `2^n` elements.
+    let input_type = array_type(vec![1 << n], st.clone());
 
     // Add an input node to the empty graph g created above.
     // This input node requires the input array type generated previously.
-    let mut binary_array = g.input(input_type)?;
+    let input_array = g.input(input_type)?;
+
+    // To find the minimum of an array, we resort to the custom operation Min (see ops.rs) that accepts only binary input.
+    // Thus, we need to convert the input in the binary form (if necessary).
+    let mut binary_array = if st != BIT {
+        input_array.a2b()?
+    } else {
+        input_array
+    };
 
     // We find the minimum using the tournament method. This allows to reduce the graph size to O(n) from O(2<sup>n</sup>) nodes.
     // Namely, we split the input array into pairs, find a minimum within each pair and create a new array from these minima.
