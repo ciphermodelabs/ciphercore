@@ -32,6 +32,13 @@ impl fmt::Display for CiphercoreBaseError {
     }
 }
 
+#[cfg(feature = "py-binding")]
+impl std::convert::From<CiphercoreBaseError> for pyo3::PyErr {
+    fn from(err: CiphercoreBaseError) -> pyo3::PyErr {
+        pyo3::exceptions::PyRuntimeError::new_err(err.to_string())
+    }
+}
+
 #[doc(hidden)]
 #[macro_export]
 macro_rules! runtime_error {

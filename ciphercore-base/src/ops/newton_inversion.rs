@@ -9,7 +9,7 @@ use crate::typed_value::TypedValue;
 
 use serde::{Deserialize, Serialize};
 
-use super::utils::{constant_scalar, multiply_fixed_point, zeros};
+use super::utils::{constant_scalar, multiply_fixed_point, single_bit_to_arithmetic, zeros};
 
 /// A structure that defines the custom operation NewtonInversion that computes an inversion of a number via [the Newton-Raphson method](https://en.wikipedia.org/wiki/Newton%27s_method#Multiplicative_inverses_of_numbers_and_power_series).
 ///
@@ -94,14 +94,14 @@ impl CustomOperationBody for NewtonInversion {
         // Graph for identifying highest one bit.
         let g_highest_one_bit = context.create_graph()?;
         {
-            let input_state = g_highest_one_bit.input(t.clone())?;
+            let input_state = g_highest_one_bit.input(bit_type.clone())?;
             let input_bit = g_highest_one_bit.input(bit_type.clone())?;
 
-            let one = constant_scalar(&g_highest_one_bit, 1, sc.clone())?;
-            let not_input_state = one.subtract(input_state.clone())?;
+            let one = constant_scalar(&g_highest_one_bit, 1, BIT)?;
+            let not_input_state = one.add(input_state.clone())?;
             // If input state is 1, then the highest bit has been already encountered.
             // All other bits can be set to zero.
-            let output = not_input_state.mixed_multiply(input_bit)?;
+            let output = not_input_state.multiply(input_bit)?;
             // new_state is equal to input_state OR input_bit
             // Hence, input state becomes and stays 1 once the highest bit has been encountered.
             let new_state = input_state.add(output.clone())?;
@@ -125,15 +125,17 @@ impl CustomOperationBody for NewtonInversion {
                 let index = constant_scalar(&g, self.denominator_cap_2k - i - 1, UINT64)?;
                 divisor_bits_reversed.push(divisor_bits.vector_get(index)?);
             }
-            let zero = zeros(&g, t)?;
-            let highest_one_bit = g
+            let zero = zeros(&g, bit_type.clone())?;
+            let highest_one_bit_binary = g
                 .iterate(
                     g_highest_one_bit,
                     zero,
                     g.create_vector(bit_type, divisor_bits_reversed)?,
                 )?
-                .tuple_get(1)?;
-            let first_approximation_bits = put_in_bits(highest_one_bit.vector_to_array()?)?;
+                .tuple_get(1)?
+                .vector_to_array()?;
+            let highest_one_bit = single_bit_to_arithmetic(highest_one_bit_binary, sc.clone())?;
+            let first_approximation_bits = put_in_bits(highest_one_bit)?;
             let mut powers_of_two = vec![];
             for i in 0..self.denominator_cap_2k {
                 powers_of_two.push(1u64 << i);
@@ -175,6 +177,12 @@ mod tests {
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
     use crate::graphs::create_context;
+    use crate::inline::inline_common::DepthOptimizationLevel;
+    use crate::inline::inline_ops::inline_operations;
+    use crate::inline::inline_ops::InlineConfig;
+    use crate::inline::inline_ops::InlineMode;
+    use crate::mpc::mpc_compiler::prepare_for_mpc_evaluation;
+    use crate::mpc::mpc_compiler::IOStatus;
 
     fn scalar_division_helper(
         divisor: u64,
@@ -301,5 +309,36 @@ mod tests {
                     <= 1
             );
         }
+    }
+
+    #[test]
+    fn test_newton_inversion_compiles_end2end() -> Result<()> {
+        let c = create_context()?;
+        let g = c.create_graph()?;
+        let i = g.input(scalar_type(INT64))?;
+        let o = g.custom_op(
+            CustomOperation::new(NewtonInversion {
+                iterations: 5,
+                denominator_cap_2k: 10,
+            }),
+            vec![i],
+        )?;
+        o.set_as_output()?;
+        g.finalize()?;
+        g.set_as_main()?;
+        c.finalize()?;
+        let inline_config = InlineConfig {
+            default_mode: InlineMode::DepthOptimized(DepthOptimizationLevel::Default),
+            ..Default::default()
+        };
+        let instantiated_context = run_instantiation_pass(c)?.get_context();
+        let inlined_context = inline_operations(instantiated_context, inline_config.clone())?;
+        let _unused = prepare_for_mpc_evaluation(
+            inlined_context,
+            vec![vec![IOStatus::Shared]],
+            vec![vec![]],
+            inline_config,
+        )?;
+        Ok(())
     }
 }
