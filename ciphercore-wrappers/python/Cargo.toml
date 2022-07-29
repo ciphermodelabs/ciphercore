@@ -1,0 +1,22 @@
+[package]
+name = "ciphercore"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ciphercore-base = { path = "../../ciphercore-base", features=["py-binding"] }
+serde = { version = "1.0.130", features = ["derive", "rc"] }
+serde_json = "1.0.68"
+ndarray = "0.15.1"
+numpy = "0.15"
+
+[dependencies.pyo3]
+version = "0.15.1"
+features = ["extension-module"]
+
+[features]
+default = []
+nightly-features = []

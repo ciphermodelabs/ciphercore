@@ -10,7 +10,7 @@ use std::sync::Weak;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::constants;
+use crate::constants::type_size_limit_constants;
 use crate::custom_ops::CustomOperation;
 use crate::data_types::{get_size_estimation_in_bits, ArrayShape, ScalarType, Type};
 use crate::data_values::Value;
@@ -22,7 +22,6 @@ use crate::version::{VersionedData, DATA_VERSION};
 /// This enum represents different types of slice elements that are used to create indexing slices (see [Slice] and [Graph::get_slice]).
 ///
 /// The semantics is similar to [the NumPy slice indexing](https://numpy.org/doc/stable/user/basics.indexing.html).
-
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SliceElement {
     /// Single index of a given array dimension.
@@ -483,7 +482,7 @@ impl Graph {
                 self.remove_last_node(result)?;
                 return Err(runtime_error!("Trying to add a node with invalid size"));
             }
-            if size_estimate? > constants::MAX_INDIVIDUAL_NODE_SIZE {
+            if size_estimate? > type_size_limit_constants::MAX_INDIVIDUAL_NODE_SIZE {
                 self.remove_last_node(result)?;
                 return Err(runtime_error!(
                     "Trying to add a node larger than MAX_INDIVIDUAL_NODE_SIZE"
@@ -928,7 +927,7 @@ impl Graph {
                 "Trying to add a reshape node with invalid type size"
             ));
         }
-        if size_estimate? > constants::MAX_INDIVIDUAL_NODE_SIZE {
+        if size_estimate? > type_size_limit_constants::MAX_INDIVIDUAL_NODE_SIZE {
             return Err(runtime_error!(
                 "Trying to add a reshape node larger than MAX_INDIVIDUAL_NODE_SIZE"
             ));
@@ -2219,7 +2218,7 @@ impl Context {
             .get_total_size_nodes()
             .checked_add(get_size_estimation_in_bits(node_type)?)
             .ok_or_else(|| runtime_error!("add overflow!"))?;
-        if new_total_size > constants::MAX_TOTAL_SIZE_NODES {
+        if new_total_size > type_size_limit_constants::MAX_TOTAL_SIZE_NODES {
             return Err(runtime_error!(
                 "Can't add a node: total size of nodes exceeds MAX_TOTAL_SIZE_NODES"
             ));

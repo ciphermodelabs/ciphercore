@@ -7,10 +7,10 @@ with c:
     g = c.create_graph()
     with g:
         # For each millionaire, add input nodes to the empty graph g created above.
-        # Input nodes are instantiated with binary arrays of 32 bits.
+        # Input nodes are instantiated with the single unsigned 32-bit integer.
         # This should be enough to represent the wealth of each millionaire.
-        first_millionaire = g.input(cc.array_type([32], cc.BIT))
-        second_millionaire = g.input(cc.array_type([32], cc.BIT))
+        first_millionaire = g.input(cc.scalar_type(cc.UINT32))
+        second_millionaire = g.input(cc.scalar_type(cc.UINT32))
 
         # Millionaires' problem boils down to computing the greater-than (>) function.
         # In CipherCore, comparison functions are realized via custom operations,
@@ -18,9 +18,10 @@ with c:
         # To add a custom operation node to the graph, create it first.
         # Note that the GreaterThan custom operation has a Boolean parameter that indicates whether input binary arrays represent signed integers
         op = '{"body":{"type":"GreaterThan","signed_comparison":false}}'
+        # For each millionaire, convert integer value to binary array in order to perform comparison.
         # Add custom operation to the graph specifying the custom operation and its arguments: `first_millionaire` and `second_millionaire`.
         # This operation will compute the bit `(first_millionaire > second_millionaire)`.
-        output = g.custom_op(op, [first_millionaire, second_millionaire])
+        output = g.custom_op(op, [first_millionaire.a2b(), second_millionaire.a2b()])
 
         # Before computation, every graph should be finalized, which means that it should have a designated output node.
         # This can be done by calling `g.set_output_node(output)?` or as below.

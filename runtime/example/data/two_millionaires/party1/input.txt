@@ -1,1 +1,1 @@
-[{"kind":"array","type":"u64","value":[31415]},{"kind":"array","type":"u64","value":[2000]}]
+[{"kind":"scalar","type":"u32","value":31415},{"kind":"scalar","type":"u32","value":2000}]

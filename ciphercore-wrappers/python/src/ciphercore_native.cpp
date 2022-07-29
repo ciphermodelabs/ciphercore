@@ -930,7 +930,7 @@ enum class OperationKind {
   Add,
   Subtract,
   Multiply,
-  MixedMultiply
+  MixedMultiply,
   Dot,
   Matmul,
   Truncate,

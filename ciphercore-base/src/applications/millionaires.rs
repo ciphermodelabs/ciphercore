@@ -1,7 +1,7 @@
 //! [Millionaires' problem](https://en.wikipedia.org/wiki/Yao%27s_Millionaires%27_problem).
 //! Two millionaires want to find out who is richer without revealing their wealth.  
 use crate::custom_ops::CustomOperation;
-use crate::data_types::{array_type, BIT};
+use crate::data_types::{scalar_type, UINT32};
 use crate::errors::Result;
 use crate::graphs::{Context, Graph};
 use crate::ops::comparisons::GreaterThan;
@@ -24,8 +24,8 @@ pub fn create_millionaires_graph(context: Context) -> Result<Graph> {
     // For each millionaire, add input nodes to the empty graph g created above.
     // Input nodes are instantiated with binary arrays of 32 bits.
     // This should be enough to represent the wealth of each millionaire.
-    let first_millionaire = g.input(array_type(vec![32], BIT))?;
-    let second_millionaire = g.input(array_type(vec![32], BIT))?;
+    let first_millionaire = g.input(scalar_type(UINT32))?;
+    let second_millionaire = g.input(scalar_type(UINT32))?;
 
     // Millionaires' problem boils down to computing the greater-than (>) function.
     // In CipherCore, comparison functions are realized via custom operations,
@@ -35,9 +35,13 @@ pub fn create_millionaires_graph(context: Context) -> Result<Graph> {
     let op = CustomOperation::new(GreaterThan {
         signed_comparison: false,
     });
+    // For each millionaire, convert integer value to binary array in order to perform comparison.
     // Add custom operation to the graph specifying the custom operation and its arguments: `first_millionaire` and `second_millionaire`.
     // This operation will compute the bit `(first_millionaire > second_millionaire)`.
-    let output = g.custom_op(op, vec![first_millionaire, second_millionaire])?;
+    let output = g.custom_op(
+        op,
+        vec![first_millionaire.a2b()?, second_millionaire.a2b()?],
+    )?;
 
     // Before computation, every graph should be finalized, which means that it should have a designated output node.
     // This can be done by calling `g.set_output_node(output)?` or as below.
@@ -51,7 +55,7 @@ pub fn create_millionaires_graph(context: Context) -> Result<Graph> {
 #[cfg(test)]
 mod tests {
     use crate::custom_ops::run_instantiation_pass;
-    use crate::data_types::UINT32;
+    use crate::data_types::BIT;
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
     use crate::graphs::create_context;

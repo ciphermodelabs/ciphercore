@@ -1,6 +1,6 @@
 use std::ops::Not;
 
-use crate::data_types::{ScalarType, Type, BIT};
+use crate::data_types::{array_type, scalar_type, ScalarType, Type, BIT};
 use crate::data_values::Value;
 use crate::errors::Result;
 use crate::graphs::{Graph, Node};
@@ -102,4 +102,18 @@ pub fn multiply_bit_and_number(bit: Node, number: Node) -> Result<Node> {
 
 pub fn multiply_fixed_point(node1: Node, node2: Node, precision: u64) -> Result<Node> {
     node1.multiply(node2)?.truncate(1 << precision)
+}
+
+/// Converts (individual) bits to 0/1 in arithmetic form.
+pub fn single_bit_to_arithmetic(node: Node, st: ScalarType) -> Result<Node> {
+    let ones = if node.get_type()?.is_array() {
+        zeros(
+            &node.get_graph(),
+            array_type(node.get_type()?.get_shape(), st.clone()),
+        )?
+    } else {
+        zeros(&node.get_graph(), scalar_type(st.clone()))?
+    }
+    .add(constant_scalar(&node.get_graph(), 1, st)?)?;
+    ones.mixed_multiply(node)
 }
