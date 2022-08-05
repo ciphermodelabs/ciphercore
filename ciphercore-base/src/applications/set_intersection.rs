@@ -239,11 +239,25 @@ pub fn create_set_intersection_graph(context: Context, k: u32, st: ScalarType) -
         create_binary_batchers_sorting_graph(context.clone(), k + 1, b, st.get_signed())?;
     let sorting_n_g = create_binary_batchers_sorting_graph(context.clone(), k, b + 1, false)?;
 
-    let g = context.create_graph()?;
+    let binary_graph = context.create_graph()?;
 
     // Attach nodes that perform set intersection
-    let binary_duplicates_sorted =
-        attach_binary_set_intersection(g.clone(), sorting_2n_g, sorting_n_g, k, b)?;
+    let output =
+        attach_binary_set_intersection(binary_graph.clone(), sorting_2n_g, sorting_n_g, k, b)?;
+
+    binary_graph.set_output_node(output)?;
+    binary_graph.finalize()?;
+
+    let g = context.create_graph()?;
+
+    let input1 = g.input(array_type(vec![1 << k], st.clone()))?;
+    let input2 = g.input(array_type(vec![1 << k], st.clone()))?;
+
+    let binary_input1 = if st == BIT { input1 } else { input1.a2b()? };
+
+    let binary_input2 = if st == BIT { input2 } else { input2.a2b()? };
+
+    let binary_duplicates_sorted = g.call(binary_graph, vec![binary_input1, binary_input2])?;
 
     // Convert elements to the corresponding scalar types and
     // extract bits indicating whether the related element is in the intersection
