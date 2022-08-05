@@ -13,12 +13,14 @@ with c:
     with g:
         # Create the type of the input array with `n` elements.
         # To find the minimum of an array, we resort to the custom operation Min (see ops.rs) that accepts only binary input.
-        b = st.size_in_bits()
-        input_type = cc.array_type([2 ** n, b], cc.BIT)
+        input_type = cc.array_type([2 ** n], st)
 
         # Add an input node to the empty graph g created above.
         # This input node requires the input array type generated previously.
-        binary_array = g.input(input_type)
+        input_array = g.input(input_type)
+
+        # We convert the input integer array into the binary representation to perform comparisons between its elements
+        binary_array = input_array.a2b()
 
         # We find the minimum using the tournament method. This allows to reduce the graph size to O(n) from O(2^n) nodes.
         # Namely, we split the input array into pairs, find a minimum within each pair and create a new array from these minima.
@@ -35,7 +37,7 @@ with c:
             half2 = binary_array[(2 ** level):]
             # Compare the first half with the second half elementwise to find minimums.
             # This is done via the custom operation Min (see ops.rs).
-            binary_array = g.custom_op('{"body":{"type":"Min"}}', [half1, half2])
+            binary_array = g.custom_op('{"body":{"type":"Min","signed_comparison":false}}', [half1, half2])
         # Convert output from the binary form to the arithmetic form
         output = binary_array
         if st != cc.BIT:

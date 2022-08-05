@@ -138,7 +138,7 @@ pub trait Evaluator {
     }
 }
 
-fn evaluate_simple_evaluator(
+pub fn evaluate_simple_evaluator(
     graph: Graph,
     inputs: Vec<Value>,
     prng_seed: Option<[u8; SEED_SIZE]>,
