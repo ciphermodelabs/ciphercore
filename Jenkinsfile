@@ -26,6 +26,9 @@ pipeline {
   options {
     skipDefaultCheckout true
   }
+  environment {
+    CI_DIR="private/ci"
+  }
   stages {
     stage('CI') {
       failFast true
@@ -34,7 +37,7 @@ pipeline {
            agent any
            steps {
              prepare()
-             dir('private') {
+             dir("${CI_DIR}") {
                sh './run_code_formatting_docker.sh'
              }
            }
@@ -43,7 +46,7 @@ pipeline {
            agent any
            steps {
              prepare()
-             dir('private') {
+             dir("${CI_DIR}") {
                sh './run_clippy_docker.sh'
              }
            }
@@ -52,7 +55,7 @@ pipeline {
            agent any
            steps {
              prepare()
-             dir('private') {
+             dir("${CI_DIR}") {
                sh './run_tests_docker.sh'
              }
            }
@@ -61,7 +64,7 @@ pipeline {
            agent any
            steps {
              prepare()
-             dir('private') {
+             dir("${CI_DIR}") {
                sh './run_docs_docker.sh'
                publishHTML(target: [
                  allowMissing: false,
@@ -77,7 +80,7 @@ pipeline {
            agent any
            steps {
              prepare()
-             dir('private') {
+             dir("${CI_DIR}") {
                sh './run_coverage_docker.sh'
                publishHTML(target: [
                  allowMissing: false,
@@ -89,32 +92,13 @@ pipeline {
              }
            }
          }
-         // These should be re-enabled once performance issues are resolved.
-         //stage('Address Sanitizer') {
-         //  agent any
-         //  steps {
-         //    prepare()
-         //    dir('private') {
-         //      sh './run_address_sanitizer_docker.sh'
-         //    }
-         //  }
-         //}
-         //stage('Thread Sanitizer') {
-         //  agent any
-         //  steps {
-         //    prepare()
-         //    dir('private') {
-         //      sh './run_thread_sanitizer_docker.sh'
-         //    }
-         //  }
-         //}
        } 
     }
     stage('Benchmarks') {
       agent any
       steps {
         prepare()
-        dir('private') {
+        dir("${CI_DIR}") {
           sh './run_benchmarks_docker.sh'
         }
       }
