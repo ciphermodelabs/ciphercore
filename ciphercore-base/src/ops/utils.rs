@@ -87,19 +87,6 @@ pub fn constant_scalar<T: TryInto<u64> + Not<Output = T> + TryInto<u8> + Copy>(
     constant(g, TypedValue::from_scalar(value, st)?)
 }
 
-pub fn multiply_bit_and_number(bit: Node, number: Node) -> Result<Node> {
-    // TODO: switch to MixedMultiply once it is supported in MPC.
-    let g = bit.get_graph();
-    let mut bits = vec![bit.clone()];
-    let zero = zeros_like(bit.clone())?;
-    for _ in 1..64 {
-        bits.push(zero.clone());
-    }
-    let bit_arithmetic = put_in_bits(g.create_vector(bit.get_type()?, bits)?.vector_to_array()?)?
-        .b2a(number.get_type()?.get_scalar_type())?;
-    bit_arithmetic.multiply(number)
-}
-
 pub fn multiply_fixed_point(node1: Node, node2: Node, precision: u64) -> Result<Node> {
     node1.multiply(node2)?.truncate(1 << precision)
 }
