@@ -168,7 +168,7 @@ def main():
         ),))
 
         server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-        typed_values = load_typed_values(os.path.join(getattr(args, 'data_dir%d' % i), 'input_share_proto.txt'))
+        typed_values = load_typed_values(os.path.join(getattr(args, 'data_dir%d' % i), 'input.txt'))
         data_pb2_grpc.add_DataManagerServiceServicer_to_server(KVDataServer(typed_values), server)
         server.add_secure_port('[::]:%d' % getattr(args, 'data_port%d' % i),
                                server_credentials)
