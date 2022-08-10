@@ -39,7 +39,7 @@ pub fn impl_wrapper(_metadata: TokenStream, input: TokenStream) -> TokenStream {
     let mut ast = parse_macro_input!(input as syn::ItemImpl);
     let expanded = macro_backend::build_methods(&mut ast).unwrap_or_else(|e| e.to_compile_error());
     quote!(#ast
-           #expanded
+           #[allow(clippy::needless_question_mark)] #expanded
     )
     .into()
 }

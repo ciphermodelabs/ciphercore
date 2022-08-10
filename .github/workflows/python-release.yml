@@ -1,9 +1,7 @@
 name: Python Release
 
 on:
-  push:
-    tags:
-      - python-v*
+  workflow_dispatch:
 
 env:
   PYPI_TOKEN: ${{ secrets.PYPI_TOKEN_DIST }}
