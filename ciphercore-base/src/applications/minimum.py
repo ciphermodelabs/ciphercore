@@ -37,7 +37,7 @@ with c:
             half2 = binary_array[(2 ** level):]
             # Compare the first half with the second half elementwise to find minimums.
             # This is done via the custom operation Min (see ops.rs).
-            binary_array = g.custom_op('{"body":{"type":"Min","signed_comparison":false}}', [half1, half2])
+            binary_array = half1.min(half2)
         # Convert output from the binary form to the arithmetic form
         output = binary_array
         if st != cc.BIT:

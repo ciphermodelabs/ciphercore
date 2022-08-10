@@ -1,2 +1,2 @@
-include lib/libcadapter.a
-include include/*
+include Cargo.toml
+recursive-include src *

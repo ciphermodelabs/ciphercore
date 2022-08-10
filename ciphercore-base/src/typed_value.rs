@@ -16,6 +16,9 @@ use crate::typed_value_operations::{
 use json::{object, object::Object, JsonValue};
 use std::ops::Not;
 
+#[cfg(feature = "py-binding")]
+use pywrapper_macro::struct_wrapper;
+
 macro_rules! to_json_aux {
     ($v:expr, $t:expr, $cnv:ident) => {
         JsonValue::from($v.$cnv($t.clone())?)
@@ -33,11 +36,48 @@ macro_rules! to_json_array_aux {
     };
 }
 
+/// A structure that stores pointer to a value and its type that corresponds to an input, output or an intermediate result of
+/// a computation.
+///
+/// # Rust crates
+///
+/// [Clone] trait duplicates the pointer, not the underlying value (see [Value::deep_clone] for deep cloning).
+///
+/// [PartialEq] trait performs the deep recursive comparison.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "py-binding", struct_wrapper)]
 pub struct TypedValue {
     pub value: Value,
     pub t: Type,
     pub name: Option<String>,
+}
+
+#[cfg(feature = "py-binding")]
+#[pyo3::pymethods]
+impl PyBindingTypedValue {
+    #[staticmethod]
+    fn from_str(value: String) -> pyo3::PyResult<Self> {
+        Ok(PyBindingTypedValue {
+            inner: serde_json::from_str::<TypedValue>(&value)
+                .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?,
+        })
+    }
+    fn get_local_shares_for_each_party(&self) -> pyo3::PyResult<Vec<Self>> {
+        let mut prng = PRNG::new(None)?;
+        Ok(self
+            .inner
+            .get_local_shares_for_each_party(&mut prng)?
+            .into_iter()
+            .map(|x| PyBindingTypedValue { inner: x })
+            .collect())
+    }
+    fn __str__(&self) -> pyo3::PyResult<String> {
+        serde_json::to_string(&self.inner)
+            .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))
+    }
+    fn __repr__(&self) -> pyo3::PyResult<String> {
+        self.__str__()
+    }
 }
 
 impl TypedValueOperations<TypedValue> for TypedValue {

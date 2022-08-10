@@ -19,10 +19,20 @@ use crate::type_inference::{create_type_inference_worker, TypeInferenceWorker};
 
 use crate::version::{VersionedData, DATA_VERSION};
 
+#[cfg(feature = "py-binding")]
+use crate::custom_ops::PyBindingCustomOperation;
+#[cfg(feature = "py-binding")]
+use crate::data_types::{PyBindingScalarType, PyBindingType};
+#[cfg(feature = "py-binding")]
+use crate::typed_value::PyBindingTypedValue;
+#[cfg(feature = "py-binding")]
+use pywrapper_macro::{enum_to_struct_wrapper, fn_wrapper, impl_wrapper, struct_wrapper};
+
 /// This enum represents different types of slice elements that are used to create indexing slices (see [Slice] and [Graph::get_slice]).
 ///
 /// The semantics is similar to [the NumPy slice indexing](https://numpy.org/doc/stable/user/basics.indexing.html).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "py-binding", enum_to_struct_wrapper)]
 pub enum SliceElement {
     /// Single index of a given array dimension.
     ///
@@ -145,6 +155,7 @@ type NodeBodyPointer = Arc<AtomicRefCell<NodeBody>>;
 /// let n3 = n1.clone();
 /// assert!(n1 == n3);
 /// ```
+#[cfg_attr(feature = "py-binding", struct_wrapper)]
 pub struct Node {
     body: NodeBodyPointer,
 }
@@ -188,6 +199,8 @@ impl Hash for Node {
     }
 }
 
+/// Public methods which supposed to be imported in Python.
+#[cfg_attr(feature = "py-binding", impl_wrapper)]
 impl Node {
     /// Returns the parent graph that contains the node.
     ///
@@ -228,15 +241,6 @@ impl Node {
             .collect()
     }
 
-    /// Returns the operation associated with the node.
-    ///
-    /// # Returns
-    ///
-    /// Operation associated with the node
-    pub fn get_operation(&self) -> Operation {
-        self.body.borrow().operation.clone()
-    }
-
     /// Returns the ID of the node.
     ///
     /// A node ID is a serial number of a node between `0` and `n-1` where `n` is the number of nodes in the parent graph.
@@ -258,20 +262,13 @@ impl Node {
         (self.get_graph().get_id(), self.get_id())
     }
 
-    fn make_serializable(&self) -> SerializableNode {
-        Arc::new(SerializableNodeBody {
-            node_dependencies: self
-                .get_node_dependencies()
-                .iter()
-                .map(|n| n.get_id())
-                .collect(),
-            graph_dependencies: self
-                .get_graph_dependencies()
-                .iter()
-                .map(|n| n.get_id())
-                .collect(),
-            operation: self.get_operation(),
-        })
+    /// Returns the operation associated with the node.
+    ///
+    /// # Returns
+    ///
+    /// Operation associated with the node
+    pub fn get_operation(&self) -> Operation {
+        self.body.borrow().operation.clone()
     }
 
     /// Returns the type of the value computed by the node.
@@ -288,13 +285,530 @@ impl Node {
             Err(runtime_error!("Type checker is not available"))
         }
     }
+    /// Applies [Context::set_node_name] to the parent context and `this` node. Returns the clone of `this`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{scalar_type, BIT};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = scalar_type(BIT);
+    /// let n = g.input(t).unwrap();
+    /// n.set_name("XOR").unwrap();
+    /// ```
+    pub fn set_name(&self, name: &str) -> Result<Node> {
+        self.get_graph()
+            .get_context()
+            .set_node_name(self.clone(), name)?;
+        Ok(self.clone())
+    }
+
+    /// Applies [Context::get_node_name] to the parent context and `this` node.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{scalar_type, BIT};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = scalar_type(BIT);
+    /// let n = g.input(t).unwrap();
+    /// n.set_name("XOR").unwrap();
+    /// assert_eq!(n.get_name().unwrap(), "XOR".to_owned());
+    /// ```
+    pub fn get_name(&self) -> Result<String> {
+        self.get_graph().get_context().get_node_name(self.clone())
+    }
+
+    /// Adds a node to the parent graph that adds elementwise the array or scalar associated with the node to an array or scalar of the same scalar type associated with another node.
+    ///
+    /// Applies [Graph::add] to the parent graph, `this` node and the `b` node.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{BIT, scalar_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = scalar_type(BIT);
+    /// let n1 = g.input(t.clone()).unwrap();
+    /// let n2 = g.input(t).unwrap();
+    /// let n3 = n1.add(n2).unwrap();
+    /// ```
+    pub fn add(&self, b: Node) -> Result<Node> {
+        self.get_graph().add(self.clone(), b)
+    }
+
+    /// Adds a node to the parent graph that subtracts elementwise the array or scalar of the same scalar type associated with another node from an array or scalar associated with the node.
+    ///
+    /// Applies [Graph::subtract] to the parent graph, `this` node and the `b` node.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{BIT, scalar_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = scalar_type(BIT);
+    /// let n1 = g.input(t.clone()).unwrap();
+    /// let n2 = g.input(t).unwrap();
+    /// let n3 = n1.subtract(n2).unwrap();
+    /// ```
+    pub fn subtract(&self, b: Node) -> Result<Node> {
+        self.get_graph().subtract(self.clone(), b)
+    }
+
+    /// Adds a node to the parent graph that multiplies elementwise the array or scalar associated with the node by an array or scalar of the same scalar type associated with another node.
+    ///
+    /// Applies [Graph::multiply] to the parent graph, `this` node and the `b` node.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{BIT, scalar_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = scalar_type(BIT);
+    /// let n1 = g.input(t.clone()).unwrap();
+    /// let n2 = g.input(t).unwrap();
+    /// let n3 = n1.multiply(n2).unwrap();
+    /// ```
+    pub fn multiply(&self, b: Node) -> Result<Node> {
+        self.get_graph().multiply(self.clone(), b)
+    }
+
+    /// Adds a node to the parent graph that multiplies elementwise the array or scalar associated with the node by a binary array or scalar associated with another node.
+    ///
+    /// Applies [Graph::mixed_multiply] to the parent graph, `this` node and the `b` node.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{BIT, INT32, scalar_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = scalar_type(INT32);
+    /// let bit_t = scalar_type(BIT);
+    /// let n1 = g.input(t).unwrap();
+    /// let n2 = g.input(bit_t).unwrap();
+    /// let n3 = n1.mixed_multiply(n2).unwrap();
+    /// ```
+    pub fn mixed_multiply(&self, b: Node) -> Result<Node> {
+        self.get_graph().mixed_multiply(self.clone(), b)
+    }
+
+    /// Adds a node to the parent graph that computes the dot product of arrays or scalars associated with the node and another node.
+    ///
+    /// Applies [Graph::dot] to the parent graph, `this` node and the `b` node.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{INT32, array_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = array_type(vec![10], INT32);
+    /// let n1 = g.input(t.clone()).unwrap();
+    /// let n2 = g.input(t).unwrap();
+    /// let n3 = n1.dot(n2).unwrap();
+    /// ```
+    pub fn dot(&self, b: Node) -> Result<Node> {
+        self.get_graph().dot(self.clone(), b)
+    }
+
+    /// Adds a node to the parent graph that computes the matrix product of two arrays associated with the node and another node.
+    ///
+    /// Applies [Graph::matmul] to the parent graph, `this` node and the `b` node.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{INT32, array_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t1 = array_type(vec![2, 3], INT32);
+    /// let t2 = array_type(vec![3, 2], INT32);
+    /// let n1 = g.input(t1).unwrap();
+    /// let n2 = g.input(t2).unwrap();
+    /// let n3 = n1.matmul(n2).unwrap();
+    /// ```
+    pub fn matmul(&self, b: Node) -> Result<Node> {
+        self.get_graph().matmul(self.clone(), b)
+    }
+
+    /// Adds a node to the parent graph that divides a scalar or each entry of the array associated with the node by a positive constant integer `scale`.
+    ///
+    /// Applies [Graph::add] to the parent graph, `this` node and `scale`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{INT32, array_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = array_type(vec![2, 3], INT32);
+    /// let n1 = g.input(t).unwrap();
+    /// let n2 = n1.truncate(4).unwrap();
+    /// ```
+    pub fn truncate(&self, scale: u64) -> Result<Node> {
+        self.get_graph().truncate(self.clone(), scale)
+    }
+
+    /// Adds a node to the parent graph that computes the sum of entries of the array associated with the node along given axes.
+    ///
+    /// Applies [Graph::sum] to the parent graph, `this` node and `axes`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{INT32, array_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = array_type(vec![3, 2, 3], INT32);
+    /// let axes = vec![1, 0];
+    /// let n1 = g.input(t).unwrap();
+    /// let n2 = n1.sum(axes).unwrap();
+    /// ```
+    pub fn sum(&self, axes: ArrayShape) -> Result<Node> {
+        self.get_graph().sum(self.clone(), axes)
+    }
+
+    /// Adds a node to the parent graph that permutes the array associated with the node along given axes.
+    ///
+    /// Applies [Graph::permute_axes] to the parent graph, `this` node and `axes`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{INT32, array_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = array_type(vec![3, 2, 3], INT32);
+    /// let axes = vec![1, 0, 2];
+    /// let n1 = g.input(t).unwrap();
+    /// let n2 = n1.permute_axes(axes).unwrap();
+    /// ```
+    pub fn permute_axes(&self, axes: ArrayShape) -> Result<Node> {
+        self.get_graph().permute_axes(self.clone(), axes)
+    }
+
+    /// Adds a node to the parent graph that extracts a sub-array with a given index from the array associated with the node.
+    ///
+    /// Applies [Graph::get] to the parent graph, `this` node and `index`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{INT32, array_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = array_type(vec![3, 2, 3], INT32);
+    /// let index = vec![2];
+    /// let n1 = g.input(t).unwrap();
+    /// let n2 = n1.get(index).unwrap();
+    /// ```
+    pub fn get(&self, index: ArrayShape) -> Result<Node> {
+        self.get_graph().get(self.clone(), index)
+    }
+
+    /// Adds a node that extracts a sub-array corresponding to a given slice from the array associated with the node.
+    ///
+    /// Applies [Graph::get_slice] to the parent graph, `this` node and `slice`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::{create_context, SliceElement};
+    /// # use ciphercore_base::data_types::{INT32, array_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = array_type(vec![3, 2, 3], INT32);
+    /// let slice = vec![SliceElement::Ellipsis, SliceElement::SubArray(None, None, Some(-2))];
+    /// let n1 = g.input(t).unwrap();
+    /// let n2 = n1.get_slice(slice).unwrap();
+    /// ```
+    pub fn get_slice(&self, slice: Slice) -> Result<Node> {
+        self.get_graph().get_slice(self.clone(), slice)
+    }
+
+    /// Adds a node to the parent graph that reshapes a value associated with the node to a given compatible type.
+    ///
+    /// Applies [Graph::reshape] to the parent graph, `this` node and `new_type`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{INT32, array_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let old_t = array_type(vec![3, 2, 3], INT32);
+    /// let new_t = array_type(vec![3,6], INT32);
+    /// let n1 = g.input(old_t).unwrap();
+    /// let n2 = n1.reshape(new_t).unwrap();
+    /// ```
+    pub fn reshape(&self, new_type: Type) -> Result<Node> {
+        self.get_graph().reshape(self.clone(), new_type)
+    }
+
+    #[doc(hidden)]
+    pub fn nop(&self) -> Result<Node> {
+        self.get_graph().nop(self.clone())
+    }
+
+    #[doc(hidden)]
+    pub fn prf(&self, iv: u64, output_type: Type) -> Result<Node> {
+        self.get_graph().prf(self.clone(), iv, output_type)
+    }
+
+    /// Adds a node to the parent graph converting an integer array or scalar associated with the node to the binary form.
+    ///
+    /// Applies [Graph::a2b] to the parent graph and `this` node.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{array_type, INT32};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = array_type(vec![3, 2], INT32);
+    /// let n1 = g.input(t).unwrap();
+    /// let n2 = n1.a2b().unwrap();
+    /// ```
+    pub fn a2b(&self) -> Result<Node> {
+        self.get_graph().a2b(self.clone())
+    }
+
+    /// Adds a node to the parent graph converting a binary array associated with the node to an array of a given scalar type.
+    ///
+    /// Applies [Graph::b2a] to the parent graph, `this` node and `scalar_type`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{BIT, INT32, array_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = array_type(vec![3, 32], BIT);
+    /// let n1 = g.input(t).unwrap();
+    /// let n2 = n1.b2a(INT32).unwrap();
+    /// ```
+    pub fn b2a(&self, scalar_type: ScalarType) -> Result<Node> {
+        self.get_graph().b2a(self.clone(), scalar_type)
+    }
+
+    /// Adds a node that extracts an element of a tuple associated with the node.
+    ///
+    /// Applies [Graph::tuple_get] to the parent graph, `this` node and `index`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::data_types::{INT32, array_type};
+    /// # use ciphercore_base::graphs::create_context;
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t1 = array_type(vec![3, 2, 3], INT32);
+    /// let t2 = array_type(vec![2, 3], INT32);
+    /// let n1 = g.input(t1).unwrap();
+    /// let n2 = g.input(t2).unwrap();
+    /// let n3 = g.create_tuple(vec![n1, n2]).unwrap();
+    /// let n4 = n3.tuple_get(1).unwrap();
+    /// ```
+    pub fn tuple_get(&self, index: u64) -> Result<Node> {
+        self.get_graph().tuple_get(self.clone(), index)
+    }
+
+    /// Adds a node to the parent graph that extracts an element of a named tuple associated with the node.
+    ///
+    /// Applies [Graph::named_tuple_get] to the parent graph, `this` node and the `key` string.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{array_type, INT32};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t1 = array_type(vec![3, 2, 3], INT32);
+    /// let t2 = array_type(vec![2, 3], INT32);
+    /// let n1 = g.input(t1).unwrap();
+    /// let n2 = g.input(t2).unwrap();
+    /// let n3 = g.create_named_tuple(vec![("node1".to_owned(), n1), ("node2".to_owned(), n2)]).unwrap();
+    /// let n4 = n3.named_tuple_get("node2".to_owned()).unwrap();
+    /// ```
+    pub fn named_tuple_get(&self, key: String) -> Result<Node> {
+        self.get_graph().named_tuple_get(self.clone(), key)
+    }
+
+    /// Adds a node to the parent graph that extracts an element of a vector associated with the node.
+    ///
+    /// Applies [Graph::vector_get] to the parent graph, `this` node and the `index` node.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{UINT32, INT32, array_type, scalar_type};
+    /// # use ciphercore_base::data_values::Value;
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = array_type(vec![3, 2, 3], INT32);
+    /// let n1 = g.input(t.clone()).unwrap();
+    /// let n2 = g.input(t.clone()).unwrap();
+    /// let n3 = g.create_vector(t, vec![n1,n2]).unwrap();
+    /// let index = g.constant(scalar_type(UINT32), Value::from_scalar(0, UINT32).unwrap()).unwrap();
+    /// let n4 = n3.vector_get(index).unwrap();
+    /// ```
+    pub fn vector_get(&self, index: Node) -> Result<Node> {
+        self.get_graph().vector_get(self.clone(), index)
+    }
+
+    /// Adds a node to the parent graph converting an array associated with the node to a vector.
+    ///
+    /// Applies [Graph::array_to_vector] to the parent graph and `this` node.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{array_type, scalar_type, INT32, UINT32};
+    /// # use ciphercore_base::data_values::Value;
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = array_type(vec![4, 3, 2], INT32);
+    /// let n1 = g.input(t).unwrap();
+    /// let n2 = g.array_to_vector(n1).unwrap();
+    /// let index = g.constant(scalar_type(UINT32), Value::from_scalar(0, UINT32).unwrap()).unwrap();
+    /// let n3 = n2.vector_get(index).unwrap();
+    ///
+    /// assert!(n2.get_type().unwrap().is_vector());
+    /// assert_eq!(n3.get_type().unwrap().get_shape(), vec![3,2]);
+    /// ```
+    pub fn array_to_vector(&self) -> Result<Node> {
+        self.get_graph().array_to_vector(self.clone())
+    }
+
+    /// Adds a node to the parent graph converting a vector associated with the node to an array.
+    ///
+    /// Applies [Graph::vector_to_array] to the parent graph and `this` node.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{array_type, vector_type, INT32};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = array_type(vec![3, 2], INT32);
+    /// let vec_t = vector_type(4, t);
+    /// let n1 = g.input(vec_t).unwrap();
+    /// let n2 = n1.vector_to_array().unwrap();
+    ///
+    /// assert!(n2.get_type().unwrap().is_array());
+    /// assert_eq!(n2.get_type().unwrap().get_shape(), vec![4, 3, 2]);
+    /// ```
+    pub fn vector_to_array(&self) -> Result<Node> {
+        self.get_graph().vector_to_array(self.clone())
+    }
+
+    /// Adds a node that creates a vector with `n` copies of a value of this node.
+    ///
+    /// Applies [Graph::repeat] to the parent graph, `this` node and `n`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::data_types::{INT32, array_type};
+    /// # use ciphercore_base::graphs::create_context;
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = array_type(vec![3, 2, 3], INT32);
+    /// let n1 = g.input(t).unwrap();
+    /// let n2 = n1.repeat(10).unwrap();
+    /// ```
+    pub fn repeat(&self, n: u64) -> Result<Node> {
+        self.get_graph().repeat(self.clone(), n)
+    }
+
+    /// Applies [Graph::set_output_node] to the parent graph and `this` node.
+    ///
+    /// # Returns
+    ///
+    /// This node
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{array_type, vector_type, INT32};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = array_type(vec![3, 2], INT32);
+    /// let vec_t = vector_type(4, t);
+    /// let n1 = g.input(vec_t).unwrap();
+    /// let n2 = g.vector_to_array(n1).unwrap();
+    /// n2.set_as_output().unwrap();
+    /// g.finalize().unwrap();
+    /// ```
+    pub fn set_as_output(&self) -> Result<Node> {
+        self.get_graph().set_output_node(self.clone())?;
+        Ok(self.clone())
+    }
 }
 
+/// Methods which aren't supposed to be imported in Python.
 impl Node {
+    fn make_serializable(&self) -> SerializableNode {
+        Arc::new(SerializableNodeBody {
+            node_dependencies: self
+                .get_node_dependencies()
+                .iter()
+                .map(|n| n.get_id())
+                .collect(),
+            graph_dependencies: self
+                .get_graph_dependencies()
+                .iter()
+                .map(|n| n.get_id())
+                .collect(),
+            operation: self.get_operation(),
+        })
+    }
+
     fn downgrade(&self) -> WeakNode {
         WeakNode {
             body: Arc::downgrade(&self.body),
         }
+    }
+
+    #[doc(hidden)]
+    pub fn add_annotation(&self, annotation: NodeAnnotation) -> Result<Node> {
+        self.get_graph()
+            .get_context()
+            .add_node_annotation(self, annotation)?;
+        Ok(self.clone())
+    }
+
+    #[doc(hidden)]
+    pub fn get_annotations(&self) -> Result<Vec<NodeAnnotation>> {
+        self.get_graph()
+            .get_context()
+            .get_node_annotations(self.clone())
     }
 }
 type WeakNodeBodyPointer = Weak<AtomicRefCell<NodeBody>>;
@@ -339,6 +853,8 @@ type GraphBodyPointer = Arc<AtomicRefCell<GraphBody>>;
 
 /// A structure that stores a pointer to a computation graph, where every node corresponds to an operation.
 ///
+/// # Rust crates
+///
 /// [Clone] trait duplicates the pointer, not the underlying graph.
 ///
 /// [PartialEq] trait compares pointers, not the related graphs.
@@ -354,6 +870,7 @@ type GraphBodyPointer = Arc<AtomicRefCell<GraphBody>>;
 /// let g3 = g1.clone();
 /// assert_eq!(g1, g3);
 /// ```
+#[cfg_attr(feature = "py-binding", struct_wrapper)]
 pub struct Graph {
     body: GraphBodyPointer,
 }
@@ -405,127 +922,86 @@ impl Hash for Graph {
     }
 }
 
+/// Public methods which supposed to be imported in Python.
+#[cfg_attr(feature = "py-binding", impl_wrapper)]
 impl Graph {
-    /// Adds an operation node to the graph and returns it.
-    ///
-    /// # Arguments
-    ///
-    /// * `node_dependencies` - vector of nodes necessary to perform the given operation
-    /// * `graph_dependencies` - vector of graphs necessary to perform the given operation
-    /// * `operation` - operation performed by the node
+    /// Applies [Context::set_main_graph] to the parent context and `this` graph. Returns the clone of `this`.
     ///
     /// # Returns
     ///
-    /// New operation node that gets added
-    pub(crate) fn add_node(
-        &self,
-        node_dependencies: Vec<Node>,
-        graph_dependencies: Vec<Graph>,
-        operation: Operation,
-    ) -> Result<Node> {
-        if self.is_finalized() {
-            return Err(runtime_error!("Can't add a node to a finalized graph"));
-        }
-        for dependency in &node_dependencies {
-            if dependency.get_graph() != *self
-                || dependency.get_id() >= self.body.borrow().nodes.len() as u64
-                || self.body.borrow().nodes[dependency.get_id() as usize] != *dependency
-            {
-                return Err(runtime_error!(
-                    "Can't add a node with invalid node dependencies"
-                ));
-            }
-        }
-        for dependency in &graph_dependencies {
-            if dependency.get_context() != self.get_context()
-                || !dependency.is_finalized()
-                || dependency.get_id() >= self.get_id()
-            {
-                return Err(runtime_error!(
-                    "Can't add a node with invalid graph dependencies"
-                ));
-            }
-        }
-        let id = self.body.borrow().nodes.len() as u64;
-        let result = Node {
-            body: Arc::new(AtomicRefCell::new(NodeBody {
-                graph: self.downgrade(),
-                node_dependencies: node_dependencies.iter().map(|n| n.downgrade()).collect(),
-                graph_dependencies: graph_dependencies.iter().map(|g| g.downgrade()).collect(),
-                operation,
-                id,
-            })),
-        };
-        {
-            let mut cell = self.body.borrow_mut();
-            cell.nodes.push(result.clone());
-        }
-        let mut context_has_type_checker = false;
-        {
-            let context = self.get_context();
-            let mut context_cell = context.body.borrow_mut();
-            let type_checker = &mut context_cell.type_checker;
-            if type_checker.is_some() {
-                context_has_type_checker = true;
-            }
-        }
-        if context_has_type_checker {
-            let type_checking_result = result.get_type();
-            if type_checking_result.is_err() {
-                self.remove_last_node(result)?;
-                return Err(type_checking_result.expect_err("Should not be here"));
-            }
-            let type_result = type_checking_result?;
-
-            let size_estimate = get_size_estimation_in_bits(type_result);
-            if size_estimate.is_err() {
-                self.remove_last_node(result)?;
-                return Err(runtime_error!("Trying to add a node with invalid size"));
-            }
-            if size_estimate? > type_size_limit_constants::MAX_INDIVIDUAL_NODE_SIZE {
-                self.remove_last_node(result)?;
-                return Err(runtime_error!(
-                    "Trying to add a node larger than MAX_INDIVIDUAL_NODE_SIZE"
-                ));
-            }
-
-            let context = self.get_context();
-            let size_checking_result = context.try_update_total_size(result.clone());
-            if size_checking_result.is_err() {
-                self.remove_last_node(result)?;
-                return Err(size_checking_result.expect_err("Should not be here"));
-            }
-        }
-        Ok(result)
+    /// This graph
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{array_type, INT32};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = array_type(vec![3, 2], INT32);
+    /// let n = g.input(t).unwrap();
+    /// n.set_as_output().unwrap();
+    /// g.finalize().unwrap();
+    /// g.set_as_main().unwrap();
+    /// ```
+    pub fn set_as_main(&self) -> Result<Graph> {
+        self.get_context().set_main_graph(self.clone())?;
+        Ok(self.clone())
     }
 
-    fn remove_last_node(&self, n: Node) -> Result<()> {
-        if n.get_graph() != *self {
-            return Err(runtime_error!(
-                "The node to be removed from a different graph"
-            ));
-        }
-        {
-            let cell = self.body.borrow();
-            if n != *cell
-                .nodes
-                .last()
-                .ok_or_else(|| runtime_error!("Nodes list is empty"))?
-            {
-                return Err(runtime_error!(
-                    "The node to be removed is not the last node"
-                ));
-            }
-        };
-        let context = self.get_context();
-        context.unregister_node(n.clone())?;
-        let mut context_body = context.body.borrow_mut();
-        if let Some(tc) = &mut context_body.type_checker {
-            tc.unregister_node(n)?;
-        }
-        let mut cell = self.body.borrow_mut();
-        cell.nodes.pop();
-        Ok(())
+    /// Applies [Context::set_graph_name] to the parent context and `this` graph. Returns the clone of `this`.
+    ///
+    /// # Arguments
+    ///
+    /// `name` - name of the graph
+    ///
+    /// # Returns
+    ///
+    /// This graph
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// g.set_name("relu").unwrap();
+    /// ```
+    pub fn set_name(&self, name: &str) -> Result<Graph> {
+        self.get_context().set_graph_name(self.clone(), name)?;
+        Ok(self.clone())
+    }
+
+    /// Applies [Context::get_graph_name] to the parent context and `this` graph.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// g.set_name("relu").unwrap();
+    /// assert_eq!(g.get_name().unwrap(), "relu".to_owned());
+    /// ```
+    pub fn get_name(&self) -> Result<String> {
+        self.get_context().get_graph_name(self.clone())
+    }
+
+    /// Applies [Context::retrieve_node] to the parent context and `this` graph.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{BIT, scalar_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let n = g.input(scalar_type(BIT)).unwrap();
+    /// n.set_name("input_node").unwrap();
+    /// assert!(n == g.retrieve_node("input_node").unwrap());
+    /// ```
+    pub fn retrieve_node(&self, name: &str) -> Result<Node> {
+        self.get_context().retrieve_node(self.clone(), name)
     }
 
     /// Adds an input node to the graph and returns it.
@@ -935,10 +1411,6 @@ impl Graph {
         self.add_node(vec![a], vec![], Operation::Reshape(new_type))
     }
 
-    pub(crate) fn nop(&self, a: Node) -> Result<Node> {
-        self.add_node(vec![a], vec![], Operation::NOP)
-    }
-
     /// Adds a node creating a random value of a given type.
     ///
     /// **WARNING**: this function should not be used before MPC compilation.
@@ -964,10 +1436,6 @@ impl Graph {
     #[doc(hidden)]
     pub fn random(&self, output_type: Type) -> Result<Node> {
         self.add_node(vec![], vec![], Operation::Random(output_type))
-    }
-
-    pub(crate) fn prf(&self, key: Node, iv: u64, output_type: Type) -> Result<Node> {
-        self.add_node(vec![key], vec![], Operation::PRF(iv, output_type))
     }
 
     /// Adds a node that joins a sequence of arrays governed by a given shape.
@@ -1472,35 +1940,6 @@ impl Graph {
         self.add_node(vec![a], vec![], Operation::VectorToArray)
     }
 
-    /// Adds a node computing a given custom operation.
-    ///
-    /// Custom operations can be created by the user as public structs implementing the [CustomOperationBody](../custom_ops/trait.CustomOperationBody.html).
-    ///
-    /// # Arguments
-    ///
-    /// * `op` - custom operation
-    /// * `arguments` - vector of nodes used as input for the custom operation
-    ///
-    /// # Returns
-    ///
-    /// New custom operation node
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use ciphercore_base::graphs::create_context;
-    /// # use ciphercore_base::data_types::{array_type, BIT};
-    /// # use ciphercore_base::custom_ops::{CustomOperation, Not};
-    /// let c = create_context().unwrap();
-    /// let g = c.create_graph().unwrap();
-    /// let t = array_type(vec![3, 2], BIT);
-    /// let n1 = g.input(t).unwrap();
-    /// let n2 = g.custom_op(CustomOperation::new(Not {}), vec![n1]).unwrap();
-    /// ```
-    pub fn custom_op(&self, op: CustomOperation, arguments: Vec<Node>) -> Result<Node> {
-        self.add_node(arguments, vec![], Operation::Custom(op))
-    }
-
     /// Checks that the graph has an output node and finalizes the graph.
     ///
     /// After finalization the graph can't be changed.
@@ -1532,17 +1971,6 @@ impl Graph {
             }
             None => Err(runtime_error!("Output node is not set")),
         }
-    }
-
-    pub(super) fn is_finalized(&self) -> bool {
-        self.body.borrow().finalized
-    }
-
-    pub(super) fn check_finalized(&self) -> Result<()> {
-        if !self.is_finalized() {
-            return Err(runtime_error!("Graph is not finalized"));
-        }
-        Ok(())
     }
 
     /// Returns the vector of nodes contained in the graph in order of construction.
@@ -1649,6 +2077,179 @@ impl Graph {
         self.body.borrow().context.upgrade()
     }
 
+    /// Adds a node computing a given custom operation.
+    ///
+    /// Custom operations can be created by the user as public structs implementing the [CustomOperationBody](../custom_ops/trait.CustomOperationBody.html).
+    ///
+    /// # Arguments
+    ///
+    /// * `op` - custom operation
+    /// * `arguments` - vector of nodes used as input for the custom operation
+    ///
+    /// # Returns
+    ///
+    /// New custom operation node
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{array_type, BIT};
+    /// # use ciphercore_base::custom_ops::{CustomOperation, Not};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = array_type(vec![3, 2], BIT);
+    /// let n1 = g.input(t).unwrap();
+    /// let n2 = g.custom_op(CustomOperation::new(Not {}), vec![n1]).unwrap();
+    /// ```
+    pub fn custom_op(&self, op: CustomOperation, arguments: Vec<Node>) -> Result<Node> {
+        self.add_node(arguments, vec![], Operation::Custom(op))
+    }
+}
+
+/// Methods which aren't supposed to be imported in Python.
+impl Graph {
+    /// Adds an operation node to the graph and returns it.
+    ///
+    /// # Arguments
+    ///
+    /// * `node_dependencies` - vector of nodes necessary to perform the given operation
+    /// * `graph_dependencies` - vector of graphs necessary to perform the given operation
+    /// * `operation` - operation performed by the node
+    ///
+    /// # Returns
+    ///
+    /// New operation node that gets added
+    pub(crate) fn add_node(
+        &self,
+        node_dependencies: Vec<Node>,
+        graph_dependencies: Vec<Graph>,
+        operation: Operation,
+    ) -> Result<Node> {
+        if self.is_finalized() {
+            return Err(runtime_error!("Can't add a node to a finalized graph"));
+        }
+        for dependency in &node_dependencies {
+            if dependency.get_graph() != *self
+                || dependency.get_id() >= self.body.borrow().nodes.len() as u64
+                || self.body.borrow().nodes[dependency.get_id() as usize] != *dependency
+            {
+                return Err(runtime_error!(
+                    "Can't add a node with invalid node dependencies"
+                ));
+            }
+        }
+        for dependency in &graph_dependencies {
+            if dependency.get_context() != self.get_context()
+                || !dependency.is_finalized()
+                || dependency.get_id() >= self.get_id()
+            {
+                return Err(runtime_error!(
+                    "Can't add a node with invalid graph dependencies"
+                ));
+            }
+        }
+        let id = self.body.borrow().nodes.len() as u64;
+        let result = Node {
+            body: Arc::new(AtomicRefCell::new(NodeBody {
+                graph: self.downgrade(),
+                node_dependencies: node_dependencies.iter().map(|n| n.downgrade()).collect(),
+                graph_dependencies: graph_dependencies.iter().map(|g| g.downgrade()).collect(),
+                operation,
+                id,
+            })),
+        };
+        {
+            let mut cell = self.body.borrow_mut();
+            cell.nodes.push(result.clone());
+        }
+        let mut context_has_type_checker = false;
+        {
+            let context = self.get_context();
+            let mut context_cell = context.body.borrow_mut();
+            let type_checker = &mut context_cell.type_checker;
+            if type_checker.is_some() {
+                context_has_type_checker = true;
+            }
+        }
+        if context_has_type_checker {
+            let type_checking_result = result.get_type();
+            if type_checking_result.is_err() {
+                self.remove_last_node(result)?;
+                return Err(type_checking_result.expect_err("Should not be here"));
+            }
+            let type_result = type_checking_result?;
+
+            let size_estimate = get_size_estimation_in_bits(type_result);
+            if size_estimate.is_err() {
+                self.remove_last_node(result)?;
+                return Err(runtime_error!("Trying to add a node with invalid size"));
+            }
+            if size_estimate? > type_size_limit_constants::MAX_INDIVIDUAL_NODE_SIZE {
+                self.remove_last_node(result)?;
+                return Err(runtime_error!(
+                    "Trying to add a node larger than MAX_INDIVIDUAL_NODE_SIZE"
+                ));
+            }
+
+            let context = self.get_context();
+            let size_checking_result = context.try_update_total_size(result.clone());
+            if size_checking_result.is_err() {
+                self.remove_last_node(result)?;
+                return Err(size_checking_result.expect_err("Should not be here"));
+            }
+        }
+        Ok(result)
+    }
+
+    fn remove_last_node(&self, n: Node) -> Result<()> {
+        if n.get_graph() != *self {
+            return Err(runtime_error!(
+                "The node to be removed from a different graph"
+            ));
+        }
+        {
+            let cell = self.body.borrow();
+            if n != *cell
+                .nodes
+                .last()
+                .ok_or_else(|| runtime_error!("Nodes list is empty"))?
+            {
+                return Err(runtime_error!(
+                    "The node to be removed is not the last node"
+                ));
+            }
+        };
+        let context = self.get_context();
+        context.unregister_node(n.clone())?;
+        let mut context_body = context.body.borrow_mut();
+        if let Some(tc) = &mut context_body.type_checker {
+            tc.unregister_node(n)?;
+        }
+        let mut cell = self.body.borrow_mut();
+        cell.nodes.pop();
+        Ok(())
+    }
+
+    pub(crate) fn nop(&self, a: Node) -> Result<Node> {
+        self.add_node(vec![a], vec![], Operation::NOP)
+    }
+
+    pub(crate) fn prf(&self, key: Node, iv: u64, output_type: Type) -> Result<Node> {
+        self.add_node(vec![key], vec![], Operation::PRF(iv, output_type))
+    }
+
+    pub(super) fn is_finalized(&self) -> bool {
+        self.body.borrow().finalized
+    }
+
+    pub(super) fn check_finalized(&self) -> Result<()> {
+        if !self.is_finalized() {
+            return Err(runtime_error!("Graph is not finalized"));
+        }
+        Ok(())
+    }
+
     fn make_serializable(&self) -> SerializableGraph {
         let output_node = match self.get_output_node() {
             Ok(n) => Some(n.get_id()),
@@ -1664,13 +2265,59 @@ impl Graph {
             output_node,
         })
     }
-}
 
-impl Graph {
     fn downgrade(&self) -> WeakGraph {
         WeakGraph {
             body: Arc::downgrade(&self.body),
         }
+    }
+
+    #[doc(hidden)]
+    pub fn add_annotation(&self, annotation: GraphAnnotation) -> Result<Graph> {
+        self.get_context().add_graph_annotation(self, annotation)?;
+        Ok(self.clone())
+    }
+
+    pub(super) fn get_annotations(&self) -> Result<Vec<GraphAnnotation>> {
+        self.get_context().get_graph_annotations(self.clone())
+    }
+
+    /// Rearrange given input values according to the names and the order of the related input nodes.
+    ///
+    /// For example, given a graph with the first input node named 'A' and the second one named 'B' and input values `{'B': v, 'A': w}`, this function returns a vector `[w, v]`.
+    ///
+    /// # Arguments
+    ///
+    /// `values` - hashmap of values keyed by node names
+    ///
+    /// # Returns
+    ///
+    /// Vector of values arranged by node names
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{BIT, scalar_type};
+    /// # use std::collections::HashMap;
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = scalar_type(BIT);
+    /// let n1 = g.input(t.clone()).unwrap();
+    /// n1.set_name("input1").unwrap();
+    /// let n2 = g.input(t.clone()).unwrap();
+    /// n2.set_name("input2").unwrap();
+    ///
+    /// let mut input_map = HashMap::new();
+    /// input_map.insert("input2", 2);
+    /// input_map.insert("input1", 1);
+    /// let ordered_input = g.prepare_input_values(input_map).unwrap();
+    ///
+    /// assert_eq!(vec![1,2], ordered_input);
+    /// ```
+    pub fn prepare_input_values<T: Clone>(&self, values: HashMap<&str, T>) -> Result<Vec<T>> {
+        self.get_context()
+            .prepare_input_values(self.clone(), values)
     }
 }
 type WeakGraphBodyPointer = Weak<AtomicRefCell<GraphBody>>;
@@ -1746,6 +2393,8 @@ type ContextBodyPointer = Arc<AtomicRefCell<ContextBody>>;
 ///
 /// Context should have a main graph and be finalized in order to evaluate any of its graphs.
 ///
+/// # Rust crates
+///
 /// [Clone] trait duplicates the pointer, not the underlying context.
 ///
 /// [PartialEq] trait compares pointers, not the related contexts.
@@ -1793,6 +2442,7 @@ type ContextBodyPointer = Arc<AtomicRefCell<ContextBody>>;
 /// assert_eq!(result, 777);
 /// # }
 /// ```
+#[cfg_attr(feature = "py-binding", struct_wrapper)]
 pub struct Context {
     body: ContextBodyPointer,
 }
@@ -1802,6 +2452,27 @@ impl fmt::Debug for Context {
         f.debug_struct("Context")
             .field("body", &self.body.as_ptr())
             .finish()
+    }
+}
+
+impl fmt::Display for Context {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match serde_json::to_string(&self) {
+            Ok(s) => write!(f, "{}", s),
+            Err(_err) => Err(fmt::Error::default()),
+        }
+    }
+}
+
+impl fmt::Display for Graph {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Graph[num_nodes={}]", self.get_num_nodes())
+    }
+}
+
+impl fmt::Display for Node {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Node[type={}]", self.get_type()?)
     }
 }
 
@@ -1967,6 +2638,8 @@ impl PartialEq for Context {
 
 impl Eq for Context {}
 
+/// Public methods which supposed to be imported in Python.
+#[cfg_attr(feature = "py-binding", impl_wrapper)]
 impl Context {
     /// Creates an empty computation graph in this context.
     ///
@@ -2086,10 +2759,6 @@ impl Context {
         self.body.borrow().graphs.clone()
     }
 
-    pub(super) fn is_finalized(&self) -> bool {
-        self.body.borrow().finalized
-    }
-
     /// Does nothing if the context is finalized; otherwise returns a runtime error.
     ///
     /// # Returns
@@ -2158,288 +2827,6 @@ impl Context {
         self.get_graph_by_id(id.0)?.get_node_by_id(id.1)
     }
 
-    fn make_serializable(&self) -> SerializableContext {
-        let main_graph = match self.get_main_graph() {
-            Ok(g) => Some(g.get_id()),
-            Err(_) => None,
-        };
-        let cell = self.body.borrow();
-        Arc::new(SerializableContextBody {
-            finalized: self.is_finalized(),
-            graphs: self
-                .get_graphs()
-                .iter()
-                .map(|g| g.make_serializable())
-                .collect(),
-            main_graph,
-            graphs_names: cell.graphs_names.clone().into_iter().collect(),
-            nodes_names: cell.nodes_names.clone().into_iter().collect(),
-            graphs_annotations: cell.graphs_annotations.clone().into_iter().collect(),
-            nodes_annotations: cell.nodes_annotations.clone().into_iter().collect(),
-        })
-    }
-
-    fn add_type_checker(&self) -> Result<Context> {
-        {
-            let mut cell = self.body.borrow_mut();
-            if cell.type_checker.is_some() {
-                return Err(runtime_error!(
-                    "Type checker associated with the context already exists"
-                ));
-            }
-            cell.type_checker = Some(create_type_inference_worker(self.clone()));
-        }
-        for graph in self.get_graphs() {
-            for node in graph.get_nodes() {
-                node.get_type()?;
-            }
-        }
-        Ok(self.clone())
-    }
-
-    fn get_total_size_nodes(&self) -> u64 {
-        self.body.borrow().total_size_nodes
-    }
-
-    fn set_total_size_nodes(&self, size: u64) {
-        self.body.borrow_mut().total_size_nodes = size;
-    }
-
-    fn try_update_total_size(&self, node: Node) -> Result<()> {
-        let node_type = match node.get_operation() {
-            Operation::Input(input_type) => input_type,
-            Operation::Constant(t, _) => t,
-            _ => return Ok(()),
-        };
-        if !node_type.is_valid() {
-            return Err(runtime_error!("Node with an invalid type: {:?}", node_type));
-        }
-        let new_total_size = self
-            .get_total_size_nodes()
-            .checked_add(get_size_estimation_in_bits(node_type)?)
-            .ok_or_else(|| runtime_error!("add overflow!"))?;
-        if new_total_size > type_size_limit_constants::MAX_TOTAL_SIZE_NODES {
-            return Err(runtime_error!(
-                "Can't add a node: total size of nodes exceeds MAX_TOTAL_SIZE_NODES"
-            ));
-        }
-        self.set_total_size_nodes(new_total_size);
-        Ok(())
-    }
-
-    fn unregister_node(&self, node: Node) -> Result<()> {
-        if node.get_graph().get_context() != *self {
-            return Err(runtime_error!(
-                "The node to be unregister from  a different context"
-            ));
-        }
-        if self.is_finalized() {
-            return Err(runtime_error!(
-                "Can't unregister a node from  a finalized context"
-            ));
-        }
-
-        let node_id = node.get_id();
-        let graph_id = node.get_graph().get_id();
-
-        let mut cell = self.body.borrow_mut();
-        let name_option = cell.nodes_names.remove(&(graph_id, node_id));
-        cell.nodes_annotations.remove(&(graph_id, node_id));
-        if cell.nodes_names_inverse.get(&graph_id).is_none() {
-            return Ok(());
-        }
-        let graph_map_inverse = cell
-            .nodes_names_inverse
-            .get_mut(&graph_id)
-            .expect("Should not be here!");
-        if let Some(name) = name_option {
-            graph_map_inverse.remove(&name);
-        }
-        Ok(())
-    }
-
-    fn to_versioned_data(&self) -> Result<VersionedData> {
-        VersionedData::create_versioned_data(
-            DATA_VERSION,
-            serde_json::to_string(&self.make_serializable())?,
-        )
-    }
-}
-
-impl Serialize for Context {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let versioned_context = self
-            .to_versioned_data()
-            .expect("Error during conversion from Context into VersionedData");
-        //VersionedData::from(self.clone());
-        versioned_context.serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for Context {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Context, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let versioned_context = VersionedData::deserialize(deserializer)?;
-        if !versioned_context.check_version(DATA_VERSION) {
-            Err(runtime_error!(
-                "Context version doesn't match the requirement"
-            ))
-            .map_err(serde::de::Error::custom)
-        } else {
-            let serializable_context =
-                serde_json::from_str::<SerializableContext>(versioned_context.get_data_string())
-                    .expect("Error during deserialization of SerializableContext");
-            serializable_context
-                .recover_original_context()
-                .map_err(serde::de::Error::custom)
-        }
-    }
-}
-
-/// In general, `create_unchecked_context()` should not return errors, but
-/// we still make the result type Result<Context> for uniformity.
-pub(super) fn create_unchecked_context() -> Result<Context> {
-    Ok(Context {
-        body: Arc::new(AtomicRefCell::new(ContextBody {
-            finalized: false,
-            graphs: vec![],
-            main_graph: None,
-            graphs_names: HashMap::new(),
-            graphs_names_inverse: HashMap::new(),
-            nodes_names: HashMap::new(),
-            nodes_names_inverse: HashMap::new(),
-            graphs_annotations: HashMap::new(),
-            nodes_annotations: HashMap::new(),
-            type_checker: None,
-            total_size_nodes: 0,
-        })),
-    })
-}
-
-/// Creates an empty computation context.
-///
-/// # Returns
-///
-/// New computation context
-///
-/// # Example
-///
-/// ```
-/// # use ciphercore_base::graphs::create_context;
-/// let c = create_context().unwrap();
-/// ```
-pub fn create_context() -> Result<Context> {
-    let context = create_unchecked_context()?;
-    context.add_type_checker()?;
-    Ok(context)
-}
-
-fn graphs_deep_equal(graph1: Graph, graph2: Graph) -> bool {
-    let graph1_body = graph1.body.borrow();
-    let graph2_body = graph2.body.borrow();
-    if graph1_body.finalized != graph2_body.finalized {
-        return false;
-    }
-    if graph1_body.nodes.len() != graph2_body.nodes.len() {
-        return false;
-    }
-    for j in 0..graph1_body.nodes.len() {
-        let node1 = graph1_body.nodes[j].clone();
-        let node2 = graph2_body.nodes[j].clone();
-        let node1_body = node1.body.borrow();
-        let node2_body = node2.body.borrow();
-        if node1_body.operation != node2_body.operation {
-            return false;
-        }
-        let node_dependencies1: Vec<u64> = node1_body
-            .node_dependencies
-            .iter()
-            .map(|n| n.upgrade().get_id())
-            .collect();
-        let node_dependencies2: Vec<u64> = node2_body
-            .node_dependencies
-            .iter()
-            .map(|n| n.upgrade().get_id())
-            .collect();
-        if node_dependencies1 != node_dependencies2 {
-            return false;
-        }
-        let graph_dependencies1: Vec<u64> = node1_body
-            .graph_dependencies
-            .iter()
-            .map(|g| g.upgrade().get_id())
-            .collect();
-        let graph_dependencies2: Vec<u64> = node2_body
-            .graph_dependencies
-            .iter()
-            .map(|g| g.upgrade().get_id())
-            .collect();
-        if graph_dependencies1 != graph_dependencies2 {
-            return false;
-        }
-    }
-    if graph1_body
-        .output_node
-        .clone()
-        .map(|n| n.upgrade().get_id())
-        != graph2_body
-            .output_node
-            .clone()
-            .map(|n| n.upgrade().get_id())
-    {
-        return false;
-    }
-    true
-}
-
-/// Check that two given contexts contain the same data, i.e. graphs, nodes, names, parameters.
-///
-/// Underlying structures that contain pointers (graphs, nodes) are compared by data they refer to.
-///
-/// # Arguments
-///
-/// * `context1` - first context to compare
-/// * `context2` - second context to compare
-///
-/// # Returns
-///
-/// `true` if the given contexts contain the same content, otherwise `false`
-pub fn contexts_deep_equal(context1: Context, context2: Context) -> bool {
-    let body1 = context1.body.borrow();
-    let body2 = context2.body.borrow();
-    if body1.finalized != body2.finalized {
-        return false;
-    }
-    if body1.graphs_names != body2.graphs_names {
-        return false;
-    }
-    if body1.nodes_names != body2.nodes_names {
-        return false;
-    }
-    if body1.nodes_annotations != body2.nodes_annotations {
-        return false;
-    }
-    if body1.graphs_annotations != body2.graphs_annotations {
-        return false;
-    }
-    if body1.graphs.len() != body2.graphs.len() {
-        return false;
-    }
-    for i in 0..body1.graphs.len() {
-        if !graphs_deep_equal(body1.graphs[i].clone(), body2.graphs[i].clone()) {
-            return false;
-        }
-    }
-    body1.main_graph.clone().map(|g| g.upgrade().get_id())
-        == body2.main_graph.clone().map(|g| g.upgrade().get_id())
-}
-
-impl Context {
     /// Sets the name of a graph.
     ///
     /// A given name should be unique.
@@ -2679,7 +3066,134 @@ impl Context {
             .ok_or_else(|| runtime_error!("Node with a given name does not exist"))?;
         Ok(graph.body.borrow().nodes[*node_id as usize].clone())
     }
+    /// Check that two given contexts contain the same data, i.e. graphs, nodes, names, parameters.
+    ///
+    /// Underlying structures that contain pointers (graphs, nodes) are compared by data they refer to.
+    ///
+    /// # Arguments
+    ///
+    /// * `context2` - context to compare
+    ///
+    /// # Returns
+    ///
+    /// `true` if the given contexts contain the same content, otherwise `false`
+    pub fn deep_equal(&self, context2: Context) -> bool {
+        contexts_deep_equal(self.clone(), context2)
+    }
+}
 
+/// Methods which aren't supposed to be imported in Python.
+impl Context {
+    pub(super) fn is_finalized(&self) -> bool {
+        self.body.borrow().finalized
+    }
+
+    fn make_serializable(&self) -> SerializableContext {
+        let main_graph = match self.get_main_graph() {
+            Ok(g) => Some(g.get_id()),
+            Err(_) => None,
+        };
+        let cell = self.body.borrow();
+        Arc::new(SerializableContextBody {
+            finalized: self.is_finalized(),
+            graphs: self
+                .get_graphs()
+                .iter()
+                .map(|g| g.make_serializable())
+                .collect(),
+            main_graph,
+            graphs_names: cell.graphs_names.clone().into_iter().collect(),
+            nodes_names: cell.nodes_names.clone().into_iter().collect(),
+            graphs_annotations: cell.graphs_annotations.clone().into_iter().collect(),
+            nodes_annotations: cell.nodes_annotations.clone().into_iter().collect(),
+        })
+    }
+
+    fn add_type_checker(&self) -> Result<Context> {
+        {
+            let mut cell = self.body.borrow_mut();
+            if cell.type_checker.is_some() {
+                return Err(runtime_error!(
+                    "Type checker associated with the context already exists"
+                ));
+            }
+            cell.type_checker = Some(create_type_inference_worker(self.clone()));
+        }
+        for graph in self.get_graphs() {
+            for node in graph.get_nodes() {
+                node.get_type()?;
+            }
+        }
+        Ok(self.clone())
+    }
+
+    fn get_total_size_nodes(&self) -> u64 {
+        self.body.borrow().total_size_nodes
+    }
+
+    fn set_total_size_nodes(&self, size: u64) {
+        self.body.borrow_mut().total_size_nodes = size;
+    }
+
+    fn try_update_total_size(&self, node: Node) -> Result<()> {
+        let node_type = match node.get_operation() {
+            Operation::Input(input_type) => input_type,
+            Operation::Constant(t, _) => t,
+            _ => return Ok(()),
+        };
+        if !node_type.is_valid() {
+            return Err(runtime_error!("Node with an invalid type: {:?}", node_type));
+        }
+        let new_total_size = self
+            .get_total_size_nodes()
+            .checked_add(get_size_estimation_in_bits(node_type)?)
+            .ok_or_else(|| runtime_error!("add overflow!"))?;
+        if new_total_size > type_size_limit_constants::MAX_TOTAL_SIZE_NODES {
+            return Err(runtime_error!(
+                "Can't add a node: total size of nodes exceeds MAX_TOTAL_SIZE_NODES"
+            ));
+        }
+        self.set_total_size_nodes(new_total_size);
+        Ok(())
+    }
+
+    fn unregister_node(&self, node: Node) -> Result<()> {
+        if node.get_graph().get_context() != *self {
+            return Err(runtime_error!(
+                "The node to be unregister from  a different context"
+            ));
+        }
+        if self.is_finalized() {
+            return Err(runtime_error!(
+                "Can't unregister a node from  a finalized context"
+            ));
+        }
+
+        let node_id = node.get_id();
+        let graph_id = node.get_graph().get_id();
+
+        let mut cell = self.body.borrow_mut();
+        let name_option = cell.nodes_names.remove(&(graph_id, node_id));
+        cell.nodes_annotations.remove(&(graph_id, node_id));
+        if cell.nodes_names_inverse.get(&graph_id).is_none() {
+            return Ok(());
+        }
+        let graph_map_inverse = cell
+            .nodes_names_inverse
+            .get_mut(&graph_id)
+            .expect("Should not be here!");
+        if let Some(name) = name_option {
+            graph_map_inverse.remove(&name);
+        }
+        Ok(())
+    }
+
+    fn to_versioned_data(&self) -> Result<VersionedData> {
+        VersionedData::create_versioned_data(
+            DATA_VERSION,
+            serde_json::to_string(&self.make_serializable())?,
+        )
+    }
     fn prepare_input_values<T: Clone>(
         &self,
         graph: Graph,
@@ -2790,638 +3304,186 @@ impl Context {
             .cloned()
             .unwrap_or_default())
     }
-}
 
-impl Graph {
-    /// Applies [Context::set_main_graph] to the parent context and `this` graph. Returns the clone of `this`.
-    ///
-    /// # Returns
-    ///
-    /// This graph
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use ciphercore_base::graphs::create_context;
-    /// # use ciphercore_base::data_types::{array_type, INT32};
-    /// let c = create_context().unwrap();
-    /// let g = c.create_graph().unwrap();
-    /// let t = array_type(vec![3, 2], INT32);
-    /// let n = g.input(t).unwrap();
-    /// n.set_as_output().unwrap();
-    /// g.finalize().unwrap();
-    /// g.set_as_main().unwrap();
-    /// ```
-    pub fn set_as_main(&self) -> Result<Graph> {
-        self.get_context().set_main_graph(self.clone())?;
-        Ok(self.clone())
-    }
-
-    /// Applies [Context::set_graph_name] to the parent context and `this` graph. Returns the clone of `this`.
-    ///
-    /// # Arguments
-    ///
-    /// `name` - name of the graph
-    ///
-    /// # Returns
-    ///
-    /// This graph
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use ciphercore_base::graphs::create_context;
-    /// let c = create_context().unwrap();
-    /// let g = c.create_graph().unwrap();
-    /// g.set_name("relu").unwrap();
-    /// ```
-    pub fn set_name(&self, name: &str) -> Result<Graph> {
-        self.get_context().set_graph_name(self.clone(), name)?;
-        Ok(self.clone())
-    }
-
-    /// Applies [Context::get_graph_name] to the parent context and `this` graph.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use ciphercore_base::graphs::create_context;
-    /// let c = create_context().unwrap();
-    /// let g = c.create_graph().unwrap();
-    /// g.set_name("relu").unwrap();
-    /// assert_eq!(g.get_name().unwrap(), "relu".to_owned());
-    /// ```
-    pub fn get_name(&self) -> Result<String> {
-        self.get_context().get_graph_name(self.clone())
-    }
-
-    #[doc(hidden)]
-    pub fn add_annotation(&self, annotation: GraphAnnotation) -> Result<Graph> {
-        self.get_context().add_graph_annotation(self, annotation)?;
-        Ok(self.clone())
-    }
-
-    pub(super) fn get_annotations(&self) -> Result<Vec<GraphAnnotation>> {
-        self.get_context().get_graph_annotations(self.clone())
-    }
-
-    /// Applies [Context::retrieve_node] to the parent context and `this` graph.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use ciphercore_base::graphs::create_context;
-    /// # use ciphercore_base::data_types::{BIT, scalar_type};
-    /// let c = create_context().unwrap();
-    /// let g = c.create_graph().unwrap();
-    /// let n = g.input(scalar_type(BIT)).unwrap();
-    /// n.set_name("input_node").unwrap();
-    /// assert!(n == g.retrieve_node("input_node").unwrap());
-    /// ```
-    pub fn retrieve_node(&self, name: &str) -> Result<Node> {
-        self.get_context().retrieve_node(self.clone(), name)
-    }
-
-    /// Rearrange given input values according to the names and the order of the related input nodes.
-    ///
-    /// For example, given a graph with the first input node named 'A' and the second one named 'B' and input values `{'B': v, 'A': w}`, this function returns a vector `[w, v]`.
-    ///
-    /// # Arguments
-    ///
-    /// `values` - hashmap of values keyed by node names
-    ///
-    /// # Returns
-    ///
-    /// Vector of values arranged by node names
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use ciphercore_base::graphs::create_context;
-    /// # use ciphercore_base::data_types::{BIT, scalar_type};
-    /// # use std::collections::HashMap;
-    /// let c = create_context().unwrap();
-    /// let g = c.create_graph().unwrap();
-    /// let t = scalar_type(BIT);
-    /// let n1 = g.input(t.clone()).unwrap();
-    /// n1.set_name("input1").unwrap();
-    /// let n2 = g.input(t.clone()).unwrap();
-    /// n2.set_name("input2").unwrap();
-    ///
-    /// let mut input_map = HashMap::new();
-    /// input_map.insert("input2", 2);
-    /// input_map.insert("input1", 1);
-    /// let ordered_input = g.prepare_input_values(input_map).unwrap();
-    ///
-    /// assert_eq!(vec![1,2], ordered_input);
-    /// ```
-    pub fn prepare_input_values<T: Clone>(&self, values: HashMap<&str, T>) -> Result<Vec<T>> {
-        self.get_context()
-            .prepare_input_values(self.clone(), values)
+    pub(super) fn downgrade(&self) -> WeakContext {
+        WeakContext {
+            body: Arc::downgrade(&self.body),
+        }
     }
 }
 
-impl Node {
-    /// Applies [Context::set_node_name] to the parent context and `this` node. Returns the clone of `this`.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use ciphercore_base::graphs::create_context;
-    /// # use ciphercore_base::data_types::{scalar_type, BIT};
-    /// let c = create_context().unwrap();
-    /// let g = c.create_graph().unwrap();
-    /// let t = scalar_type(BIT);
-    /// let n = g.input(t).unwrap();
-    /// n.set_name("XOR").unwrap();
-    /// ```
-    pub fn set_name(&self, name: &str) -> Result<Node> {
-        self.get_graph()
-            .get_context()
-            .set_node_name(self.clone(), name)?;
-        Ok(self.clone())
+impl Serialize for Context {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let versioned_context = self
+            .to_versioned_data()
+            .expect("Error during conversion from Context into VersionedData");
+        //VersionedData::from(self.clone());
+        versioned_context.serialize(serializer)
     }
+}
 
-    /// Applies [Context::get_node_name] to the parent context and `this` node.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use ciphercore_base::graphs::create_context;
-    /// # use ciphercore_base::data_types::{scalar_type, BIT};
-    /// let c = create_context().unwrap();
-    /// let g = c.create_graph().unwrap();
-    /// let t = scalar_type(BIT);
-    /// let n = g.input(t).unwrap();
-    /// n.set_name("XOR").unwrap();
-    /// assert_eq!(n.get_name().unwrap(), "XOR".to_owned());
-    /// ```
-    pub fn get_name(&self) -> Result<String> {
-        self.get_graph().get_context().get_node_name(self.clone())
+impl<'de> Deserialize<'de> for Context {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Context, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let versioned_context = VersionedData::deserialize(deserializer)?;
+        if !versioned_context.check_version(DATA_VERSION) {
+            Err(runtime_error!(
+                "Context version doesn't match the requirement"
+            ))
+            .map_err(serde::de::Error::custom)
+        } else {
+            let serializable_context =
+                serde_json::from_str::<SerializableContext>(versioned_context.get_data_string())
+                    .expect("Error during deserialization of SerializableContext");
+            serializable_context
+                .recover_original_context()
+                .map_err(serde::de::Error::custom)
+        }
     }
+}
 
-    #[doc(hidden)]
-    pub fn add_annotation(&self, annotation: NodeAnnotation) -> Result<Node> {
-        self.get_graph()
-            .get_context()
-            .add_node_annotation(self, annotation)?;
-        Ok(self.clone())
-    }
+/// In general, `create_unchecked_context()` should not return errors, but
+/// we still make the result type Result<Context> for uniformity.
+pub(super) fn create_unchecked_context() -> Result<Context> {
+    Ok(Context {
+        body: Arc::new(AtomicRefCell::new(ContextBody {
+            finalized: false,
+            graphs: vec![],
+            main_graph: None,
+            graphs_names: HashMap::new(),
+            graphs_names_inverse: HashMap::new(),
+            nodes_names: HashMap::new(),
+            nodes_names_inverse: HashMap::new(),
+            graphs_annotations: HashMap::new(),
+            nodes_annotations: HashMap::new(),
+            type_checker: None,
+            total_size_nodes: 0,
+        })),
+    })
+}
 
-    #[doc(hidden)]
-    pub fn get_annotations(&self) -> Result<Vec<NodeAnnotation>> {
-        self.get_graph()
-            .get_context()
-            .get_node_annotations(self.clone())
-    }
+/// Creates an empty computation context.
+///
+/// # Returns
+///
+/// New computation context
+///
+/// # Example
+///
+/// ```
+/// # use ciphercore_base::graphs::create_context;
+/// let c = create_context().unwrap();
+/// ```
+#[cfg_attr(feature = "py-binding", fn_wrapper)]
+pub fn create_context() -> Result<Context> {
+    let context = create_unchecked_context()?;
+    context.add_type_checker()?;
+    Ok(context)
+}
 
-    /// Adds a node to the parent graph that adds elementwise the array or scalar associated with the node to an array or scalar of the same scalar type associated with another node.
-    ///
-    /// Applies [Graph::add] to the parent graph, `this` node and the `b` node.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use ciphercore_base::graphs::create_context;
-    /// # use ciphercore_base::data_types::{BIT, scalar_type};
-    /// let c = create_context().unwrap();
-    /// let g = c.create_graph().unwrap();
-    /// let t = scalar_type(BIT);
-    /// let n1 = g.input(t.clone()).unwrap();
-    /// let n2 = g.input(t).unwrap();
-    /// let n3 = n1.add(n2).unwrap();
-    /// ```
-    pub fn add(&self, b: Node) -> Result<Node> {
-        self.get_graph().add(self.clone(), b)
+fn graphs_deep_equal(graph1: Graph, graph2: Graph) -> bool {
+    let graph1_body = graph1.body.borrow();
+    let graph2_body = graph2.body.borrow();
+    if graph1_body.finalized != graph2_body.finalized {
+        return false;
     }
+    if graph1_body.nodes.len() != graph2_body.nodes.len() {
+        return false;
+    }
+    for j in 0..graph1_body.nodes.len() {
+        let node1 = graph1_body.nodes[j].clone();
+        let node2 = graph2_body.nodes[j].clone();
+        let node1_body = node1.body.borrow();
+        let node2_body = node2.body.borrow();
+        if node1_body.operation != node2_body.operation {
+            return false;
+        }
+        let node_dependencies1: Vec<u64> = node1_body
+            .node_dependencies
+            .iter()
+            .map(|n| n.upgrade().get_id())
+            .collect();
+        let node_dependencies2: Vec<u64> = node2_body
+            .node_dependencies
+            .iter()
+            .map(|n| n.upgrade().get_id())
+            .collect();
+        if node_dependencies1 != node_dependencies2 {
+            return false;
+        }
+        let graph_dependencies1: Vec<u64> = node1_body
+            .graph_dependencies
+            .iter()
+            .map(|g| g.upgrade().get_id())
+            .collect();
+        let graph_dependencies2: Vec<u64> = node2_body
+            .graph_dependencies
+            .iter()
+            .map(|g| g.upgrade().get_id())
+            .collect();
+        if graph_dependencies1 != graph_dependencies2 {
+            return false;
+        }
+    }
+    if graph1_body
+        .output_node
+        .clone()
+        .map(|n| n.upgrade().get_id())
+        != graph2_body
+            .output_node
+            .clone()
+            .map(|n| n.upgrade().get_id())
+    {
+        return false;
+    }
+    true
+}
 
-    /// Adds a node to the parent graph that subtracts elementwise the array or scalar of the same scalar type associated with another node from an array or scalar associated with the node.
-    ///
-    /// Applies [Graph::subtract] to the parent graph, `this` node and the `b` node.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use ciphercore_base::graphs::create_context;
-    /// # use ciphercore_base::data_types::{BIT, scalar_type};
-    /// let c = create_context().unwrap();
-    /// let g = c.create_graph().unwrap();
-    /// let t = scalar_type(BIT);
-    /// let n1 = g.input(t.clone()).unwrap();
-    /// let n2 = g.input(t).unwrap();
-    /// let n3 = n1.subtract(n2).unwrap();
-    /// ```
-    pub fn subtract(&self, b: Node) -> Result<Node> {
-        self.get_graph().subtract(self.clone(), b)
+/// Check that two given contexts contain the same data, i.e. graphs, nodes, names, parameters.
+///
+/// Underlying structures that contain pointers (graphs, nodes) are compared by data they refer to.
+///
+/// # Arguments
+///
+/// * `context1` - first context to compare
+/// * `context2` - second context to compare
+///
+/// # Returns
+///
+/// `true` if the given contexts contain the same content, otherwise `false`
+pub fn contexts_deep_equal(context1: Context, context2: Context) -> bool {
+    let body1 = context1.body.borrow();
+    let body2 = context2.body.borrow();
+    if body1.finalized != body2.finalized {
+        return false;
     }
-
-    /// Adds a node to the parent graph that multiplies elementwise the array or scalar associated with the node by an array or scalar of the same scalar type associated with another node.
-    ///
-    /// Applies [Graph::multiply] to the parent graph, `this` node and the `b` node.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use ciphercore_base::graphs::create_context;
-    /// # use ciphercore_base::data_types::{BIT, scalar_type};
-    /// let c = create_context().unwrap();
-    /// let g = c.create_graph().unwrap();
-    /// let t = scalar_type(BIT);
-    /// let n1 = g.input(t.clone()).unwrap();
-    /// let n2 = g.input(t).unwrap();
-    /// let n3 = n1.multiply(n2).unwrap();
-    /// ```
-    pub fn multiply(&self, b: Node) -> Result<Node> {
-        self.get_graph().multiply(self.clone(), b)
+    if body1.graphs_names != body2.graphs_names {
+        return false;
     }
-
-    /// Adds a node to the parent graph that multiplies elementwise the array or scalar associated with the node by a binary array or scalar associated with another node.
-    ///
-    /// Applies [Graph::mixed_multiply] to the parent graph, `this` node and the `b` node.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use ciphercore_base::graphs::create_context;
-    /// # use ciphercore_base::data_types::{BIT, INT32, scalar_type};
-    /// let c = create_context().unwrap();
-    /// let g = c.create_graph().unwrap();
-    /// let t = scalar_type(INT32);
-    /// let bit_t = scalar_type(BIT);
-    /// let n1 = g.input(t).unwrap();
-    /// let n2 = g.input(bit_t).unwrap();
-    /// let n3 = n1.mixed_multiply(n2).unwrap();
-    /// ```
-    pub fn mixed_multiply(&self, b: Node) -> Result<Node> {
-        self.get_graph().mixed_multiply(self.clone(), b)
+    if body1.nodes_names != body2.nodes_names {
+        return false;
     }
-
-    /// Adds a node to the parent graph that computes the dot product of arrays or scalars associated with the node and another node.
-    ///
-    /// Applies [Graph::dot] to the parent graph, `this` node and the `b` node.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use ciphercore_base::graphs::create_context;
-    /// # use ciphercore_base::data_types::{INT32, array_type};
-    /// let c = create_context().unwrap();
-    /// let g = c.create_graph().unwrap();
-    /// let t = array_type(vec![10], INT32);
-    /// let n1 = g.input(t.clone()).unwrap();
-    /// let n2 = g.input(t).unwrap();
-    /// let n3 = n1.dot(n2).unwrap();
-    /// ```
-    pub fn dot(&self, b: Node) -> Result<Node> {
-        self.get_graph().dot(self.clone(), b)
+    if body1.nodes_annotations != body2.nodes_annotations {
+        return false;
     }
-
-    /// Adds a node to the parent graph that computes the matrix product of two arrays associated with the node and another node.
-    ///
-    /// Applies [Graph::matmul] to the parent graph, `this` node and the `b` node.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use ciphercore_base::graphs::create_context;
-    /// # use ciphercore_base::data_types::{INT32, array_type};
-    /// let c = create_context().unwrap();
-    /// let g = c.create_graph().unwrap();
-    /// let t1 = array_type(vec![2, 3], INT32);
-    /// let t2 = array_type(vec![3, 2], INT32);
-    /// let n1 = g.input(t1).unwrap();
-    /// let n2 = g.input(t2).unwrap();
-    /// let n3 = n1.matmul(n2).unwrap();
-    /// ```
-    pub fn matmul(&self, b: Node) -> Result<Node> {
-        self.get_graph().matmul(self.clone(), b)
+    if body1.graphs_annotations != body2.graphs_annotations {
+        return false;
     }
-
-    /// Adds a node to the parent graph that divides a scalar or each entry of the array associated with the node by a positive constant integer `scale`.
-    ///
-    /// Applies [Graph::add] to the parent graph, `this` node and `scale`.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use ciphercore_base::graphs::create_context;
-    /// # use ciphercore_base::data_types::{INT32, array_type};
-    /// let c = create_context().unwrap();
-    /// let g = c.create_graph().unwrap();
-    /// let t = array_type(vec![2, 3], INT32);
-    /// let n1 = g.input(t).unwrap();
-    /// let n2 = n1.truncate(4).unwrap();
-    /// ```
-    pub fn truncate(&self, scale: u64) -> Result<Node> {
-        self.get_graph().truncate(self.clone(), scale)
+    if body1.graphs.len() != body2.graphs.len() {
+        return false;
     }
-
-    /// Adds a node to the parent graph that computes the sum of entries of the array associated with the node along given axes.
-    ///
-    /// Applies [Graph::sum] to the parent graph, `this` node and `axes`.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use ciphercore_base::graphs::create_context;
-    /// # use ciphercore_base::data_types::{INT32, array_type};
-    /// let c = create_context().unwrap();
-    /// let g = c.create_graph().unwrap();
-    /// let t = array_type(vec![3, 2, 3], INT32);
-    /// let axes = vec![1, 0];
-    /// let n1 = g.input(t).unwrap();
-    /// let n2 = n1.sum(axes).unwrap();
-    /// ```
-    pub fn sum(&self, axes: ArrayShape) -> Result<Node> {
-        self.get_graph().sum(self.clone(), axes)
+    for i in 0..body1.graphs.len() {
+        if !graphs_deep_equal(body1.graphs[i].clone(), body2.graphs[i].clone()) {
+            return false;
+        }
     }
-
-    /// Adds a node to the parent graph that permutes the array associated with the node along given axes.
-    ///
-    /// Applies [Graph::permute_axes] to the parent graph, `this` node and `axes`.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use ciphercore_base::graphs::create_context;
-    /// # use ciphercore_base::data_types::{INT32, array_type};
-    /// let c = create_context().unwrap();
-    /// let g = c.create_graph().unwrap();
-    /// let t = array_type(vec![3, 2, 3], INT32);
-    /// let axes = vec![1, 0, 2];
-    /// let n1 = g.input(t).unwrap();
-    /// let n2 = n1.permute_axes(axes).unwrap();
-    /// ```
-    pub fn permute_axes(&self, axes: ArrayShape) -> Result<Node> {
-        self.get_graph().permute_axes(self.clone(), axes)
-    }
-
-    /// Adds a node to the parent graph that extracts a sub-array with a given index from the array associated with the node.
-    ///
-    /// Applies [Graph::get] to the parent graph, `this` node and `index`.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use ciphercore_base::graphs::create_context;
-    /// # use ciphercore_base::data_types::{INT32, array_type};
-    /// let c = create_context().unwrap();
-    /// let g = c.create_graph().unwrap();
-    /// let t = array_type(vec![3, 2, 3], INT32);
-    /// let index = vec![2];
-    /// let n1 = g.input(t).unwrap();
-    /// let n2 = n1.get(index).unwrap();
-    /// ```
-    pub fn get(&self, index: ArrayShape) -> Result<Node> {
-        self.get_graph().get(self.clone(), index)
-    }
-
-    /// Adds a node that extracts a sub-array corresponding to a given slice from the array associated with the node.
-    ///
-    /// Applies [Graph::get_slice] to the parent graph, `this` node and `slice`.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use ciphercore_base::graphs::{create_context, SliceElement};
-    /// # use ciphercore_base::data_types::{INT32, array_type};
-    /// let c = create_context().unwrap();
-    /// let g = c.create_graph().unwrap();
-    /// let t = array_type(vec![3, 2, 3], INT32);
-    /// let slice = vec![SliceElement::Ellipsis, SliceElement::SubArray(None, None, Some(-2))];
-    /// let n1 = g.input(t).unwrap();
-    /// let n2 = n1.get_slice(slice).unwrap();
-    /// ```
-    pub fn get_slice(&self, slice: Slice) -> Result<Node> {
-        self.get_graph().get_slice(self.clone(), slice)
-    }
-
-    /// Adds a node to the parent graph that reshapes a value associated with the node to a given compatible type.
-    ///
-    /// Applies [Graph::reshape] to the parent graph, `this` node and `new_type`.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use ciphercore_base::graphs::create_context;
-    /// # use ciphercore_base::data_types::{INT32, array_type};
-    /// let c = create_context().unwrap();
-    /// let g = c.create_graph().unwrap();
-    /// let old_t = array_type(vec![3, 2, 3], INT32);
-    /// let new_t = array_type(vec![3,6], INT32);
-    /// let n1 = g.input(old_t).unwrap();
-    /// let n2 = n1.reshape(new_t).unwrap();
-    /// ```
-    pub fn reshape(&self, new_type: Type) -> Result<Node> {
-        self.get_graph().reshape(self.clone(), new_type)
-    }
-
-    #[doc(hidden)]
-    pub fn nop(&self) -> Result<Node> {
-        self.get_graph().nop(self.clone())
-    }
-
-    #[doc(hidden)]
-    pub fn prf(&self, iv: u64, output_type: Type) -> Result<Node> {
-        self.get_graph().prf(self.clone(), iv, output_type)
-    }
-
-    /// Adds a node to the parent graph converting an integer array or scalar associated with the node to the binary form.
-    ///
-    /// Applies [Graph::a2b] to the parent graph and `this` node.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use ciphercore_base::graphs::create_context;
-    /// # use ciphercore_base::data_types::{array_type, INT32};
-    /// let c = create_context().unwrap();
-    /// let g = c.create_graph().unwrap();
-    /// let t = array_type(vec![3, 2], INT32);
-    /// let n1 = g.input(t).unwrap();
-    /// let n2 = n1.a2b().unwrap();
-    /// ```
-    pub fn a2b(&self) -> Result<Node> {
-        self.get_graph().a2b(self.clone())
-    }
-
-    /// Adds a node to the parent graph converting a binary array associated with the node to an array of a given scalar type.
-    ///
-    /// Applies [Graph::b2a] to the parent graph, `this` node and `scalar_type`.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use ciphercore_base::graphs::create_context;
-    /// # use ciphercore_base::data_types::{BIT, INT32, array_type};
-    /// let c = create_context().unwrap();
-    /// let g = c.create_graph().unwrap();
-    /// let t = array_type(vec![3, 32], BIT);
-    /// let n1 = g.input(t).unwrap();
-    /// let n2 = n1.b2a(INT32).unwrap();
-    /// ```
-    pub fn b2a(&self, scalar_type: ScalarType) -> Result<Node> {
-        self.get_graph().b2a(self.clone(), scalar_type)
-    }
-
-    /// Adds a node that extracts an element of a tuple associated with the node.
-    ///
-    /// Applies [Graph::tuple_get] to the parent graph, `this` node and `index`.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use ciphercore_base::data_types::{INT32, array_type};
-    /// # use ciphercore_base::graphs::create_context;
-    /// let c = create_context().unwrap();
-    /// let g = c.create_graph().unwrap();
-    /// let t1 = array_type(vec![3, 2, 3], INT32);
-    /// let t2 = array_type(vec![2, 3], INT32);
-    /// let n1 = g.input(t1).unwrap();
-    /// let n2 = g.input(t2).unwrap();
-    /// let n3 = g.create_tuple(vec![n1, n2]).unwrap();
-    /// let n4 = n3.tuple_get(1).unwrap();
-    /// ```
-    pub fn tuple_get(&self, index: u64) -> Result<Node> {
-        self.get_graph().tuple_get(self.clone(), index)
-    }
-
-    /// Adds a node to the parent graph that extracts an element of a named tuple associated with the node.
-    ///
-    /// Applies [Graph::named_tuple_get] to the parent graph, `this` node and the `key` string.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use ciphercore_base::graphs::create_context;
-    /// # use ciphercore_base::data_types::{array_type, INT32};
-    /// let c = create_context().unwrap();
-    /// let g = c.create_graph().unwrap();
-    /// let t1 = array_type(vec![3, 2, 3], INT32);
-    /// let t2 = array_type(vec![2, 3], INT32);
-    /// let n1 = g.input(t1).unwrap();
-    /// let n2 = g.input(t2).unwrap();
-    /// let n3 = g.create_named_tuple(vec![("node1".to_owned(), n1), ("node2".to_owned(), n2)]).unwrap();
-    /// let n4 = n3.named_tuple_get("node2".to_owned()).unwrap();
-    /// ```
-    pub fn named_tuple_get(&self, key: String) -> Result<Node> {
-        self.get_graph().named_tuple_get(self.clone(), key)
-    }
-
-    /// Adds a node to the parent graph that extracts an element of a vector associated with the node.
-    ///
-    /// Applies [Graph::vector_get] to the parent graph, `this` node and the `index` node.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use ciphercore_base::graphs::create_context;
-    /// # use ciphercore_base::data_types::{UINT32, INT32, array_type, scalar_type};
-    /// # use ciphercore_base::data_values::Value;
-    /// let c = create_context().unwrap();
-    /// let g = c.create_graph().unwrap();
-    /// let t = array_type(vec![3, 2, 3], INT32);
-    /// let n1 = g.input(t.clone()).unwrap();
-    /// let n2 = g.input(t.clone()).unwrap();
-    /// let n3 = g.create_vector(t, vec![n1,n2]).unwrap();
-    /// let index = g.constant(scalar_type(UINT32), Value::from_scalar(0, UINT32).unwrap()).unwrap();
-    /// let n4 = n3.vector_get(index).unwrap();
-    /// ```
-    pub fn vector_get(&self, index: Node) -> Result<Node> {
-        self.get_graph().vector_get(self.clone(), index)
-    }
-
-    /// Adds a node to the parent graph converting an array associated with the node to a vector.
-    ///
-    /// Applies [Graph::array_to_vector] to the parent graph and `this` node.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use ciphercore_base::graphs::create_context;
-    /// # use ciphercore_base::data_types::{array_type, scalar_type, INT32, UINT32};
-    /// # use ciphercore_base::data_values::Value;
-    /// let c = create_context().unwrap();
-    /// let g = c.create_graph().unwrap();
-    /// let t = array_type(vec![4, 3, 2], INT32);
-    /// let n1 = g.input(t).unwrap();
-    /// let n2 = g.array_to_vector(n1).unwrap();
-    /// let index = g.constant(scalar_type(UINT32), Value::from_scalar(0, UINT32).unwrap()).unwrap();
-    /// let n3 = n2.vector_get(index).unwrap();
-    ///
-    /// assert!(n2.get_type().unwrap().is_vector());
-    /// assert_eq!(n3.get_type().unwrap().get_shape(), vec![3,2]);
-    /// ```
-    pub fn array_to_vector(&self) -> Result<Node> {
-        self.get_graph().array_to_vector(self.clone())
-    }
-
-    /// Adds a node to the parent graph converting a vector associated with the node to an array.
-    ///
-    /// Applies [Graph::vector_to_array] to the parent graph and `this` node.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use ciphercore_base::graphs::create_context;
-    /// # use ciphercore_base::data_types::{array_type, vector_type, INT32};
-    /// let c = create_context().unwrap();
-    /// let g = c.create_graph().unwrap();
-    /// let t = array_type(vec![3, 2], INT32);
-    /// let vec_t = vector_type(4, t);
-    /// let n1 = g.input(vec_t).unwrap();
-    /// let n2 = n1.vector_to_array().unwrap();
-    ///
-    /// assert!(n2.get_type().unwrap().is_array());
-    /// assert_eq!(n2.get_type().unwrap().get_shape(), vec![4, 3, 2]);
-    /// ```
-    pub fn vector_to_array(&self) -> Result<Node> {
-        self.get_graph().vector_to_array(self.clone())
-    }
-
-    /// Adds a node that creates a vector with `n` copies of a value of this node.
-    ///
-    /// Applies [Graph::repeat] to the parent graph, `this` node and `n`.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use ciphercore_base::data_types::{INT32, array_type};
-    /// # use ciphercore_base::graphs::create_context;
-    /// let c = create_context().unwrap();
-    /// let g = c.create_graph().unwrap();
-    /// let t = array_type(vec![3, 2, 3], INT32);
-    /// let n1 = g.input(t).unwrap();
-    /// let n2 = n1.repeat(10).unwrap();
-    /// ```
-    pub fn repeat(&self, n: u64) -> Result<Node> {
-        self.get_graph().repeat(self.clone(), n)
-    }
-
-    /// Applies [Graph::set_output_node] to the parent graph and `this` node.
-    ///
-    /// # Returns
-    ///
-    /// This node
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use ciphercore_base::graphs::create_context;
-    /// # use ciphercore_base::data_types::{array_type, vector_type, INT32};
-    /// let c = create_context().unwrap();
-    /// let g = c.create_graph().unwrap();
-    /// let t = array_type(vec![3, 2], INT32);
-    /// let vec_t = vector_type(4, t);
-    /// let n1 = g.input(vec_t).unwrap();
-    /// let n2 = g.vector_to_array(n1).unwrap();
-    /// n2.set_as_output().unwrap();
-    /// g.finalize().unwrap();
-    /// ```
-    pub fn set_as_output(&self) -> Result<Node> {
-        self.get_graph().set_output_node(self.clone())?;
-        Ok(self.clone())
-    }
+    body1.main_graph.clone().map(|g| g.upgrade().get_id())
+        == body2.main_graph.clone().map(|g| g.upgrade().get_id())
 }
 
 // Pass the node name of `in_node` to `out_node` if it is present.
@@ -3433,13 +3495,6 @@ pub(crate) fn copy_node_name(in_node: Node, out_node: Node) -> Result<()> {
     Ok(())
 }
 
-impl Context {
-    pub(super) fn downgrade(&self) -> WeakContext {
-        WeakContext {
-            body: Arc::downgrade(&self.body),
-        }
-    }
-}
 type WeakContextBodyPointer = Weak<AtomicRefCell<ContextBody>>;
 
 pub(super) struct WeakContext {
@@ -3451,6 +3506,30 @@ impl WeakContext {
     pub(super) fn upgrade(&self) -> Context {
         Context {
             body: self.body.upgrade().unwrap(),
+        }
+    }
+}
+
+#[doc(hidden)]
+#[cfg(feature = "py-binding")]
+#[pyo3::pymethods]
+impl PyBindingSliceElement {
+    #[staticmethod]
+    pub fn from_single_element(ind: i64) -> Self {
+        PyBindingSliceElement {
+            inner: SliceElement::SingleIndex(ind),
+        }
+    }
+    #[staticmethod]
+    pub fn from_sub_array(start: Option<i64>, end: Option<i64>, step: Option<i64>) -> Self {
+        PyBindingSliceElement {
+            inner: SliceElement::SubArray(start, end, step),
+        }
+    }
+    #[staticmethod]
+    pub fn from_ellipsis() -> Self {
+        PyBindingSliceElement {
+            inner: SliceElement::Ellipsis,
         }
     }
 }

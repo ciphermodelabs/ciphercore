@@ -39,6 +39,12 @@ impl std::convert::From<CiphercoreBaseError> for pyo3::PyErr {
     }
 }
 
+impl std::convert::From<CiphercoreBaseError> for fmt::Error {
+    fn from(_err: CiphercoreBaseError) -> fmt::Error {
+        fmt::Error::default()
+    }
+}
+
 #[doc(hidden)]
 #[macro_export]
 macro_rules! runtime_error {

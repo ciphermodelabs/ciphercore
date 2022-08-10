@@ -3,6 +3,12 @@
 members = [
     "ciphercore-utils",
     "ciphercore-base",
-    "ciphercore-adapters",
+    "ciphercore-wrappers/cadapter",
     "ciphercore-wrappers/python",
+    "ciphercore-wrappers/pywrapper-macro",
+]
+
+default-members = [
+    "ciphercore-utils",
+    "ciphercore-base",
 ]

@@ -18,6 +18,9 @@ use std::fmt::Write;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
+#[cfg(feature = "py-binding")]
+use pywrapper_macro::struct_wrapper;
+
 #[doc(hidden)]
 /// This trait can be used to compare and hash trait objects.
 /// Based on
@@ -131,6 +134,8 @@ pub trait CustomOperationBody: 'static + Debug + DynEqHash + Send + Sync {
 /// Any struct can be a custom operation if it implements the [CustomOperationBody] trait.
 /// Then any such struct can be used to create a [CustomOperation] object that can be added to a computation graph with [Graph::custom_op].
 ///
+/// # Rust crates
+///
 /// [Clone] trait duplicates the pointer, not the underlying custom operation.
 ///
 /// [PartialEq] trait compares the related custom operations, not just pointer.
@@ -148,8 +153,27 @@ pub trait CustomOperationBody: 'static + Debug + DynEqHash + Send + Sync {
 /// let n2 = g.custom_op(CustomOperation::new(Not {}), vec![n1]).unwrap();
 /// ```
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(feature = "py-binding", struct_wrapper)]
 pub struct CustomOperation {
     body: Arc<dyn CustomOperationBody>,
+}
+
+#[cfg(feature = "py-binding")]
+#[pyo3::pymethods]
+impl PyBindingCustomOperation {
+    #[new]
+    fn new(value: String) -> pyo3::PyResult<Self> {
+        let custom_op = serde_json::from_str::<CustomOperation>(&value)
+            .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?;
+        Ok(PyBindingCustomOperation { inner: custom_op })
+    }
+    fn __str__(&self) -> pyo3::PyResult<String> {
+        serde_json::to_string(&self.inner)
+            .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))
+    }
+    fn __repr__(&self) -> pyo3::PyResult<String> {
+        self.__str__()
+    }
 }
 
 impl CustomOperation {
