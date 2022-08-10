@@ -37,6 +37,7 @@ If you have any questions, or, more generally, would like to discuss CipherCore,
     - [Input format](#input-format)
   - [Visualization](#visualization)
   - [Inspection](#inspection)
+  - [Preparing inputs for the runtime execution](#preparing-inputs-for-the-runtime-execution)
 - [Docker image](#docker-image)
 - [Runtime](#runtime)
 
@@ -798,6 +799,54 @@ Total operations: 3
 Operations:
   Input         2
   Matmul        1
+```
+
+## Preparing inputs for the runtime execution
+
+If one wishes to execute a compiled computation graph within the [runtime](#runtime), one needs to distribute (and possibly secret-share) the inputs across the 
+parties. We provide a binary `ciphercore_split_parties` that does just that. For instance, if we run:
+```
+ciphercore_split_parties inputs.txt 0,1,2,public,secret-shared 0.txt 1.txt 2.txt
+```
+with `inputs.txt` being:
+```
+[
+ {"kind": "scalar", "type": "i32", "value": 12},
+ {"kind": "scalar", "type": "i32", "value": 34},
+ {"kind": "scalar", "type": "i32", "value": 56},
+ {"kind": "scalar", "type": "i32", "value": 78},
+ {"kind": "scalar", "type": "i32", "value": 90}
+]
+```
+we'll get the data for party `0` (`0.txt`) being:
+```
+[
+ {"kind":"scalar","type":"i32","value":12},
+ {"kind":"scalar","type":"i32","value":0},
+ {"kind":"scalar","type":"i32","value":0},
+ {"kind":"scalar","type":"i32","value":78},
+ {"kind":"tuple","value":[{"kind":"scalar","type":"i32","value":149806676},{"kind":"scalar","type":"i32","value":-709894574},{"kind":"scalar","type":"i32","value":-1354905822}]}
+]
+```
+for party `1` (`1.txt`):
+```
+[
+ {"kind":"scalar","type":"i32","value":0},
+ {"kind":"scalar","type":"i32","value":34},
+ {"kind":"scalar","type":"i32","value":0},
+ {"kind":"scalar","type":"i32","value":78},
+ {"kind":"tuple","value":[{"kind":"scalar","type":"i32","value":205807499},{"kind":"scalar","type":"i32","value":-709894574},{"kind":"scalar","type":"i32","value":560087988}]}
+]
+```
+and for party `2` (`2.txt`):
+```
+[
+ {"kind":"scalar","type":"i32","value":0},
+ {"kind":"scalar","type":"i32","value":0},
+ {"kind":"scalar","type":"i32","value":56},
+ {"kind":"scalar","type":"i32","value":78},
+ {"kind":"tuple","value":[{"kind":"scalar","type":"i32","value":149806676},{"kind":"scalar","type":"i32","value":-1156429352},{"kind":"scalar","type":"i32","value":560087988}]}
+]
 ```
 
 # Docker image
