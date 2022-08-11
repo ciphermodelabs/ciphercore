@@ -258,11 +258,8 @@ impl Value {
     ///
     /// Vector of bytes or None.
     fn get_bytes(&self) -> Option<Vec<u8>> {
-        self.access(
-            |bytes| Ok(Some(bytes.clone().to_vec())),
-            |_sub_values| Ok(None),
-        )
-        .unwrap()
+        self.access(|bytes| Ok(Some(bytes.to_vec())), |_sub_values| Ok(None))
+            .unwrap()
     }
 
     /// Returns vector of Value if the value is vector of pointers to other values else returns None.
