@@ -15,6 +15,3 @@ done
 for whl in dist/*.whl; do
     auditwheel repair "$whl" -w dist/
 done
-
-# Keep only manylinux wheels
-rm dist/*-linux_*

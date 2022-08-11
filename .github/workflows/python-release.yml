@@ -23,52 +23,20 @@ jobs:
       - name: Build and audit wheels
         working-directory: ./ciphercore-wrappers/python/
         run: sh build_wheels.sh
-
-  create_wheels_windows_32bit:
-    name: Create wheels for windows 32-bit
-    runs-on: windows-latest
-    strategy:
-      matrix:
-        python: ["3.7", "3.8", "3.9", "3.10"]
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v2
-
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v1
         with:
-          toolchain: stable-i686-pc-windows-msvc
-          override: true
+          name: manylinux
+          path: ./ciphercore-wrappers/python/dist/
 
-      - name: Override toolchain
-        shell: bash
-        working-directory: ./ciphercore-wrappers/python
-        run: echo "stable-i686-pc-windows-msvc" > rust-toolchain
-
-      - name: Install Python
-        uses: actions/setup-python@v1
-        with:
-          python-version: ${{ matrix.python }}
-          architecture: x86
-
-      - name: Install dependencies
-        run: |
-          # On old versions of python there is an old version of setuptools already installed
-          pip install setuptools wheel setuptools-rust==0.11.3 --ignore-installed --force-reinstall
-
-      - name: Build wheel
-        working-directory: ./ciphercore-wrappers/python
-        run: python setup.py bdist_wheel
-
-
-  create_wheels_others_64bit:
-    name: Create wheels for other OSes
+  create_wheels_macos:
+    name: Create wheels for Mac OS
     env:
       MACOSX_DEPLOYMENT_TARGET: 10.11
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-latest
     strategy:
       matrix:
-        os: [windows-latest, macos-10.15]
         python: ["3.7", "3.8", "3.9", "3.10"]
     steps:
       - name: Checkout repository
@@ -99,13 +67,8 @@ jobs:
         shell: bash
         working-directory: ./ciphercore-wrappers/python/dist
         run: for file in *.whl ; do mv $file ${file//macosx_10_1[0-9]/macosx_10_11} ; done
-
-  upload_package:
-    name: Upload package
-    runs-on: ubuntu-latest
-    needs: [create_wheels_manylinux, create_wheels_windows_32bit, create_wheels_others_64bit]
-
-    steps:
-      - uses: actions/upload-artifact@v2
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v2
         with:
           path: ./ciphercore-wrappers/python/dist/*.whl
