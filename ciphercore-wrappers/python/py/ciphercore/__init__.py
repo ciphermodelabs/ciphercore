@@ -19,4 +19,5 @@ from .internal import (BIT,
                        Graph,
                        Node,
                        CustomOperation,
-                       TypedValue)
+                       TypedValue,
+                       Value)

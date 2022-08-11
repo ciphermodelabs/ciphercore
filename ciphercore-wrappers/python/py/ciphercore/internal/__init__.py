@@ -12,6 +12,7 @@ UINT32 = cc.UINT32
 UINT64 = cc.UINT64
 
 # Re-export type-related primitives.
+Value = cc.Value
 Type = cc.Type
 ScalarType = cc.ScalarType
 array_type = cc.array_type
@@ -218,17 +219,23 @@ Node.__xor__ = Node.add
 
 def _from_numpy(a):
     assert a.dtype.name in ['int64', 'uint64', 'int32',
-                            'uint32', 'int16', 'uint16', 'int8', 'uint8', 'bool']
+                            'uint32', 'int16', 'uint16', 'int8', 'uint8', 'bool'], 'Unsupported numpy.dtype'
     f = getattr(cc, 'serialize_to_str_' + a.dtype.name)
     return cc.TypedValue.from_str(f(a))
 
 
-def _tv_new(_cls, a):
+def _tv_new(_cls, *args):
     """Creates new typed value from serialized string or from numpy array."""
-    if isinstance(a, str):
-        return cc.TypedValue.from_str(a)
-    else:
-        return _from_numpy(a)
+    assert len(args) in [1, 2], 'Unexpected number of args'
+    if len(args) == 1:
+        a = args[0]
+        assert isinstance(a, str) or type(
+            a).__name__ == 'ndarray', 'Argument must be str or numpy.ndarray'
+        if isinstance(a, str):
+            return cc.TypedValue.from_str(a)
+        else:
+            return _from_numpy(a)
+    return cc.TypedValue.from_type_and_value(args[0], args[1])
 
 
 TypedValue = cc.TypedValue

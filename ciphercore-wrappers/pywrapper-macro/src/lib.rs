@@ -72,6 +72,7 @@ mod macro_backend {
                 "Type",
                 "SliceElement",
                 "TypedValue",
+                "Value",
                 "CustomOperation",
             ])
         };
@@ -82,7 +83,7 @@ mod macro_backend {
     }
 
     pub fn build_fn(ast: &mut syn::ItemFn) -> syn::Result<TokenStream> {
-        let token_stream = gen_wrapper_method(&mut ast.sig, "py_binding_")?;
+        let token_stream = gen_wrapper_method(&mut ast.sig, None)?;
         let attrs = gen_attributes(&ast.attrs);
         let name = ast.sig.ident.to_string();
         Ok(quote!(#(#attrs)*
@@ -112,7 +113,7 @@ mod macro_backend {
 
         for iimpl in impls.iter_mut() {
             if let syn::ImplItem::Method(meth) = iimpl {
-                let token_stream = gen_wrapper_method(&mut meth.sig, "")?;
+                let token_stream = gen_wrapper_method(&mut meth.sig, Some(ty))?;
                 let attrs = gen_attributes(&meth.attrs);
                 methods.push(quote!(#(#attrs)* #token_stream));
             }
@@ -160,7 +161,10 @@ mod macro_backend {
         }
     }
 
-    fn gen_wrapper_method(sig: &mut syn::Signature, prefix: &str) -> syn::Result<TokenStream> {
+    fn gen_wrapper_method(
+        sig: &mut syn::Signature,
+        class: Option<&syn::Type>,
+    ) -> syn::Result<TokenStream> {
         let name = &sig.ident;
         if let Some(ts) = check_in_allowlist(format!("{}", name)) {
             return Ok(ts);
@@ -170,14 +174,21 @@ mod macro_backend {
         let sig_inputs = input.get_sig_inputs();
         let output = Output::new(&sig.output);
         let ret = output.get_output();
-        let result = if prefix.is_empty() {
-            output.wrap_result(quote!(self.inner.#name(#inner_inputs)))
+        let result = if class.is_some() {
+            if input.has_receiver {
+                output.wrap_result(quote!(self.inner.#name(#inner_inputs)))
+            } else {
+                let ts = class.to_token_stream();
+                output.wrap_result(quote!(#ts::#name(#inner_inputs)))
+            }
         } else {
             output.wrap_result(quote!(#name(#inner_inputs)))
         };
         let attr_sign = input.gen_attr_signature();
+        let staticmethod = input.mb_gen_staticmethod(class.is_none());
+        let prefix = if class.is_none() { "py_binding_" } else { "" };
         let result_fn_name = Ident::new(format!("{}{}", prefix, name).as_str(), sig.ident.span());
-        Ok(quote!(#attr_sign pub fn #result_fn_name(#sig_inputs) #ret { #result }))
+        Ok(quote!(#staticmethod #attr_sign pub fn #result_fn_name(#sig_inputs) #ret { #result }))
     }
 
     struct Output<'a> {
@@ -413,6 +424,7 @@ mod macro_backend {
         sig_inputs: Vec<TokenStream>,
         inner_inputs: Vec<TokenStream>,
         attr_sig: Vec<String>,
+        has_receiver: bool,
     }
 
     impl Input {
@@ -420,6 +432,7 @@ mod macro_backend {
             let mut sig = vec![];
             let mut inner = vec![];
             let mut attr_sig = vec![];
+            let mut has_receiver = false;
             for arg in inputs {
                 match arg {
                     FnArg::Typed(t) => {
@@ -431,6 +444,7 @@ mod macro_backend {
                     FnArg::Receiver(slf) => {
                         sig.push(slf.into_token_stream());
                         attr_sig.push("$self".to_string());
+                        has_receiver = true;
                     }
                 }
             }
@@ -439,6 +453,7 @@ mod macro_backend {
                 sig_inputs: sig,
                 inner_inputs: inner,
                 attr_sig,
+                has_receiver,
             }
         }
         fn get_inner_inputs(&self) -> TokenStream {
@@ -452,6 +467,13 @@ mod macro_backend {
         fn gen_attr_signature(&self) -> TokenStream {
             let val = vec!["(", self.attr_sig.join(", ").as_str(), ")"].join(" ");
             quote!(#[pyo3(text_signature = #val)])
+        }
+        fn mb_gen_staticmethod(&self, ignore: bool) -> TokenStream {
+            if self.has_receiver || ignore {
+                TokenStream::new()
+            } else {
+                quote!(#[staticmethod])
+            }
         }
     }
 
@@ -518,6 +540,17 @@ mod macro_backend {
                         inner: named_tuple_type(
                             v.into_iter().map(|x| (x.0, x.1.inner.clone())).collect(),
                         ),
+                    }
+                }
+            ))
+        } else if name == "get_sub_values" {
+            Some(quote!(
+                fn get_sub_values(&self) -> Option<Vec<PyBindingValue>> {
+                    match self.inner.get_sub_values() {
+                        None => None,
+                        Some(v) => {
+                            Some(v.into_iter().map(|x| PyBindingValue { inner: x }).collect())
+                        }
                     }
                 }
             ))
