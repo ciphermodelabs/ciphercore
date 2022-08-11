@@ -219,7 +219,7 @@ Node.__xor__ = Node.add
 
 def _from_numpy(a):
     assert a.dtype.name in ['int64', 'uint64', 'int32',
-                            'uint32', 'int16', 'uint16', 'int8', 'uint8', 'bool']
+                            'uint32', 'int16', 'uint16', 'int8', 'uint8', 'bool'], 'Unsupported numpy.dtype'
     f = getattr(cc, 'serialize_to_str_' + a.dtype.name)
     return cc.TypedValue.from_str(f(a))
 
