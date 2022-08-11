@@ -7,6 +7,7 @@ use ciphercore_base::data_types::{
     PyBindingScalarType, PyBindingType, BIT, INT16, INT32, INT64, INT8, UINT16, UINT32, UINT64,
     UINT8,
 };
+use ciphercore_base::data_values::PyBindingValue;
 use ciphercore_base::graphs::{
     py_binding_create_context, PyBindingContext, PyBindingGraph, PyBindingNode,
     PyBindingSliceElement,
@@ -61,6 +62,7 @@ fn ciphercore_internal(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyBindingTypedValue>()?;
     m.add_class::<PyBindingCustomOperation>()?;
     m.add_class::<PyBindingSliceElement>()?;
+    m.add_class::<PyBindingValue>()?;
     Ok(())
 }
 

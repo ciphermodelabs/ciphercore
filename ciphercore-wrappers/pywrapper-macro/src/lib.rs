@@ -72,6 +72,7 @@ mod macro_backend {
                 "Type",
                 "SliceElement",
                 "TypedValue",
+                "Value",
                 "CustomOperation",
             ])
         };

@@ -787,6 +787,11 @@ impl Type {
     pub fn size_in_bits(&self) -> Result<u64> {
         get_size_in_bits(self.clone())
     }
+
+    /// Serializes type to string.
+    fn to_json_string(&self) -> Result<String> {
+        Ok(serde_json::to_string(self)?)
+    }
 }
 
 /// Returns a new type for scalars created from a given scalar type.

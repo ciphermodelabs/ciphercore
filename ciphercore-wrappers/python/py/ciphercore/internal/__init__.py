@@ -12,6 +12,7 @@ UINT32 = cc.UINT32
 UINT64 = cc.UINT64
 
 # Re-export type-related primitives.
+Value = cc.Value
 Type = cc.Type
 ScalarType = cc.ScalarType
 array_type = cc.array_type

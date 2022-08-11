@@ -15,6 +15,9 @@ use crate::errors::Result;
 
 use crate::version::{VersionedData, DATA_VERSION};
 
+#[cfg(feature = "py-binding")]
+use pywrapper_macro::struct_wrapper;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 enum SerializableValueBody {
     Bytes(Vec<u8>),
@@ -153,8 +156,37 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for AtomicRefCellWrapper<T> {
 ///
 /// [PartialEq] trait performs the deep recursive comparison.
 #[derive(PartialEq, Eq, Clone, Debug)]
+#[cfg_attr(feature = "py-binding", struct_wrapper)]
 pub struct Value {
     body: Arc<AtomicRefCellWrapper<ValueBody>>,
+}
+
+#[cfg(feature = "py-binding")]
+#[pyo3::pymethods]
+impl PyBindingValue {
+    fn get_bytes(&self) -> Option<Vec<u8>> {
+        self.inner
+            .access(
+                |bytes| Ok(Some(bytes.clone().to_vec())),
+                |_sub_values| Ok(None),
+            )
+            .unwrap()
+    }
+    fn get_sub_values(&self) -> Option<Vec<PyBindingValue>> {
+        self.inner
+            .access(
+                |_bytes| Ok(None),
+                |sub_values| {
+                    Ok(Some(
+                        sub_values
+                            .into_iter()
+                            .map(|x| PyBindingValue { inner: x.clone() })
+                            .collect(),
+                    ))
+                },
+            )
+            .unwrap()
+    }
 }
 
 impl Serialize for Value {

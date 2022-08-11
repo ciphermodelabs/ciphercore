@@ -17,6 +17,10 @@ use json::{object, object::Object, JsonValue};
 use std::ops::Not;
 
 #[cfg(feature = "py-binding")]
+use crate::data_types::PyBindingType;
+#[cfg(feature = "py-binding")]
+use crate::data_values::PyBindingValue;
+#[cfg(feature = "py-binding")]
 use pywrapper_macro::struct_wrapper;
 
 macro_rules! to_json_aux {
@@ -70,6 +74,12 @@ impl PyBindingTypedValue {
             .into_iter()
             .map(|x| PyBindingTypedValue { inner: x })
             .collect())
+    }
+    fn get_type(&self) -> PyBindingType {
+        PyBindingType { inner: self.inner.t.clone() }
+    }
+    fn get_value(&self) -> PyBindingValue {
+        PyBindingValue { inner: self.inner.value.clone() }
     }
     fn __str__(&self) -> pyo3::PyResult<String> {
         serde_json::to_string(&self.inner)
