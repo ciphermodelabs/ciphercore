@@ -2,6 +2,7 @@
 use atomic_refcell::AtomicRefCell;
 
 use std::convert::TryInto;
+use std::fmt;
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 use std::ops::Not;
@@ -16,7 +17,7 @@ use crate::errors::Result;
 use crate::version::{VersionedData, DATA_VERSION};
 
 #[cfg(feature = "py-binding")]
-use pywrapper_macro::struct_wrapper;
+use pywrapper_macro::{impl_wrapper, struct_wrapper};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 enum SerializableValueBody {
@@ -161,34 +162,6 @@ pub struct Value {
     body: Arc<AtomicRefCellWrapper<ValueBody>>,
 }
 
-#[cfg(feature = "py-binding")]
-#[pyo3::pymethods]
-impl PyBindingValue {
-    fn get_bytes(&self) -> Option<Vec<u8>> {
-        self.inner
-            .access(
-                |bytes| Ok(Some(bytes.clone().to_vec())),
-                |_sub_values| Ok(None),
-            )
-            .unwrap()
-    }
-    fn get_sub_values(&self) -> Option<Vec<PyBindingValue>> {
-        self.inner
-            .access(
-                |_bytes| Ok(None),
-                |sub_values| {
-                    Ok(Some(
-                        sub_values
-                            .into_iter()
-                            .map(|x| PyBindingValue { inner: x.clone() })
-                            .collect(),
-                    ))
-                },
-            )
-            .unwrap()
-    }
-}
-
 impl Serialize for Value {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
@@ -221,6 +194,16 @@ impl<'de> Deserialize<'de> for Value {
     }
 }
 
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match serde_json::to_string(&self) {
+            Ok(s) => write!(f, "{}", s),
+            Err(_err) => Err(fmt::Error::default()),
+        }
+    }
+}
+
+#[cfg_attr(feature = "py-binding", impl_wrapper)]
 impl Value {
     /// Constructs a value from a given byte buffer.
     ///
@@ -233,7 +216,7 @@ impl Value {
     /// # Returns
     ///
     /// New value
-    pub fn from_bytes(bytes: Vec<u8>) -> Self {
+    pub fn from_bytes(bytes: Vec<u8>) -> Value {
         Self {
             body: Arc::new(AtomicRefCellWrapper(AtomicRefCell::new(ValueBody::Bytes(
                 bytes,
@@ -261,7 +244,7 @@ impl Value {
     ///         Value::from_bytes(vec![4, 5, 6]),
     ///         Value::from_vector(vec![])]);
     /// ```
-    pub fn from_vector(v: Vec<Value>) -> Self {
+    pub fn from_vector(v: Vec<Value>) -> Value {
         Self {
             body: Arc::new(AtomicRefCellWrapper(AtomicRefCell::new(ValueBody::Vector(
                 v,
@@ -269,6 +252,31 @@ impl Value {
         }
     }
 
+    /// Returns bytes if the value is a vector of bytes else returns None.
+    ///
+    /// # Returns
+    ///
+    /// Vector of bytes or None.
+    fn get_bytes(&self) -> Option<Vec<u8>> {
+        self.access(
+            |bytes| Ok(Some(bytes.clone().to_vec())),
+            |_sub_values| Ok(None),
+        )
+        .unwrap()
+    }
+
+    /// Returns vector of Value if the value is vector of pointers to other values else returns None.
+    ///
+    /// # Returns
+    ///
+    /// Vector of Value or None.
+    fn get_sub_values(&self) -> Option<Vec<Value>> {
+        self.access(|_bytes| Ok(None), |sub_values| Ok(Some(sub_values.clone())))
+            .unwrap()
+    }
+}
+
+impl Value {
     /// Constructs a value from a given bit or integer scalar.
     ///
     /// # Arguments

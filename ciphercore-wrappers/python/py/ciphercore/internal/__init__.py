@@ -224,13 +224,18 @@ def _from_numpy(a):
     return cc.TypedValue.from_str(f(a))
 
 
-def _tv_new(_cls, a):
+def _tv_new(_cls, *args):
     """Creates new typed value from serialized string or from numpy array."""
-    assert isinstance(a, str) or type(a).__name__ == 'ndarray', 'Argument must be str or numpy.ndarray'
-    if isinstance(a, str):
-        return cc.TypedValue.from_str(a)
-    else:
-        return _from_numpy(a)
+    assert len(args) in [1, 2], 'Unexpected number of args'
+    if len(args) == 1:
+        a = args[0]
+        assert isinstance(a, str) or type(
+            a).__name__ == 'ndarray', 'Argument must be str or numpy.ndarray'
+        if isinstance(a, str):
+            return cc.TypedValue.from_str(a)
+        else:
+            return _from_numpy(a)
+    return cc.TypedValue.from_type_and_value(args[0], args[1])
 
 
 TypedValue = cc.TypedValue

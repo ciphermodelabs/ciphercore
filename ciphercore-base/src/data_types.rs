@@ -789,8 +789,25 @@ impl Type {
     }
 
     /// Serializes type to string.
+    /// 
+    /// # Returns
+    /// 
+    /// Json string generated from the given type
     fn to_json_string(&self) -> Result<String> {
         Ok(serde_json::to_string(self)?)
+    }
+
+    /// Deserializes type from string.
+    /// 
+    /// # Arguments
+    /// 
+    /// `s` - json string
+    /// 
+    /// # Returns
+    /// 
+    /// New type constructed from the given json
+    fn from_json_string(s: String) -> Result<Type> {
+        Ok(serde_json::from_str::<Type>(s.as_str())?)
     }
 }
 
