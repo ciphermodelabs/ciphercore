@@ -1,4 +1,5 @@
 import argparse
+import ciphercore as cc
 from concurrent import futures
 import grpc
 import json
@@ -9,7 +10,7 @@ import uuid
 
 import numpy as np
 
-from value_pb2 import TypedValue
+from value_pb2 import TypedValue, Value
 import data_pb2
 import data_pb2_grpc
 import results_pb2
@@ -18,15 +19,31 @@ import party_pb2
 import party_pb2_grpc
 
 
+def populate_value(out, val):
+    sub_vals = val.get_sub_values()
+    if sub_vals is None:
+        out.bytes.data = bytes(val.get_bytes())        
+        return
+    for sub_val in sub_vals:
+        cur = Value()
+        populate_value(cur, sub_val)
+        out.vector.value.append(cur)
+
+
+def typed_val_to_proto(typed_val):
+    val = TypedValue()
+    val.type_json = typed_val.get_type().to_json_string()
+    populate_value(val.value, typed_val.get_value())
+    return val
+
+
 def load_typed_values(path):
     with open(path, 'r') as f:
         json_data = f.read()
-    json_bytes_arr = json.loads(json_data)
+    typed_vals = [cc.TypedValue(json.dumps(item)) for item in json.loads(json_data)]
     vals = []
-    for json_bytes in json_bytes_arr:
-        val = TypedValue()
-        val.ParseFromString(bytes(json_bytes))
-        vals.append(val) 
+    for typed_val in typed_vals:        
+        vals.append(typed_val_to_proto(typed_val)) 
     res = {'test'.encode(): vals}
     return res
 
@@ -72,10 +89,22 @@ class KVDataServer(data_pb2_grpc.DataManagerServiceServicer):
         return resp
 
 
+def parse_value(value_proto):
+    if value_proto.HasField('bytes'):
+        return cc.Value.from_bytes(value_proto.bytes.data)
+    vec = []
+    for sub_val in value_proto.vector.value:
+        vec.append(parse_value(sub_val))
+    return cc.Value.from_vector(vec)
+
+
+def parse_typed_value(tv_proto):
+    return cc.TypedValue(cc.Type.from_json_string(tv_proto.type_json), parse_value(tv_proto.value))
+
+
 class TrivialResultServer(results_pb2_grpc.ResultProviderServiceServicer):
     def ProvideResult(self, request, context):
-        print('Got result:', request)
-        print('Decoded:', np.frombuffer(request.typed_value.value.bytes.data, dtype=np.int32))
+        print('Result:', parse_typed_value(request.typed_value))
         resp = results_pb2.ProvideResultResponse()
         resp.status = 0
         return resp
