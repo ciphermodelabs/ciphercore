@@ -1,2 +1,2 @@
 #!/bin/sh
-cbindgen --config cbindgen.toml --crate ciphercore-adapters --output ciphercore-wrappers/C-wrapper/raw.h
+cbindgen --config cbindgen.toml --crate cadapter --output ciphercore-wrappers/C-wrapper/raw.h

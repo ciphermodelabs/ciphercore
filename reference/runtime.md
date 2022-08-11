@@ -6,7 +6,7 @@ For executing a compiled computation graph, one needs *runtime* that allows part
 
 The runtime consists of three different entities: *compute nodes* (the runtime itself, which performs the computation), *data nodes* (services which provide the encrypted or plaintext data to the runtime, and consume the results of computation), and *orchestrator node* (controls the high-level structure of the execution: which computation graphs should be executed in which order and on which data).
 
-![b](images/runtime.svg)
+![b](https://github.com/ciphermodelabs/ciphercore/blob/main/reference/images/runtime.svg)
 
 ## Pre-packaged runtime example
 We provide a Docker container with a pre-packaged runtime which can be used to do the following: execute a given computation graph once on a given input. This can be useful for trying it out or benchmarking; however, real-life applications often require more complex logic.
@@ -15,9 +15,11 @@ TL;DR: there is a single [bash script](https://github.com/ciphermodelabs/cipherc
 ```bash
 sh runtime/example/scripts/do_all.sh /tmp/ciphercore
 ```
-But it's possible to perform the steps manually as outlined below. 
+But it's possible to perform the steps manually as outlined below.
 
-For the networking we use 9 ports. For each party it is: ``provide data'' port (42{#party}1), ``get result'' port (42{#party}2), ``computation'' port (42{#party}3).
+Note that docker commands might require `sudo` if the current user is not in the appropriate group.
+
+For the networking we use 9 ports. For each party it is: "provide data" port (`42{#party}1`), "get result" port (`42{#party}2`), "computation" port (`42{#party}3`).
 Feel free to change the scripts in order to use any other ports. (Please note that compute nodes should get the correct ports corresponding for the data and result.)
 <details>
   <summary>All ports which are used</summary>
@@ -34,46 +36,52 @@ mkdir -p "$WORK_DIR"
 mkdir -p "$WORK_DIR"/data
 ```
 1. Pull docker from our private repo ([contact us](https://www.ciphermode.tech/contact-us) to get the token).
-```bash
-docker login -u runtimecm
-docker pull ciphermodelabs/runtime_example:latest
-```
+    ```bash
+    docker login -u runtimecm
+    docker pull ciphermodelabs/runtime_example:latest
+    ```
 2. Generate [certificates](#certificates).
-```bash
-docker run --rm -u $(id -u):$(id -g) -v "$WORK_DIR":/mnt/external ciphermodelabs/runtime_example:latest /usr/local/ciphercore/run.sh generate_certs certificates/ localhost
-```
-`localhost` — this is the TLS domain, in real-world deployments, the runtime wouldn't work if domains don't match, but for the purposes of the example, we always override it to localhost.
+    ```bash
+    docker run --rm -u $(id -u):$(id -g) -v "$WORK_DIR":/mnt/external ciphermodelabs/runtime_example:latest /usr/local/ciphercore/run.sh generate_certs certificates/ localhost
+    ```
+    `localhost` — this is the TLS domain, in real-world deployments, the runtime wouldn't work if domains don't match, but for the purposes of the example, we always override it to localhost.
 3. Generate computation graph and data.
-Computation could be performed via any graphs produced by the CipherCore compiler (see more about [compiling graphs](https://github.com/ciphermodelabs/ciphercore/blob/main/reference/main.md#working-with-the-graph-using-cli-tools)).
-We provide two examples:
-* the median of the sequence on the secret-shared input  (each party doesn't have access to the data);
-```bash
-cp -rf runtime/example/data/median/* "$WORK_DIR"/data/
-```
-* two millionaires problem with revealed input. 
-```bash
-cp -rf runtime/example/data/two_millionaires/* "$WORK_DIR"/data/
-```
-Note that there are two conceptually different cases: secret-shared inputs, and inputs provided by one of the parties. However, in both cases we ask all parties to provide the input — if they don't have it, they should provide any value of the correct type (e.g. zeros or a random value).
-4. Start data nodes using the following script.
-```bash
-sh runtime/example/scripts/run_data_nodes.sh
-```
-5. Start compute nodes using the following script.
-```bash
-sh runtime/example/scripts/run_compute_nodes.sh
-```
-6. Run secure computation.
-```bash
-sh runtime/example/scripts/run_orchestrator.sh
-```
-After the end of the computation, the result for each party will be printed. Parties, which are not supposed to see the result, see random ``garbage''.
+    Computation could be performed via any graphs produced by the CipherCore compiler (see more about [compiling graphs](https://github.com/ciphermodelabs/ciphercore/blob/main/reference/main.md#working-with-the-graph-using-cli-tools)).
+    We provide two examples:
+    <details open><summary>the median of the sequence on the secret-shared input  (each party doesn't have access to the data);</summary>
 
-Now you can also try to use different data/graphs without restarting everything. Just update the corresponding files in folder `$WORK_DIR/data` and call `run_orchestrator.sh` once more
+    ```bash
+    cp -rf runtime/example/data/median/* "$WORK_DIR"/data/
+    ```
+    </details>
+
+    <details><summary>two millionaires problem with revealed input.</summary>
+
+    ```bash
+    cp -rf runtime/example/data/two_millionaires/* "$WORK_DIR"/data/
+    ```
+    </details>
+    Note that there are two conceptually different cases: secret-shared inputs, and inputs provided by one of the parties. However, in both cases we ask all parties to provide the input — if they don't have it, they should provide any value of the correct type (e.g. zeros or a random value).
+4. Start data nodes using the following script.
+    ```bash
+    sh runtime/example/scripts/run_data_nodes.sh
+    ```
+5. Start compute nodes using the following script.
+    ```bash
+    sh runtime/example/scripts/run_compute_nodes.sh
+    ```
+6. Run secure computation.
+    ```bash
+    sh runtime/example/scripts/run_orchestrator.sh
+    ```
+    After the end of the computation, the result for each party will be printed. Parties, which are not supposed to see the result, see random ``garbage''.
+
+    Now you can also try to use different data/graphs without restarting everything. Just update the corresponding files in folder `$WORK_DIR/data` and call `run_orchestrator.sh` once more.
+
 7. Once done, don't forget to stop all processes to release ports.
-```bash
-sh runtime/example/scripts/tear_down.sh
-```
+    ```bash
+    sh runtime/example/scripts/tear_down.sh
+    ```
 
 ## Implementation of application-specific data and orchestrator nodes
 
@@ -104,7 +112,10 @@ An important part of runtime setup are TLS certificates. They specify which pair
 
 Currently, the certificates are structured as follows. We generate our own root (CA) certificate. Then, we use it to issue certificates for all nodes. All nodes have the public key for CA, so they can validate the certificates of the nodes they're connecting to.
 
-The certificates can be generated with the following script: **TODO**
+You can generate the certificates with the pre-packaged docker image:
+```bash
+docker run --rm -u $(id -u):$(id -g) -v "$WORK_DIR":/mnt/external ciphermodelabs/runtime_example:latest /usr/local/ciphercore/run.sh generate_certs certificates/ localhost
+```
 
 In real-life use-cases, sometimes an additional level of certificate hierarchy might be required. Imagine e.g. a cross-organization use-case: we might want to issue per-organization certificates, which organizations then use to issue certificates for their nodes. Note that there is an assumption that the owner of CA does not collude with any of the parties.
 
@@ -114,7 +125,7 @@ For this example, we implement all three data nodes and orchestrator in a single
 
 ### Python-based data nodes and orchestrator
 
-For the Python wrapper, one needs to generate the gRPC Python files from the proto files as follows:
+For the Python wrapper, one needs to generate the gRPC Python files from the proto files as follows (don't forget to install the `grpcio-tools` package):
 
 ```bash
 python -m grpc_tools.protoc \
@@ -149,32 +160,60 @@ class KVDataServer(data_pb2_grpc.DataManagerServiceServicer):
         return resp
 
 
+def parse_value(value_proto):
+    if value_proto.HasField('bytes'):
+        return cc.Value.from_bytes(value_proto.bytes.data)
+    vec = []
+    for sub_val in value_proto.vector.value:
+        vec.append(parse_value(sub_val))
+    return cc.Value.from_vector(vec)
+
+
+def parse_typed_value(tv_proto):
+    return cc.TypedValue(cc.Type.from_json_string(tv_proto.type_json), parse_value(tv_proto.value))
+
+
 class TrivialResultServer(results_pb2_grpc.ResultProviderServiceServicer):
     def ProvideResult(self, request, context):
-        print('Got result:', request)
-        print('Decoded:', np.frombuffer(request.typed_value.value.bytes.data, dtype=np.int32))
+        print('Result:', parse_typed_value(request.typed_value))
         resp = results_pb2.ProvideResultResponse()
         resp.status = 0
         return resp
 ```
 
-What is happening here? The `KVDataServer` just serves responses from the provided dict, and `TrivialResultServer` prints whatever it gets to stdout. One remaining piece is to load the data from the `KVDataServer` to serve. Here is how we do it:
+What is happening here? The `KVDataServer` just serves responses from the provided dict, and `TrivialResultServer` prints whatever it gets to stdout, after parsing it to `TypedValue` for readability. One remaining piece is to load the data from the `KVDataServer` to serve. Here is how we do it:
 
 ```python
+def populate_value(out, val):
+    sub_vals = val.get_sub_values()
+    if sub_vals is None:
+        out.bytes.data = bytes(val.get_bytes())        
+        return
+    for sub_val in sub_vals:
+        cur = Value()
+        populate_value(cur, sub_val)
+        out.vector.value.append(cur)
+
+
+def typed_val_to_proto(typed_val):
+    val = TypedValue()
+    val.type_json = typed_val.get_type().to_json_string()
+    populate_value(val.value, typed_val.get_value())
+    return val
+
+
 def load_typed_values(path):
     with open(path, 'r') as f:
         json_data = f.read()
-    json_bytes_arr = json.loads(json_data)
+    typed_vals = [cc.TypedValue(json.dumps(item)) for item in json.loads(json_data)]
     vals = []
-    for json_bytes in json_bytes_arr:
-        val = TypedValue()
-        val.ParseFromString(bytes(json_bytes))
-        vals.append(val) 
+    for typed_val in typed_vals:        
+        vals.append(typed_val_to_proto(typed_val)) 
     res = {'test'.encode(): vals}
     return res
 ```
 
-This is straightforward: we read the proto (typed) values from the provided file, and put them ito the dictionary.
+This is a bit tricky: we read `TypedValue`'s, and we need to convert them to proto format (this conversion logic is not exported in the Python wrapper yet).
 
 Now we have all the pieces to start data nodes. For each data node, we do the following:
 
@@ -290,26 +329,22 @@ Note that once everything is done, we need to call `FinishSession` to free up th
 
 ### Running everything
 
-Now that we have the implementation, it is time to start the runtime. We assume that `$DATA_DIR` contains the data layout for the prepackaged runtime example, and `scripts/run_compute_node.sh` invokes the runtime compute node. Let's start the compute nodes:
+Now that we have the implementation, it is time to start the runtime. We assume that `$DATA_DIR` contains the data layout for the prepackaged runtime example, and `example/scripts/run_compute_nodes.sh` invokes three runtime compute nodes. Let's start the compute nodes:
 
 ```bash
-sh scripts/run_compute_node.sh 4203 4201 4202 \
-    ${DATA_DIR}/ca.pem ${DATA_DIR}/party0/cert.pem ${DATA_DIR}/party0/key.pem &
-sh scripts/run_compute_node.sh 4213 4211 4212 \
-    ${DATA_DIR}/ca.pem ${DATA_DIR}/party1/cert.pem ${DATA_DIR}/party1/key.pem &
-sh scripts/run_compute_node.sh 4223 4221 4222 \
-    ${DATA_DIR}/ca.pem ${DATA_DIR}/party2/cert.pem ${DATA_DIR}/party2/key.pem &
+WORK_DIR=$DATA_DIR sh runtime/example/scripts/run_compute_nodes.sh
 ```
 
 Now compute nodes are running, but they're just idling, since no one told them what to do. Let's start our Python code which creates data nodes and then runs orchestrator for the example graph:
 
 ```bash
+cp -R $DATA_DIR/certificates/* $DATA_DIR/data/
 python runtime/example/python/combined_example.py \
-    --data_dir0=${DATA_DIR}/party0 \
-    --data_dir1=${DATA_DIR}/party1 \
-    --data_dir2=${DATA_DIR}/party2 \
-    --ca_pem=${DATA_DIR}/ca.pem \
-    --context_path=${DATA_DIR}/graph.json
+    --data_dir0=${DATA_DIR}/data/party0 \
+    --data_dir1=${DATA_DIR}/data/party1 \
+    --data_dir2=${DATA_DIR}/data/party2 \
+    --ca_pem=${DATA_DIR}/data/ca.pem \
+    --context_path=${DATA_DIR}/data/graph.json
 ``` 
 
 After some time, it creates all the servers and establishes the connection to the compute nodes and runs the computation session. The output should look similar to the following:
@@ -319,30 +354,9 @@ Connecting to compute nodes
 Connected to compute nodes
 Registered graphs
 Created sessions
-Got result: key: "df4fbbb6-c7c5-4909-ae28-f09d58653a7a"
-value {
-  bytes {
-    data: "\367\276\372\204"
-  }
-}
-
-Decoded: [-2063941897]
-Got result: key: "df4fbbb6-c7c5-4909-ae28-f09d58653a7a"
-value {
-  bytes {
-    data: "\377\001\000\000"
-  }
-}
-
-Decoded: [511]
-Got result: key: "df4fbbb6-c7c5-4909-ae28-f09d58653a7a"
-value {
-  bytes {
-    data: "!\256\317\231"
-  }
-}
-
-Decoded: [-1714442719]
+Result: {"kind":"scalar","type":"u32","value":2800266097}
+Result: {"kind":"scalar","type":"u32","value":511}
+Result: {"kind":"scalar","type":"u32","value":787611686}
 Sessions done
 ```
 

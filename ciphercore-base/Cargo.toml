@@ -13,6 +13,7 @@ homepage = "https://www.ciphermode.com/"
 
 [dependencies]
 ciphercore-utils = { path = "../ciphercore-utils" }
+pywrapper-macro = { path = "../ciphercore-wrappers/pywrapper-macro", optional = true}
 serde = { version = "1.0.130", features = ["derive", "rc"] }
 serde_json = "1.0.68"
 typetag = "0.1.7"
@@ -27,7 +28,7 @@ clap = { version = "3.0.14", features = ["derive"] }
 ndarray = "0.15.1"
 json = "0.12.4"
 arbitrary = { version = "1", optional = true, features = ["derive"] }
-pyo3 = { version = "0.15.1", optional = true }
+pyo3 = { version = "0.16.5", optional = true, features = ["extension-module"] }
 
 [dev-dependencies]
 serde_test = "1.0.130"
@@ -37,7 +38,7 @@ bincode = "1.3.3"
 default = []
 nightly-features = []
 fuzzing = []
-py-binding = ["dep:pyo3"]
+py-binding = ["dep:pyo3", "dep:pywrapper-macro"]
 
 [[bin]]
 name = "ciphercore_compile"
@@ -74,3 +75,7 @@ path = "src/bin/ciphercore_visualize_context.rs"
 [[bin]]
 name = "ciphercore_evaluate"
 path = "src/bin/ciphercore_evaluate.rs"
+
+[[bin]]
+name = "ciphercore_split_parties"
+path = "src/bin/ciphercore_split_parties.rs"

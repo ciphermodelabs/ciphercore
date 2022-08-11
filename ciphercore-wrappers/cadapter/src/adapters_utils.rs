@@ -156,7 +156,7 @@ pub(crate) fn unsafe_ref<T>(x: T) -> *mut T {
 
 pub(crate) fn destroy_helper<T>(ptr: *mut T) {
     unsafe {
-        Box::from_raw(ptr);
+        drop(Box::from_raw(ptr));
     }
 }
 
@@ -206,7 +206,7 @@ impl CStr {
 pub extern "C" fn cstr_destroy(cstr: CStr) -> CResultVal<bool> {
     let helper = || -> Result<bool> {
         unsafe {
-            Box::from_raw(cstr.ptr as *mut u8);
+            drop(Box::from_raw(cstr.ptr as *mut u8));
         }
         Ok(true)
     };
@@ -397,7 +397,7 @@ pub extern "C" fn c_slice_destroy(cslice_ptr: *mut CSlice) {
         let elements = cslice_ref.elements;
         let vec_elements = Vec::from_raw_parts(elements.ptr, elements.len, elements.len);
         for elem in vec_elements {
-            Box::from_raw(elem);
+            drop(Box::from_raw(elem));
         }
     }
 }

@@ -1,0 +1,74 @@
+name: Python Release
+
+on:
+  workflow_dispatch:
+
+env:
+  PYPI_TOKEN: ${{ secrets.PYPI_TOKEN_DIST }}
+  DIST_DIR: ${{ github.sha }}
+
+jobs:
+
+  create_wheels_manylinux:
+    runs-on: ubuntu-latest
+    name: Create wheels for manylinux2010
+    container: quay.io/pypa/manylinux2010_x86_64
+    steps:
+      # v1 is required when using manylinux2010
+      - uses: actions/checkout@v1
+
+      - name: Install dependencies
+        run: yum install -y openssl-devel
+
+      - name: Build and audit wheels
+        working-directory: ./ciphercore-wrappers/python/
+        run: sh build_wheels.sh
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v1
+        with:
+          name: manylinux
+          path: ./ciphercore-wrappers/python/dist/
+
+  create_wheels_macos:
+    name: Create wheels for Mac OS
+    env:
+      MACOSX_DEPLOYMENT_TARGET: 10.11
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        python: ["3.7", "3.8", "3.9", "3.10"]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+
+      - name: Install Python
+        uses: actions/setup-python@v1
+        with:
+          python-version: ${{ matrix.python }}
+          architecture: x64
+
+      - name: Install dependencies
+        run: |
+          # On old versions of python there is an old version of setuptools already installed
+          pip install setuptools wheel setuptools-rust==0.11.3 --ignore-installed --force-reinstall
+
+      - name: Build wheel
+        working-directory: ./ciphercore-wrappers/python
+        run: python setup.py bdist_wheel
+
+      - name: Rename wheels
+        shell: bash
+        working-directory: ./ciphercore-wrappers/python/dist
+        run: for file in *.whl ; do mv $file ${file//macosx_10_1[0-9]/macosx_10_11} ; done
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v2
+        with:
+          path: ./ciphercore-wrappers/python/dist/*.whl

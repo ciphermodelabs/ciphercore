@@ -1,5 +1,11 @@
 # CipherCore
 
+To install CipherCore, run one of the following commands:
+* `pip install ciphercore` -- installs the Python wrapper for CipherCore computation graph API
+* `cargo install ciphercore-base` -- builds and installs the CipherCore compiler and other CLI tools from source (requires [Cargo](https://doc.rust-lang.org/cargo/getting-started/installation.html))
+* `docker pull ciphermodelabs/ciphercore:latest` -- pulls a Docker image with binary distribution of CipherCore
+* `docker pull ciphermodelabs/runtime_example:latest` -- pulls a Docker image that contains CipherCore runtime (requires an access token, [e-mail us](mailto:ciphercore@ciphermode.tech) to request access).
+
 If you have any questions, or, more generally, would like to discuss CipherCore, please [join the Slack community](https://join.slack.com/t/slack-r5s9809/shared_invite/zt-1901t4ec3-W4pk~nsTl2dY8Is5HFWT4w).
 
 # Table of contents
@@ -37,7 +43,9 @@ If you have any questions, or, more generally, would like to discuss CipherCore,
     - [Input format](#input-format)
   - [Visualization](#visualization)
   - [Inspection](#inspection)
+  - [Preparing inputs for the runtime execution](#preparing-inputs-for-the-runtime-execution)
 - [Docker image](#docker-image)
+- [Runtime](#runtime)
 
 # Overview
 
@@ -53,7 +61,7 @@ Secure Multi-Party Computation (SMPC) is a cutting-edge subfield of cryptography
 
 CipherCore’s ease of use is due to introducing a new intermediate representation layer of _computation graphs_ between the application layer and the protocol layer. Applications are mapped to a computation graph first and then to an SMPC protocol. This architecture allows for rapid integration of various SMPC protocols as new cryptographic backends. If you are familiar with ML frameworks such as [PyTorch](https://pytorch.org/), [TensorFlow](https://www.tensorflow.org/) or [JAX](https://github.com/google/jax) (or [MLIR](https://mlir.llvm.org/) on a lower level), then you likely know what computation graphs are.
 
-![CipherCore architecture](images/ciphercore_architecture.png)
+![CipherCore architecture](https://github.com/ciphermodelabs/ciphercore/blob/main/reference/images/ciphercore_architecture.png)
 
 ## Bird's eye view of SMPC
 
@@ -234,7 +242,7 @@ ciphercore_visualize_context a.json | dot -Tsvg -o a.svg
 ```
 
 <p align = "center">
-  <img src="images/tutorial_graph_plain.svg" alt="Plain Graph" width="30%"/>
+  <img src="https://github.com/ciphermodelabs/ciphercore/blob/main/reference/images/tutorial_graph_plain.svg" alt="Plain Graph" width="30%"/>
 </p>
 
 So far, nothing outstanding has happened. The graph simply has two input nodes that correspond to the input matrices, and the output node
@@ -257,7 +265,7 @@ ciphercore_visualize_context b.json | dot -Tsvg -o b.svg
 ```
 
 <p align = "center">
-  <img src="images/tutorial_graph_mpc.svg" alt="MPC Graph" width="40%"/>
+  <img src="https://github.com/ciphermodelabs/ciphercore/blob/main/reference/images/tutorial_graph_mpc.svg" alt="MPC Graph" width="40%"/>
 </p>
 
 As one can see, the compiled graph is much more complicated: in particular, it contains nodes that call a [cryptographic pseudo-random generator](https://en.wikipedia.org/wiki/Pseudorandom_generator), [cryptographic pseudo-random function](https://en.wikipedia.org/wiki/Pseudorandom_function_family) as well as nodes that correspond to network interactions between the parties.
@@ -361,7 +369,7 @@ Given two matrices in the form of 2-dimensional arrays, their product is compute
 The serialization binary generates the following simple graph, as matrix multiplication is a built-in operation of CipherCore.
 
 <p align = "center">
-  <img src="images/matmul.svg" alt="Multiplication Graph" width="30%"/>
+  <img src="https://github.com/ciphermodelabs/ciphercore/blob/main/reference/images/matmul.svg" alt="Multiplication Graph" width="30%"/>
 </p>
 
 ## Millionaires' problem
@@ -371,17 +379,17 @@ This is [a classic SMPC problem](https://en.wikipedia.org/wiki/Yao%27s_Millionai
 The serialization binary generates the following simple graph, as the greater-than operation is a built-in custom operation of CipherCore.
 
 <p align = "center">
-  <img src="images/millionaires.svg" alt="Millionaires' Problem Graph" width="30%"/>
+  <img src="https://github.com/ciphermodelabs/ciphercore/blob/main/reference/images/millionaires.svg" alt="Millionaires' Problem Graph" width="30%"/>
 </p>
 
 ## Minimum of an array
 
 Given an array of unsigned integers, their minimum is computed.
 The serialization binary generates the following graph corresponding to the tournament method.
-Note that each `Min` operation is performed elementwise on arrays of 32-bit elements.
+Note that each `Min` operation is performed elementwise on arrays of 16 32-bit elements.
 
 <p align = "center">
-  <img src="images/minimum.svg" alt="Minimum Graph" width="30%"/>
+  <img src="https://github.com/ciphermodelabs/ciphercore/blob/main/reference/images/minimum.svg" alt="Minimum Graph" width="30%"/>
 </p>
 
 ## Sorting
@@ -390,7 +398,7 @@ Given an array of integers, this example sorts them in an ascending order.
 The serialization binary generates the following graph corresponding to [the Batcher's sorting network](https://math.mit.edu/~shor/18.310/batcher.pdf).
 
 <p align = "center">
-  <img src="images/sorting_graph_rot90.svg" alt="Sorting Graph" width="100%"/>
+  <img src="https://github.com/ciphermodelabs/ciphercore/blob/main/reference/images/sorting_graph_rot90.svg" alt="Sorting Graph" width="100%"/>
 </p>
 
 ## Set intersection
@@ -399,7 +407,7 @@ Given two arrays of integers without duplicate elements, this example computes t
 The serialization binary generates the following graph corresponding to [the sorting-based algorithm of Huang, Evans and Katz](https://homes.luddy.indiana.edu/yh33/mypub/psi.pdf).
 
 <p align = "center">
-  <img src="images/set_intersection_graph_rot90.svg" alt="Set Intersection Graph" width="100%"/>
+  <img src="https://github.com/ciphermodelabs/ciphercore/blob/main/reference/images/set_intersection_graph_rot90.svg" alt="Set Intersection Graph" width="100%"/>
 </p>
 
 # Graph creation and management
@@ -491,7 +499,7 @@ println!("{}", serde_json::to_string(&c).unwrap());
 
 The resulting graph has the following structure
 <p align = "center">
-  <img src="images/manual_graph.svg" alt="Manual Graph" width="30%"/>
+  <img src="https://github.com/ciphermodelabs/ciphercore/blob/main/reference/images/manual_graph.svg" alt="Manual Graph" width="30%"/>
 </p>
 
 
@@ -587,9 +595,15 @@ The following custom operations are already implemented within CipherCore:
    * [maximum](https://docs.rs/ciphercore-base/latest/ciphercore_base/ops/min_max/struct.Max.html), 
    * [minimum](https://docs.rs/ciphercore-base/latest/ciphercore_base/ops/min_max/struct.Min.html),
 * [multiplexer](https://docs.rs/ciphercore-base/latest/ciphercore_base/ops/multiplexer/struct.Mux.html),
-* [multiplicative inverse](https://docs.rs/ciphercore-base/latest/ciphercore_base/ops/newton_inversion/struct.NewtonInversion.html),
-* [inverse square root](https://docs.rs/ciphercore-base/latest/ciphercore_base/ops/inverse_sqrt/struct.InverseSqrt.html),
-* [sorting of binary strings](https://docs.rs/ciphercore-base/latest/ciphercore_base/ops/sorting/struct.Sort.html).
+* [sorting of binary strings](https://docs.rs/ciphercore-base/latest/ciphercore_base/ops/sorting/struct.Sort.html),
+* pointwise analytic functions:
+  * [multiplicative inverse](https://docs.rs/ciphercore-base/latest/ciphercore_base/ops/newton_inversion/struct.NewtonInversion.html),
+  * [inverse square root](https://docs.rs/ciphercore-base/latest/ciphercore_base/ops/inverse_sqrt/struct.InverseSqrt.html),
+  * exponent:
+    * [based on Taylor series](https://docs.rs/ciphercore-base/latest/ciphercore_base/ops/taylor_exponent/struct.TaylorExponent.html),
+    * [based on piecewise-linear approximation](https://docs.rs/ciphercore-base/latest/ciphercore_base/ops/pwl/approx_exponent/struct.ApproxExponent.html),
+  * [sigmoid](https://docs.rs/ciphercore-base/latest/ciphercore_base/ops/pwl/approx_sigmoid/struct.ApproxSigmoid.html),
+  * [GeLU](https://docs.rs/ciphercore-base/latest/ciphercore_base/ops/pwl/approx_gelu/struct.ApproxGelu.html).
 
 # CLI Tools
 
@@ -714,7 +728,7 @@ ciphercore_visualize_context context.json | dot -Tsvg -o vis.svg
 we get:
 
 <p align = "center">
-  <img src="images/arr_mul.svg" alt="Array Multiplication Graph" width="60%"/>
+  <img src="https://github.com/ciphermodelabs/ciphercore/blob/main/reference/images/arr_mul.svg" alt="Array Multiplication Graph" width="60%"/>
 </p>
 
 
@@ -793,6 +807,54 @@ Operations:
   Matmul        1
 ```
 
+## Preparing inputs for the runtime execution
+
+If one wishes to execute a compiled computation graph within the [runtime](#runtime), one needs to distribute (and possibly secret-share) the inputs across the 
+parties. We provide a binary `ciphercore_split_parties` that does just that. For instance, if we run:
+```
+ciphercore_split_parties inputs.txt 0,1,2,public,secret-shared 0.txt 1.txt 2.txt
+```
+with `inputs.txt` being:
+```
+[
+ {"kind": "scalar", "type": "i32", "value": 12},
+ {"kind": "scalar", "type": "i32", "value": 34},
+ {"kind": "scalar", "type": "i32", "value": 56},
+ {"kind": "scalar", "type": "i32", "value": 78},
+ {"kind": "scalar", "type": "i32", "value": 90}
+]
+```
+we'll get the data for party `0` (`0.txt`) being:
+```
+[
+ {"kind":"scalar","type":"i32","value":12},
+ {"kind":"scalar","type":"i32","value":0},
+ {"kind":"scalar","type":"i32","value":0},
+ {"kind":"scalar","type":"i32","value":78},
+ {"kind":"tuple","value":[{"kind":"scalar","type":"i32","value":149806676},{"kind":"scalar","type":"i32","value":-709894574},{"kind":"scalar","type":"i32","value":-1354905822}]}
+]
+```
+for party `1` (`1.txt`):
+```
+[
+ {"kind":"scalar","type":"i32","value":0},
+ {"kind":"scalar","type":"i32","value":34},
+ {"kind":"scalar","type":"i32","value":0},
+ {"kind":"scalar","type":"i32","value":78},
+ {"kind":"tuple","value":[{"kind":"scalar","type":"i32","value":205807499},{"kind":"scalar","type":"i32","value":-709894574},{"kind":"scalar","type":"i32","value":560087988}]}
+]
+```
+and for party `2` (`2.txt`):
+```
+[
+ {"kind":"scalar","type":"i32","value":0},
+ {"kind":"scalar","type":"i32","value":0},
+ {"kind":"scalar","type":"i32","value":56},
+ {"kind":"scalar","type":"i32","value":78},
+ {"kind":"tuple","value":[{"kind":"scalar","type":"i32","value":149806676},{"kind":"scalar","type":"i32","value":-1156429352},{"kind":"scalar","type":"i32","value":560087988}]}
+]
+```
+
 # Docker image
 
 We provide a Docker image that packages:
@@ -811,3 +873,6 @@ For example, you can run:
 ```bash
 sh run_ciphercore_docker.sh ciphercore_evaluate_fast b.json inputs.json
 ```
+
+# Runtime
+We provide the trial access to the runtime on request. (see [here](https://github.com/ciphermodelabs/ciphercore/blob/main/reference/main.md#system-requirements-installation-and-licensing) for details). The documentation for it can be found [here](https://github.com/ciphermodelabs/ciphercore/blob/main/reference/runtime.md).

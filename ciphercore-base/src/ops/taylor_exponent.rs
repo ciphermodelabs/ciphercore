@@ -7,16 +7,14 @@ use crate::ops::utils::{pull_out_bits, put_in_bits};
 
 use serde::{Deserialize, Serialize};
 
-use super::comparisons::LessThanEqualTo;
-use super::newton_inversion::NewtonInversion;
-use super::utils::{
-    constant_scalar, multiply_bit_and_number, multiply_fixed_point, zeros, zeros_like,
-};
+use super::comparisons::GreaterThanEqualTo;
+use super::utils::{constant_scalar, multiply_fixed_point, zeros, zeros_like};
 
 /// A structure that defines the custom operation TaylorExponent that computes an approximate exp(x / (2 ** fixed_precision)) * (2 ** fixed_precision) using Taylor expansion.
 ///
 /// Note that Taylor expansion correcly approximates exp(x) only for positive x, so we have to do A2B to get the MSB.
 /// Since we're doing A2B anyway, we can compute exp(integer_part(x)) and exp(fractional_part(x)) separately, computing the former directly from bits, and using Taylor expansion for the latter, getting better precision.
+/// See [the Keller-Sun paper, Algorithm 2](https://eprint.iacr.org/2022/933.pdf) for more details.
 ///
 /// So far this operation supports only INT64 scalar type.
 ///
@@ -88,16 +86,14 @@ impl CustomOperationBody for TaylorExponent {
         let one_over_ln2 = constant_scalar(&g, one_over_ln2_int, sc.clone())?;
         let x = multiply_fixed_point(arg, one_over_ln2, self.fixed_precision_points)?;
 
-        let mut x_bits = pull_out_bits(x.a2b()?)?;
+        let binary_x = x.a2b()?;
+        let x_bits = pull_out_bits(binary_x.clone())?;
         let msb = x_bits.get(vec![63])?;
-        // We're taking an absolute value of `x`. If it is negative, we should invert its bits and add one, but we're skipping the latter.
-        // TODO: should we just call a binary adder graph to be more precise?
-        x_bits = x_bits.add(msb.clone())?;
 
         // STAGE 1: compute exp(integer part of the argument).
         // Note that if we're looking at the int part, we're computing the product of 2 ** (2 ** k) if k'th bit is 1.
-        // Hence, it doesn't make sense to consider k >= 6.
-        let max_exp_bits = 6;
+        // Since we work with 31-bit fixed-point arithmetic, the exponent is limited from above by 31 - fixed_precision_points.
+        let max_exp_bits = (31f64 - self.fixed_precision_points as f64).log2().ceil() as u64;
         let one = constant_scalar(&g, 1, sc.clone())?;
         let mut exp_integer = one.clone();
         for i in self.fixed_precision_points..self.fixed_precision_points + max_exp_bits {
@@ -105,7 +101,9 @@ impl CustomOperationBody for TaylorExponent {
             let j = i - self.fixed_precision_points;
             let p2 = constant_scalar(&g, 1_u64 << (1_u64 << j), sc.clone())?;
             // `term` is 1 if bit is not set, and 2 ** (2 ** j) otherwise.
-            let term = multiply_bit_and_number(bit.clone(), p2.subtract(one.clone())?)?
+            let term = p2
+                .subtract(one.clone())?
+                .mixed_multiply(bit.clone())?
                 .add(one.clone())?;
             // TODO: this can be optimized to be depth-3 rather than depth-5.
             exp_integer = exp_integer.multiply(term)?;
@@ -151,34 +149,22 @@ impl CustomOperationBody for TaylorExponent {
         // STAGE 3: combine the answers, and do exp(-x) if x was negative.
         // No truncation here, since exp_integer is a normal int number, not a fixed-precision one.
         let exp = exp_fractional.multiply(exp_integer)?;
-        // We provide a reasonable initial approximation to avoid bit conversions inside NewtonInversion (we already know highest one bit from the integer part).
-        // However, we need bits anyway, for the case of negative argument: we need to compare exp to 2 ** (2 * fixed_precision_points), otherwise it
-        // can be to big, overflowing Newton inversion.
-        // So we don't provide the initial guess, letting NewtonInversion to call a2b (we rely on optimizer to deduplicate it with the a2b we call here).
-        let mut one_over_exp = g.custom_op(
-            CustomOperation::new(NewtonInversion {
-                // 5 is enough for 64-bit numbers.
-                iterations: 5,
-                denominator_cap_2k: self.fixed_precision_points * 2,
-            }),
-            vec![exp.clone()],
-        )?;
-        // If exp is larger than fixed_precision_points * 2, inversion could overflow. In such case, we should return 0.
+        // If x < 0, then it can be represented as x = -2^max_exp_bits + integer_bits + fractional_bits
+        // exp is equal to 2^(integer_bits + fractional_bits).
+        // Thus, truncation by 2^(2^max_exp_bits) changes the sign of the exponent.
+        let one_over_exp = exp.truncate(1u64 << (1u64 << max_exp_bits))?;
+        // Our maximal precision is 15, leading to minimum value around 3e-5. Exp(-10) is 4e-5
+        // If x is smaller than -10, return 0.
         let upper_bound_for_inversion =
-            constant_scalar(&g, 1 << (2 * self.fixed_precision_points), sc)?.a2b()?;
-        let exp_bits = exp.a2b()?;
+            constant_scalar(&g, (-10) * (1 << self.fixed_precision_points), sc)?.a2b()?;
         let inversion_overflow_bit = g.custom_op(
-            CustomOperation::new(LessThanEqualTo {
-                signed_comparison: false,
+            CustomOperation::new(GreaterThanEqualTo {
+                signed_comparison: true,
             }),
-            vec![exp_bits, upper_bound_for_inversion],
+            vec![binary_x, upper_bound_for_inversion],
         )?;
-        one_over_exp = multiply_bit_and_number(inversion_overflow_bit, one_over_exp)?;
-        let result = exp.add(multiply_bit_and_number(
-            msb,
-            one_over_exp.subtract(exp.clone())?,
-        )?)?;
-
+        let mut result = exp.add(one_over_exp.subtract(exp.clone())?.mixed_multiply(msb)?)?;
+        result = result.mixed_multiply(inversion_overflow_bit)?;
         result.set_as_output()?;
         g.finalize()?;
         Ok(g)

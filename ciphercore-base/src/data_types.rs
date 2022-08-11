@@ -8,6 +8,9 @@ use std::fmt::Write;
 use std::str::FromStr;
 use std::sync::Arc;
 
+#[cfg(feature = "py-binding")]
+use pywrapper_macro::{enum_to_struct_wrapper, fn_wrapper, impl_wrapper, struct_wrapper};
+
 /// A structure that represents a scalar type.
 ///
 /// Each scalar value corresponds to a signed or an unsigned integer modulo `modulus`.
@@ -58,6 +61,7 @@ use std::sync::Arc;
 ///
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Hash)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+#[cfg_attr(feature = "py-binding", struct_wrapper)]
 pub struct ScalarType {
     /// Indicates if the scalar is signed.
     pub signed: bool,
@@ -111,6 +115,7 @@ pub(super) const fn create_scalar_type(signed: bool, modulus: Option<u64>) -> Sc
     ScalarType { signed, modulus }
 }
 
+#[cfg_attr(feature = "py-binding", impl_wrapper)]
 impl ScalarType {
     /// Tests whether a scalar type is supported.
     ///
@@ -182,6 +187,15 @@ impl ScalarType {
     /// ```
     pub fn get_modulus(&self) -> Option<u64> {
         self.modulus
+    }
+
+    /// Returns the size of a scalar type in bits.
+    ///
+    /// # Returns
+    ///
+    /// Size of a scalar type
+    pub fn size_in_bits(&self) -> u64 {
+        scalar_size_in_bits(self.clone())
     }
 }
 
@@ -369,6 +383,7 @@ pub type ArrayShape = Vec<u64>;
 /// This enum represents the input or output type of a computation [Node](crate::graphs::Node) within the parent computational [Graph](crate::graphs::Graph).
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Hash)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+#[cfg_attr(feature = "py-binding", enum_to_struct_wrapper)]
 pub enum Type {
     /// Each scalar corresponds to a signed or an unsigned number modulo `m`, where `m` = {2, 2<sup>8</sup>, 2<sup>16</sup>, 2<sup>32</sup>, 2<sup>64</sup>}.
     ///
@@ -515,6 +530,7 @@ pub fn is_valid_shape(s: ArrayShape) -> bool {
     tmp != 0
 }
 
+#[cfg_attr(feature = "py-binding", impl_wrapper)]
 impl Type {
     /// Tests whether a given type is valid.
     ///
@@ -758,6 +774,41 @@ impl Type {
             panic!("Can't get shape");
         }
     }
+
+    /// Returns the size of a type in bits.
+    ///
+    /// Returns a runtime error if type is not valid.
+    ///
+    /// Within named tuple types, the bit size of name strings is omitted.
+    ///
+    /// # Returns
+    ///
+    /// Type size in bits
+    pub fn size_in_bits(&self) -> Result<u64> {
+        get_size_in_bits(self.clone())
+    }
+
+    /// Serializes type to string.
+    /// 
+    /// # Returns
+    /// 
+    /// Json string generated from the given type
+    fn to_json_string(&self) -> Result<String> {
+        Ok(serde_json::to_string(self)?)
+    }
+
+    /// Deserializes type from string.
+    /// 
+    /// # Arguments
+    /// 
+    /// `s` - json string
+    /// 
+    /// # Returns
+    /// 
+    /// New type constructed from the given json
+    fn from_json_string(s: String) -> Result<Type> {
+        Ok(serde_json::from_str::<Type>(s.as_str())?)
+    }
 }
 
 /// Returns a new type for scalars created from a given scalar type.
@@ -783,6 +834,7 @@ impl Type {
 /// assert!(st.is_scalar());
 /// assert!(s.eq(&st.get_scalar_type()));
 /// ```
+#[cfg_attr(feature = "py-binding", fn_wrapper)]
 pub fn scalar_type(st: ScalarType) -> Type {
     Type::Scalar(st)
 }
@@ -816,6 +868,7 @@ pub fn scalar_type(st: ScalarType) -> Type {
 /// assert!(a0_shape.eq(&a0.get_shape()));
 /// assert!(s0.eq(&a0.get_scalar_type()));
 /// ```
+#[cfg_attr(feature = "py-binding", fn_wrapper)]
 pub fn array_type(shape: ArrayShape, st: ScalarType) -> Type {
     Type::Array(shape, st)
 }
@@ -850,6 +903,7 @@ pub fn array_type(shape: ArrayShape, st: ScalarType) -> Type {
 /// assert!(n == n1.unwrap());
 /// assert!(t.eq(&t1.unwrap()));
 /// ```
+#[cfg_attr(feature = "py-binding", fn_wrapper)]
 pub fn vector_type(n: u64, t: Type) -> Type {
     Type::Vector(n, Arc::new(t))
 }
@@ -881,6 +935,7 @@ pub fn vector_type(n: u64, t: Type) -> Type {
 /// let t = tuple_type(vec_types.clone());
 /// assert!(t.is_tuple());
 /// ```
+#[cfg_attr(feature = "py-binding", fn_wrapper)]
 pub fn tuple_type(v: Vec<Type>) -> Type {
     let mut vp = vec![];
     for t in v {
@@ -912,6 +967,7 @@ pub fn tuple_type(v: Vec<Type>) -> Type {
 /// let t = named_tuple_type(vec_t);
 /// assert!(t.is_named_tuple());
 /// ```
+#[cfg_attr(feature = "py-binding", fn_wrapper)]
 pub fn named_tuple_type(v: Vec<(String, Type)>) -> Type {
     let mut vp = vec![];
     for (s, t) in v {
