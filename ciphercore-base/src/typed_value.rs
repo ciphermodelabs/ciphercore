@@ -16,6 +16,13 @@ use crate::typed_value_operations::{
 use json::{object, object::Object, JsonValue};
 use std::ops::Not;
 
+#[cfg(feature = "py-binding")]
+use crate::data_types::PyBindingType;
+#[cfg(feature = "py-binding")]
+use crate::data_values::PyBindingValue;
+#[cfg(feature = "py-binding")]
+use pywrapper_macro::struct_wrapper;
+
 macro_rules! to_json_aux {
     ($v:expr, $t:expr, $cnv:ident) => {
         JsonValue::from($v.$cnv($t.clone())?)
@@ -33,11 +40,81 @@ macro_rules! to_json_array_aux {
     };
 }
 
+/// A structure that stores pointer to a value and its type that corresponds to an input, output or an intermediate result of
+/// a computation.
+///
+/// # Rust crates
+///
+/// [Clone] trait duplicates the pointer, not the underlying value (see [Value::deep_clone] for deep cloning).
+///
+/// [PartialEq] trait performs the deep recursive comparison.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "py-binding", struct_wrapper)]
 pub struct TypedValue {
     pub value: Value,
     pub t: Type,
     pub name: Option<String>,
+}
+
+#[cfg(feature = "py-binding")]
+#[pyo3::pymethods]
+impl PyBindingTypedValue {
+    #[staticmethod]
+    fn from_str(value: String) -> pyo3::PyResult<Self> {
+        Ok(PyBindingTypedValue {
+            inner: serde_json::from_str::<TypedValue>(&value)
+                .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))?,
+        })
+    }
+
+    /// Creates a typed value from a given type and value.
+    /// Checks that the value is a valid for the given type.
+    /// Note: check might be not sufficient.
+    ///
+    /// # Arguments
+    ///
+    /// `t` - the type
+    /// `value` - the value
+    ///
+    /// # Returns
+    ///
+    /// New typed value constructed from the given type and value.
+    #[staticmethod]
+    fn from_type_and_value(
+        t: &PyBindingType,
+        value: &PyBindingValue,
+    ) -> pyo3::PyResult<PyBindingTypedValue> {
+        Ok(PyBindingTypedValue {
+            inner: TypedValue::new(t.inner.clone(), value.inner.clone())?,
+        })
+    }
+
+    fn get_local_shares_for_each_party(&self) -> pyo3::PyResult<Vec<Self>> {
+        let mut prng = PRNG::new(None)?;
+        Ok(self
+            .inner
+            .get_local_shares_for_each_party(&mut prng)?
+            .into_iter()
+            .map(|x| PyBindingTypedValue { inner: x })
+            .collect())
+    }
+    fn get_type(&self) -> PyBindingType {
+        PyBindingType {
+            inner: self.inner.t.clone(),
+        }
+    }
+    fn get_value(&self) -> PyBindingValue {
+        PyBindingValue {
+            inner: self.inner.value.clone(),
+        }
+    }
+    fn __str__(&self) -> pyo3::PyResult<String> {
+        serde_json::to_string(&self.inner)
+            .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))
+    }
+    fn __repr__(&self) -> pyo3::PyResult<String> {
+        self.__str__()
+    }
 }
 
 impl TypedValueOperations<TypedValue> for TypedValue {

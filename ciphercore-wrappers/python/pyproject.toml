@@ -1,12 +1,7 @@
-[tool.cibuildwheel]
-before-all = "/bin/sh ciphercore-wrappers/python/prepare.sh"
-skip = "*-musllinux*"
-
 [build-system]
-requires = [
-    "setuptools>=42",
-    "wheel",
-    "pybind11>=2.8.0",
-]
-
+requires = ["setuptools", "wheel", "setuptools-rust"]
 build-backend = "setuptools.build_meta"
+
+[tool.black]
+target-version = ['py37']
+line-length = 100

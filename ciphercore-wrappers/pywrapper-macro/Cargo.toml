@@ -1,0 +1,13 @@
+[package]
+name = "pywrapper-macro"
+version = "0.1.1"
+edition = "2021"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "1.0.99", features = ["full"] }
+quote = "1.0.21"
+proc-macro2 = "1.0"
+lazy_static = "1.4.0"
