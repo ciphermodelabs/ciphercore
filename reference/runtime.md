@@ -48,14 +48,19 @@ mkdir -p "$WORK_DIR"/data
 3. Generate computation graph and data.
     Computation could be performed via any graphs produced by the CipherCore compiler (see more about [compiling graphs](https://github.com/ciphermodelabs/ciphercore/blob/main/reference/main.md#working-with-the-graph-using-cli-tools)).
     We provide two examples:
-    * the median of the sequence on the secret-shared input  (each party doesn't have access to the data);
-        ```bash
-        cp -rf runtime/example/data/median/* "$WORK_DIR"/data/
-        ```
-    * two millionaires problem with revealed input. 
-        ```bash
-        cp -rf runtime/example/data/two_millionaires/* "$WORK_DIR"/data/
-        ```
+    <details open><summary>the median of the sequence on the secret-shared input  (each party doesn't have access to the data);</summary>
+
+    ```bash
+    cp -rf runtime/example/data/median/* "$WORK_DIR"/data/
+    ```
+    </details>
+
+    <details><summary>two millionaires problem with revealed input.</summary>
+
+    ```bash
+    cp -rf runtime/example/data/two_millionaires/* "$WORK_DIR"/data/
+    ```
+    </details>
     Note that there are two conceptually different cases: secret-shared inputs, and inputs provided by one of the parties. However, in both cases we ask all parties to provide the input — if they don't have it, they should provide any value of the correct type (e.g. zeros or a random value).
 4. Start data nodes using the following script.
     ```bash
@@ -155,32 +160,60 @@ class KVDataServer(data_pb2_grpc.DataManagerServiceServicer):
         return resp
 
 
+def parse_value(value_proto):
+    if value_proto.HasField('bytes'):
+        return cc.Value.from_bytes(value_proto.bytes.data)
+    vec = []
+    for sub_val in value_proto.vector.value:
+        vec.append(parse_value(sub_val))
+    return cc.Value.from_vector(vec)
+
+
+def parse_typed_value(tv_proto):
+    return cc.TypedValue(cc.Type.from_json_string(tv_proto.type_json), parse_value(tv_proto.value))
+
+
 class TrivialResultServer(results_pb2_grpc.ResultProviderServiceServicer):
     def ProvideResult(self, request, context):
-        print('Got result:', request)
-        print('Decoded:', np.frombuffer(request.typed_value.value.bytes.data, dtype=np.int32))
+        print('Result:', parse_typed_value(request.typed_value))
         resp = results_pb2.ProvideResultResponse()
         resp.status = 0
         return resp
 ```
 
-What is happening here? The `KVDataServer` just serves responses from the provided dict, and `TrivialResultServer` prints whatever it gets to stdout. One remaining piece is to load the data from the `KVDataServer` to serve. Here is how we do it:
+What is happening here? The `KVDataServer` just serves responses from the provided dict, and `TrivialResultServer` prints whatever it gets to stdout, after parsing it to `TypedValue` for readability. One remaining piece is to load the data from the `KVDataServer` to serve. Here is how we do it:
 
 ```python
+def populate_value(out, val):
+    sub_vals = val.get_sub_values()
+    if sub_vals is None:
+        out.bytes.data = bytes(val.get_bytes())        
+        return
+    for sub_val in sub_vals:
+        cur = Value()
+        populate_value(cur, sub_val)
+        out.vector.value.append(cur)
+
+
+def typed_val_to_proto(typed_val):
+    val = TypedValue()
+    val.type_json = typed_val.get_type().to_json_string()
+    populate_value(val.value, typed_val.get_value())
+    return val
+
+
 def load_typed_values(path):
     with open(path, 'r') as f:
         json_data = f.read()
-    json_bytes_arr = json.loads(json_data)
+    typed_vals = [cc.TypedValue(json.dumps(item)) for item in json.loads(json_data)]
     vals = []
-    for json_bytes in json_bytes_arr:
-        val = TypedValue()
-        val.ParseFromString(bytes(json_bytes))
-        vals.append(val) 
+    for typed_val in typed_vals:        
+        vals.append(typed_val_to_proto(typed_val)) 
     res = {'test'.encode(): vals}
     return res
 ```
 
-This is straightforward: we read the proto (typed) values from the provided file, and put them into the dictionary.
+This is a bit tricky: we read `TypedValue`'s, and we need to convert them to proto format (this conversion logic is not exported in the Python wrapper yet).
 
 Now we have all the pieces to start data nodes. For each data node, we do the following:
 
@@ -321,30 +354,9 @@ Connecting to compute nodes
 Connected to compute nodes
 Registered graphs
 Created sessions
-Got result: key: "df4fbbb6-c7c5-4909-ae28-f09d58653a7a"
-value {
-  bytes {
-    data: "\367\276\372\204"
-  }
-}
-
-Decoded: [-2063941897]
-Got result: key: "df4fbbb6-c7c5-4909-ae28-f09d58653a7a"
-value {
-  bytes {
-    data: "\377\001\000\000"
-  }
-}
-
-Decoded: [511]
-Got result: key: "df4fbbb6-c7c5-4909-ae28-f09d58653a7a"
-value {
-  bytes {
-    data: "!\256\317\231"
-  }
-}
-
-Decoded: [-1714442719]
+Result: {"kind":"scalar","type":"u32","value":2800266097}
+Result: {"kind":"scalar","type":"u32","value":511}
+Result: {"kind":"scalar","type":"u32","value":787611686}
 Sessions done
 ```
 
