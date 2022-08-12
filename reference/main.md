@@ -6,7 +6,7 @@ To install CipherCore, run one of the following commands:
 * `docker pull ciphermodelabs/ciphercore:latest` -- pulls a Docker image with binary distribution of CipherCore
 * `docker pull ciphermodelabs/runtime_example:latest` -- pulls a Docker image that contains CipherCore runtime (requires an access token, [e-mail us](mailto:ciphercore@ciphermode.tech) to request access).
 
-If you have any questions, or, more generally, would like to discuss CipherCore, please [join the Slack community](https://join.slack.com/t/slack-r5s9809/shared_invite/zt-1901t4ec3-W4pk~nsTl2dY8Is5HFWT4w).
+If you have any questions, or, more generally, would like to discuss CipherCore, please [join the Slack community](https://communityinviter.com/apps/ciphercore/ciphercore/).
 
 # Table of contents
 
