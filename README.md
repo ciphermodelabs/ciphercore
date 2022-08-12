@@ -10,7 +10,7 @@ To install CipherCore, run one of the following commands:
 
 Check out the [complete documentation](https://github.com/ciphermodelabs/ciphercore/blob/main/reference/main.md), which includes a tutorial, several examples and a comprehensive guide to CipherCore.
 
-If you have any questions, or, more generally, would like to discuss CipherCore, please [join the Slack community](https://join.slack.com/t/slack-r5s9809/shared_invite/zt-1901t4ec3-W4pk~nsTl2dY8Is5HFWT4w).
+If you have any questions, or, more generally, would like to discuss CipherCore, please [join the Slack community](https://communityinviter.com/apps/ciphercore/ciphercore/).
 
 # Five-minute intro
 

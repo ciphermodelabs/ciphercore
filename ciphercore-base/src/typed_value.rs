@@ -273,7 +273,7 @@ impl TypedValueOperations<TypedValue> for TypedValue {
     ///
     /// `v` - vector of typed values
     ///  `mode` - how to decide type of output. if `FromVectorMode::Vector` passed, it constructs a
-    ///     ciphercore vector typed value. If `FromVectorMode::Tuple` passed, it construncts a ciphercore
+    ///     ciphercore vector typed value. If `FromVectorMode::Tuple` passed, it constructs a ciphercore
     ///     tuple typed value, And if `FromVectorMode::AutoDetection` passed, it decides based on the type
     ///     of input typed values, if they are all the same type it constructs a vector, otherwise a tuple.
     ///
@@ -297,7 +297,7 @@ impl TypedValueOperations<TypedValue> for TypedValue {
         match mode {
             FromVectorMode::Vector => vector_from_vector_helper(v),
             FromVectorMode::Tuple => tuple_from_vector_helper(v),
-            FromVectorMode::AutoDetetion => {
+            FromVectorMode::AutoDetection => {
                 let val_type = v[0].t.clone();
                 if v.iter().all(|x| x.t.eq(&val_type)) {
                     vector_from_vector_helper(v)
@@ -308,7 +308,7 @@ impl TypedValueOperations<TypedValue> for TypedValue {
         }
     }
     /// If `self` is Vector or Tuple or NamedTuple, gets index_th element of the collection.
-    /// Retruns error if `self` is Scalar or Array.
+    /// Returns error if `self` is Scalar or Array.
     /// Returns error on out of bound access
     ///
     /// # Arguments
@@ -335,9 +335,9 @@ impl TypedValueOperations<TypedValue> for TypedValue {
         get_helper::<TypedValue>(self, index)
     }
     /// If `self` is Vector or Tuple or NamedTuple, insert to_insert_element to index_th position of the collection.
-    /// Retrun error if `self` is Scalar or Array.
+    /// Return error if `self` is Scalar or Array.
     /// Returns error on out of bound access
-    /// If inserting to a vector the Type of to_insert_element should match the Type of exisiting vector's elements
+    /// If inserting to a vector the Type of to_insert_element should match the Type of existing vector's elements
     ///
     /// # Arguments
     ///
@@ -364,8 +364,8 @@ impl TypedValueOperations<TypedValue> for TypedValue {
         Ok(())
     }
     /// If `self` is Vector or Tuple or NamedTuple, push to_insert_element to the end of the collection.
-    /// Retrun error if `self` is Scalar or Array.
-    /// If pushing to a vector, the Type of to_insert_element should match the Type of exisiting vector's elements
+    /// Return error if `self` is Scalar or Array.
+    /// If pushing to a vector, the Type of to_insert_element should match the Type of existing vector's elements
     /// Please note that call to this function copies all the data, as a result pushing N elements
     /// has quadratic complexity.
     ///
@@ -394,7 +394,7 @@ impl TypedValueOperations<TypedValue> for TypedValue {
         Ok(())
     }
     /// If `self` is Vector or Tuple or NamedTuple, it extends to_extend_collection to the end of the `self`
-    /// Retrun error if `self` is Scalar or Array.
+    /// Return error if `self` is Scalar or Array.
     /// If extending to a vector the Type of to_extend_collection should match the Type of `self` vector's elements
     ///
     /// # Arguments
@@ -425,7 +425,7 @@ impl TypedValueOperations<TypedValue> for TypedValue {
         Ok(())
     }
     /// If `self` is Vector or Tuple or NamedTuple, it removes index_th item of the `self`
-    /// Retrun error if `self` is Scalar or Array.
+    /// Return error if `self` is Scalar or Array.
     /// Returns error on out of bound remove
     ///
     /// # Arguments
@@ -452,8 +452,8 @@ impl TypedValueOperations<TypedValue> for TypedValue {
         Ok(())
     }
     /// If `self` is Vector or Tuple or NamedTuple, it gets then removes index_th item of the `self`
-    /// Retrun error if `self` is Scalar or Array.
-    /// Returns errro on out of bound remove
+    /// Return error if `self` is Scalar or Array.
+    /// Returns error on out of bound remove
     ///
     /// # Arguments
     ///
@@ -481,7 +481,7 @@ impl TypedValueOperations<TypedValue> for TypedValue {
         Ok(out1)
     }
     /// If `self` is Vector or Tuple or NamedTuple, it gets a same collection of typed value with a subset of `self` elements
-    /// Retrun error if `self` is Scalar or Array.
+    /// Return error if `self` is Scalar or Array.
     /// Returns error on out of bound remove
     ///
     /// # Arguments
@@ -618,7 +618,7 @@ impl TypedValue {
     ///
     /// `t` - the type
     /// `value` - the value
-    /// `name` - the name (can be used to costruct named tuple)
+    /// `name` - the name (can be used to construct named tuple)
     ///
     /// # Returns
     ///
@@ -2092,7 +2092,7 @@ mod tests {
                 TypedValue::from_scalar(0, INT32).unwrap(),
                 TypedValue::from_scalar(73, INT32).unwrap(),
             ],
-            FromVectorMode::AutoDetetion,
+            FromVectorMode::AutoDetection,
         )
         .unwrap();
         assert!(v2.is_equal(&v).unwrap());
@@ -2105,7 +2105,7 @@ mod tests {
                 TypedValue::from_scalar(0, BIT).unwrap(),
                 TypedValue::from_scalar(73, INT32).unwrap(),
             ],
-            FromVectorMode::AutoDetetion,
+            FromVectorMode::AutoDetection,
         )
         .unwrap();
         assert!(v3.t.is_tuple());

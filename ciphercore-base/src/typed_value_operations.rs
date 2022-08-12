@@ -44,7 +44,7 @@ pub trait TypedValueArrayOperations<T>:
 pub enum FromVectorMode {
     Vector,
     Tuple,
-    AutoDetetion,
+    AutoDetection,
 }
 pub trait TypedValueOperations<T>: TypedValueArrayOperations<T> {
     fn get_type(&self) -> Type;
