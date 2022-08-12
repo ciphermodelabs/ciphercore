@@ -225,12 +225,11 @@ impl TypedValueOperations<ReplicatedShares> for ReplicatedShares {
         match mode {
             FromVectorMode::Vector => vector_from_vector_helper(v),
             FromVectorMode::Tuple => tuple_from_vector_helper(v),
-            FromVectorMode::AutoDetetion => {
-                let val_type = v[0].t.clone();
-                if v.iter().all(|x| x.t.eq(&val_type)) {
-                    vector_from_vector_helper(v)
-                } else {
+            FromVectorMode::AutoDetection => {
+                if v.is_empty() || !v.iter().all(|x| x.t.eq(&v[0].t)) {
                     tuple_from_vector_helper(v)
+                } else {
+                    vector_from_vector_helper(v)
                 }
             }
         }

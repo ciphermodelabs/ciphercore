@@ -216,7 +216,7 @@ impl Value {
     /// # Returns
     ///
     /// New value
-    pub fn from_bytes(bytes: Vec<u8>) -> Value {
+    pub fn from_bytes(bytes: Vec<u8>) -> Self {
         Self {
             body: Arc::new(AtomicRefCellWrapper(AtomicRefCell::new(ValueBody::Bytes(
                 bytes,
@@ -244,7 +244,7 @@ impl Value {
     ///         Value::from_bytes(vec![4, 5, 6]),
     ///         Value::from_vector(vec![])]);
     /// ```
-    pub fn from_vector(v: Vec<Value>) -> Value {
+    pub fn from_vector(v: Vec<Value>) -> Self {
         Self {
             body: Arc::new(AtomicRefCellWrapper(AtomicRefCell::new(ValueBody::Vector(
                 v,

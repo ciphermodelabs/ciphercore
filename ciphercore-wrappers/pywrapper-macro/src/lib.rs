@@ -172,7 +172,7 @@ mod macro_backend {
         let input = Input::new(&sig.inputs);
         let inner_inputs = input.get_inner_inputs();
         let sig_inputs = input.get_sig_inputs();
-        let output = Output::new(&sig.output);
+        let output = Output::new(&sig.output, class);
         let ret = output.get_output();
         let result = if class.is_some() {
             if input.has_receiver {
@@ -199,7 +199,7 @@ mod macro_backend {
     }
 
     impl<'a> Output<'a> {
-        fn new(output: &'a ReturnType) -> Self {
+        fn new(output: &'a ReturnType, class: Option<&'a syn::Type>) -> Self {
             let mut has_result = false;
             let mut is_vector = false;
             match &output {
@@ -232,6 +232,11 @@ mod macro_backend {
                             if format!("{}", p.ident) == "Vec" {
                                 is_vector = true;
                                 &get_last_path_segment_from_first_argument(p).unwrap().ident
+                            } else if format!("{}", p.ident) == "Self" {
+                                match get_last_path_segment_from_type_path(class.unwrap()) {
+                                    Some(s) => &s.ident,
+                                    None => &p.ident,
+                                }
                             } else {
                                 &p.ident
                             }
@@ -498,8 +503,8 @@ mod macro_backend {
     }
 
     fn check_in_allowlist(name: String) -> Option<TokenStream> {
-        if name == "create_named_tuple" {
-            Some(quote!(
+        match name.as_str() {
+            "create_named_tuple" => Some(quote!(
                 pub fn create_named_tuple(
                     &self,
                     elements: Vec<(String, pyo3::PyRef<PyBindingNode>)>,
@@ -513,9 +518,8 @@ mod macro_backend {
                         )?,
                     })
                 }
-            ))
-        } else if name == "constant" {
-            Some(quote!(
+            )),
+            "constant" => Some(quote!(
                 pub fn constant(&self, tv: &PyBindingTypedValue) -> pyo3::PyResult<PyBindingNode> {
                     Ok(PyBindingNode {
                         inner: self
@@ -523,16 +527,14 @@ mod macro_backend {
                             .constant(tv.inner.t.clone(), tv.inner.value.clone())?,
                     })
                 }
-            ))
-        } else if name == "get_operation" {
-            Some(quote!(
+            )),
+            "get_operation" => Some(quote!(
                 pub fn get_operation(&self) -> pyo3::PyResult<String> {
                     serde_json::to_string(&self.inner.get_operation())
                         .map_err(|err| pyo3::exceptions::PyRuntimeError::new_err(err.to_string()))
                 }
-            ))
-        } else if name == "named_tuple_type" {
-            Some(quote!(
+            )),
+            "named_tuple_type" => Some(quote!(
                 pub fn py_binding_named_tuple_type(
                     v: Vec<(String, pyo3::PyRef<PyBindingType>)>,
                 ) -> PyBindingType {
@@ -542,9 +544,8 @@ mod macro_backend {
                         ),
                     }
                 }
-            ))
-        } else if name == "get_sub_values" {
-            Some(quote!(
+            )),
+            "get_sub_values" => Some(quote!(
                 fn get_sub_values(&self) -> Option<Vec<PyBindingValue>> {
                     match self.inner.get_sub_values() {
                         None => None,
@@ -553,9 +554,8 @@ mod macro_backend {
                         }
                     }
                 }
-            ))
-        } else {
-            None
+            )),
+            _ => None,
         }
     }
 }
