@@ -1,7 +1,7 @@
 [package]
 name = "pywrapper-macro"
-version = "0.1.1"
 authors = ["CipherMode Labs, Inc."]
+version = "0.1.2"
 edition = "2021"
 description = "Macros needed to create a Python wrapper for CipherCore"
 license = "Apache-2.0"
