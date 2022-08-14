@@ -6,11 +6,11 @@ use std::fmt::Write;
 use std::fs;
 
 fn get_graphviz_node_ref(node: Node) -> String {
-    return format!("node_{}_{}", node.get_id(), node.get_graph().get_id());
+    format!("node_{}_{}", node.get_id(), node.get_graph().get_id())
 }
 
 fn get_graphviz_graph_ref(graph: Graph) -> String {
-    return format!("cluster{}", graph.get_id());
+    format!("cluster{}", graph.get_id())
 }
 
 // Returns the sender and receiver party information, given an `NOP` node,
@@ -88,11 +88,11 @@ fn get_graphviz_node_def(node: Node) -> Result<String> {
 }
 
 fn get_graphviz_edge_def(dependent_node: Node, dependee_node: Node) -> String {
-    return format!(
+    format!(
         "\t\t{} -> {}\n",
         get_graphviz_node_ref(dependent_node),
         get_graphviz_node_ref(dependee_node)
-    );
+    )
 }
 
 fn get_graphviz_open_subgraph(graph: Graph) -> String {
@@ -101,11 +101,11 @@ fn get_graphviz_open_subgraph(graph: Graph) -> String {
     } else {
         "label = \"\"\n".to_string()
     };
-    return format!(
+    format!(
         "\n\tsubgraph {} {{\n{}",
         get_graphviz_graph_ref(graph),
         graph_name
-    );
+    )
 }
 
 fn get_graphviz_close_subgraph() -> &'static str {

@@ -789,22 +789,22 @@ impl Type {
     }
 
     /// Serializes type to string.
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// Json string generated from the given type
     fn to_json_string(&self) -> Result<String> {
         Ok(serde_json::to_string(self)?)
     }
 
     /// Deserializes type from string.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// `s` - json string
-    /// 
+    ///
     /// # Returns
-    /// 
+    ///
     /// New type constructed from the given json
     fn from_json_string(s: String) -> Result<Type> {
         Ok(serde_json::from_str::<Type>(s.as_str())?)
@@ -991,11 +991,11 @@ fn form_array_shape_str(array_shape: ArrayShape) -> String {
 }
 
 fn form_array_type_str(shape: ArrayShape, scalar_type: ScalarType) -> String {
-    return format!("{}{}", scalar_type, form_array_shape_str(shape));
+    format!("{}{}", scalar_type, form_array_shape_str(shape))
 }
 
 fn form_vector_type_str(number_of_components: u64, type_pointer: TypePointer) -> String {
-    return format!("<{}{{{}}}>", *type_pointer, number_of_components);
+    format!("<{}{{{}}}>", *type_pointer, number_of_components)
 }
 
 fn form_tuple_vec_type_str(vec_type_pointer: Vec<TypePointer>) -> String {
@@ -1029,7 +1029,7 @@ fn form_named_tuple_vec_type_str(named_tup_vec_type_pointer: Vec<(String, TypePo
 
 impl fmt::Display for ScalarType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let scalar_type = &*self;
+        let scalar_type = self;
         let mut scalar_type_string = String::from("");
         let bit_size = scalar_size_in_bits(scalar_type.clone());
         if bit_size == 1 {
@@ -1059,16 +1059,14 @@ impl FromStr for ScalarType {
             "i32" => Ok(INT32),
             "u64" => Ok(UINT64),
             "i64" => Ok(INT64),
-            _ => {
-                return Err(runtime_error!("Unknown scalar type"));
-            }
+            _ => Err(runtime_error!("Unknown scalar type")),
         }
     }
 }
 
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let type_string = match &*self {
+        let type_string = match self {
             Type::Scalar(scalar_type) => {
                 format!("{}", scalar_type)
             }
