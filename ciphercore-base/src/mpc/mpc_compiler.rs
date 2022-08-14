@@ -531,7 +531,7 @@ pub(super) fn compile_to_mpc_graph(
                 let input = dependencies[0].clone();
                 let new_input = out_mapping.get_node(input.clone());
                 let custom_op = CustomOperation::new(B2AMPC { st });
-                let new_node = if private_nodes.contains(&input) {
+                if private_nodes.contains(&input) {
                     // If input is private, the MPC protocol requires invoking PRFs.
                     // Thus, PRF keys must be provided.
                     let keys_mul = match prf_keys_mul {
@@ -549,8 +549,7 @@ pub(super) fn compile_to_mpc_graph(
                     out_graph.custom_op(custom_op, vec![new_input.clone(), keys_mul, keys_b2a])?
                 } else {
                     out_graph.custom_op(custom_op, vec![new_input.clone()])?
-                };
-                new_node
+                }
             }
             Operation::Constant(t, v) => out_graph.constant(t, v)?,
             Operation::PermuteAxes(_)

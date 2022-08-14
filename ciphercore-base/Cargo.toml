@@ -79,3 +79,7 @@ path = "src/bin/ciphercore_evaluate.rs"
 [[bin]]
 name = "ciphercore_split_parties"
 path = "src/bin/ciphercore_split_parties.rs"
+
+[[bin]]
+name = "ciphercore_gen_zero_input"
+path = "src/bin/ciphercore_gen_zero_input.rs"
