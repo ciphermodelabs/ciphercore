@@ -257,6 +257,7 @@ impl Value {
     /// # Returns
     ///
     /// Vector of bytes or None.
+    #[cfg_attr(not(feature = "py-binding"), allow(dead_code))]
     fn get_bytes(&self) -> Option<Vec<u8>> {
         self.access(|bytes| Ok(Some(bytes.to_vec())), |_sub_values| Ok(None))
             .unwrap()
@@ -267,6 +268,7 @@ impl Value {
     /// # Returns
     ///
     /// Vector of Value or None.
+    #[cfg_attr(not(feature = "py-binding"), allow(dead_code))]
     fn get_sub_values(&self) -> Option<Vec<Value>> {
         self.access(|_bytes| Ok(None), |sub_values| Ok(Some(sub_values.clone())))
             .unwrap()
