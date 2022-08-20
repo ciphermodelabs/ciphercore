@@ -793,6 +793,7 @@ impl Type {
     /// # Returns
     ///
     /// Json string generated from the given type
+    #[cfg_attr(not(feature = "py-binding"), allow(dead_code))]
     fn to_json_string(&self) -> Result<String> {
         Ok(serde_json::to_string(self)?)
     }
@@ -806,6 +807,7 @@ impl Type {
     /// # Returns
     ///
     /// New type constructed from the given json
+    #[cfg_attr(not(feature = "py-binding"), allow(dead_code))]
     fn from_json_string(s: String) -> Result<Type> {
         Ok(serde_json::from_str::<Type>(s.as_str())?)
     }
