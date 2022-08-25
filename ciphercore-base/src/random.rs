@@ -253,6 +253,25 @@ impl Prf {
     }
 }
 
+// Basic entropy test.
+// The plugin estimator is computed and compared to the expected entropy
+// of uniform distribution, i.e. 8 as we output bytes.
+// The estimation error, abs(entropy - 8), can be heuristically bounded
+// with overwhelming probability by 4*(d-1)/n with d = 256 in our case
+// (see Theorem 1 in https://www.cs.cmu.edu/~aarti/Class/10704_Fall16/lec5.pdf
+// and On a statistical estimate for the entropy of a sequence of independent random variables by
+// Basharin, GP (1959);
+// note that sigma = 0 for any uniform distribution).
+pub fn entropy_test(counters: [u32; 256], n: u64) -> bool {
+    let mut entropy = 0f64;
+    for c in counters {
+        let prob_c = (c as f64) / (n as f64);
+        entropy -= prob_c.log2() * prob_c;
+    }
+    let precision = (1020_f64) / (n as f64);
+    (entropy - 8f64).abs() < precision
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,25 +295,6 @@ mod tests {
         helper(1).unwrap();
         helper(19).unwrap();
         helper(1000).unwrap();
-    }
-
-    // Basic entropy test.
-    // The plugin estimator is computed and compared to the expected entropy
-    // of uniform distribution, i.e. 8 as we output bytes.
-    // The estimation error, abs(entropy - 8), can be heuristically bounded
-    // with overwhelming probability by 4*(d-1)/n with d = 256 in our case
-    // (see Theorem 1 in https://www.cs.cmu.edu/~aarti/Class/10704_Fall16/lec5.pdf
-    // and On a statistical estimate for the entropy of a sequence of independent random variables by
-    // Basharin, GP (1959);
-    // note that sigma = 0 for any uniform distribution).
-    fn entropy_test(counters: [u32; 256], n: u64) -> bool {
-        let mut entropy = 0f64;
-        for c in counters {
-            let prob_c = (c as f64) / (n as f64);
-            entropy -= prob_c.log2() * prob_c;
-        }
-        let precision = (1020 as f64) / (n as f64);
-        (entropy - 8f64).abs() < precision
     }
 
     #[test]
