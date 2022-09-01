@@ -115,6 +115,15 @@ pub extern "C" fn graph_matmul(
 }
 
 #[no_mangle]
+pub extern "C" fn graph_cuckoo_hash(
+    graph_ptr: *mut Graph,
+    a_ptr: *mut Node,
+    b_ptr: *mut Node,
+) -> CResult<Node> {
+    graph_two_nodes_method_helper(graph_ptr, a_ptr, b_ptr, |g, a, b| g.cuckoo_hash(a, b))
+}
+
+#[no_mangle]
 pub extern "C" fn graph_truncate(
     graph_ptr: *mut Graph,
     a_ptr: *mut Node,
@@ -694,6 +703,11 @@ pub extern "C" fn node_dot(node_ptr: *mut Node, b_ptr: *mut Node) -> CResult<Nod
 #[no_mangle]
 pub extern "C" fn node_matmul(node_ptr: *mut Node, b_ptr: *mut Node) -> CResult<Node> {
     node_one_node_method_helper(node_ptr, b_ptr, |a, b| a.matmul(b))
+}
+
+#[no_mangle]
+pub extern "C" fn node_cuckoo_hash(node_ptr: *mut Node, b_ptr: *mut Node) -> CResult<Node> {
+    node_one_node_method_helper(node_ptr, b_ptr, |a, b| a.cuckoo_hash(b))
 }
 
 #[no_mangle]
