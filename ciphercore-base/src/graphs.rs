@@ -97,6 +97,7 @@ pub enum Operation {
     Iterate,
     ArrayToVector,
     VectorToArray,
+    CuckooHash,
     Custom(CustomOperation),
 }
 
@@ -744,6 +745,14 @@ impl Node {
     /// ```
     pub fn repeat(&self, n: u64) -> Result<Node> {
         self.get_graph().repeat(self.clone(), n)
+    }
+
+    /// Adds a node returning the Cuckoo hash map of an input array of binary strings using provided hash functions.
+    ///
+    /// Applies [Graph::cuckoo_hash] to the parent graph, `this` node and `hash_matrices`.
+    #[doc(hidden)]
+    pub fn cuckoo_hash(&self, hash_matrices: Node) -> Result<Node> {
+        self.get_graph().cuckoo_hash(self.clone(), hash_matrices)
     }
 
     /// Applies [Graph::set_output_node] to the parent graph and `this` node.
@@ -1436,6 +1445,36 @@ impl Graph {
     #[doc(hidden)]
     pub fn random(&self, output_type: Type) -> Result<Node> {
         self.add_node(vec![], vec![], Operation::Random(output_type))
+    }
+
+    /// Adds a node returning the Cuckoo hash map of an input array of binary strings using provided hash functions.
+    ///
+    /// Hash functions are defined as an array of binary matrices.
+    /// The hash of an input string is a product of one of these matrices and this string.
+    /// Hence, the last dimension of these matrices should coincide with the length of input strings.
+    ///
+    /// Random matrices yield a better success probability of hashing.
+    ///
+    /// If the input array has shape `[..., n, b]` and hash matrices are given as an `[h, m, b]`-array,
+    /// then the hash map is an array of shape `[..., 2^m]`.
+    ///
+    /// The number of hash matrices (the first dimension of hash matrices) must be at least 3.
+    ///
+    /// A bigger ratio `m/n` leads to higher success probability (recommended one is `>=2`)    
+    ///
+    /// **WARNING**: this function should not be used before MPC compilation.
+    ///
+    /// # Arguments
+    ///
+    /// `array` - input array of binary strings of shape [..., n, b]
+    /// `hash_matrices` - random binary [m, b]-matrix.
+    ///
+    /// # Returns
+    ///
+    /// New CuckooHash node
+    #[doc(hidden)]
+    pub fn cuckoo_hash(&self, array: Node, hash_matrices: Node) -> Result<Node> {
+        self.add_node(vec![array, hash_matrices], vec![], Operation::CuckooHash)
     }
 
     /// Adds a node that joins a sequence of arrays governed by a given shape.

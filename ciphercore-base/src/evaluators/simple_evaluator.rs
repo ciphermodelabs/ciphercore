@@ -3,7 +3,7 @@ use crate::bytes::{
     add_u64, add_vectors_u64, multiply_u64, multiply_vectors_u64, subtract_vectors_u64,
 };
 use crate::bytes::{vec_from_bytes, vec_to_bytes};
-use crate::data_types::{array_type, Type, BIT};
+use crate::data_types::{array_type, Type, BIT, UINT64};
 use crate::data_values::Value;
 use crate::errors::Result;
 use crate::evaluators::Evaluator;
@@ -298,6 +298,109 @@ fn evaluate_matmul(
         }
         Value::from_flattened_array(&result_entries, st)
     }
+}
+
+// Dummy value in Cuckoo hash tables that contain indices of arrays
+const CUCKOO_DUMMY_ELEMENT: u64 = u64::MAX;
+
+// Cuckoo hashing is computed as in <https://eprint.iacr.org/2018/579.pdf>, Section 3.2
+fn evaluate_cuckoo(
+    input_type: Type,
+    input_value: Value,
+    hash_matrices_type: Type,
+    hash_matrices_value: Value,
+    result_type: Type,
+) -> Result<Value> {
+    if !input_type.is_array() || !hash_matrices_type.is_array() {
+        panic!("Inconsistency with type checker");
+    }
+    let input_shape = input_type.get_shape();
+    let hash_matrices_shape = hash_matrices_type.get_shape();
+    let input_bits = input_value.to_flattened_array_u64(input_type)?;
+    let hash_matrices_bits = hash_matrices_value.to_flattened_array_u64(hash_matrices_type)?;
+    let result_shape = result_type.get_shape();
+
+    let size_of_output_table = result_shape[result_shape.len() - 1] as usize;
+    let result_length = result_shape.into_iter().product::<u64>() as usize;
+
+    // Initialize the hash table and table of used hash functions per element with dummy indices.
+    let mut hash_table = vec![CUCKOO_DUMMY_ELEMENT; result_length];
+    let mut used_hash_functions = vec![usize::MAX; result_length];
+
+    let hash_functions = hash_matrices_shape[0] as usize;
+    let hash_matrix_rows = hash_matrices_shape[1] as usize;
+    let hash_matrix_columns = hash_matrices_shape[2] as usize;
+    let hash_matrix_size = (hash_matrix_rows * hash_matrix_columns) as usize;
+
+    let num_input_sets = input_shape
+        .iter()
+        .take(input_shape.len() - 2)
+        .product::<u64>() as usize;
+    let num_input_strings_per_set = input_shape[input_shape.len() - 2] as usize;
+    let input_string_length = input_shape[input_shape.len() - 1] as usize;
+
+    for set_i in 0..num_input_sets {
+        for string_i in 0..num_input_strings_per_set {
+            let mut current_string_index = string_i;
+            let mut current_hash_function_index = 0;
+            let mut reinsert_attempt = 0;
+
+            let mut insertion_failed = true;
+            // If the number of consecutive re-insertions exceeds the bound, the hashing fails.
+            // 100 is an empirical bound taken from <https://eprint.iacr.org/2018/579.pdf>, Appendix B.
+            while reinsert_attempt < 100 {
+                let string_start = (set_i * num_input_strings_per_set + current_string_index)
+                    * input_string_length;
+                let input_string = &input_bits[string_start..string_start + input_string_length];
+
+                // Compute the hash of the input string
+                let mut new_index = 0;
+                // TODO: this matrix-vector product can be optimized
+                for row in 0..hash_matrix_rows {
+                    let mut hash_index_bit = 0;
+                    for (column, input_bit) in
+                        input_string.iter().enumerate().take(hash_matrix_columns)
+                    {
+                        hash_index_bit ^= hash_matrices_bits[hash_matrix_size
+                            * current_hash_function_index
+                            + row * hash_matrix_columns
+                            + column]
+                            & input_bit;
+                    }
+                    new_index ^= hash_index_bit << row;
+                }
+
+                // Check that the hash table is empty at the hash index
+                let result_index = set_i * size_of_output_table + new_index as usize;
+                if hash_table[result_index] == CUCKOO_DUMMY_ELEMENT {
+                    // If yes, insert the current index into the hash table
+                    // and the current hash function into the table of used hash functions
+                    hash_table[result_index] = current_string_index as u64;
+                    used_hash_functions[result_index] = current_hash_function_index;
+                    insertion_failed = false;
+                    break;
+                } else {
+                    // If no, extract the index and the corresponding hash function from the occupied cells
+                    let old_string_index = hash_table[result_index] as usize;
+                    let old_hash_function_index = used_hash_functions[result_index];
+                    hash_table[result_index] = current_string_index as u64;
+                    used_hash_functions[result_index] = current_hash_function_index;
+
+                    // Re-insert the string with the extracted index using the next hash function
+                    // NOTE: we change hash functions iteratively in contrast to the default random walk regime.
+                    // It shouldn't significantly affect the failure probability as discussed in <https://eprint.iacr.org/2018/579.pdf>, Appendix B.
+                    current_string_index = old_string_index;
+                    current_hash_function_index = (old_hash_function_index + 1) % hash_functions;
+                    reinsert_attempt += 1;
+                }
+            }
+            if insertion_failed {
+                panic!("Cuckoo hashing failed");
+            }
+        }
+    }
+
+    Value::from_flattened_array(&hash_table, UINT64)
 }
 
 pub struct SimpleEvaluator {
@@ -660,13 +763,42 @@ impl Evaluator for SimpleEvaluator {
                 };
                 Ok(new_value)
             }
+            Operation::CuckooHash => {
+                let input_value = dependencies_values[0].clone();
+                let hash_matrices_value = dependencies_values[1].clone();
+
+                let input_type = node.get_node_dependencies()[0].get_type()?;
+                let hash_matrices_type = node.get_node_dependencies()[1].get_type()?;
+
+                let result_type = node.get_type()?;
+                evaluate_cuckoo(
+                    input_type,
+                    input_value,
+                    hash_matrices_type,
+                    hash_matrices_value,
+                    result_type,
+                )
+            }
             _ => Err(runtime_error!("Not implemented")),
         }
     }
 }
 
-#[cfg(tests)]
+#[cfg(test)]
 mod tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use crate::{
+        data_types::{
+            named_tuple_type, scalar_type, tuple_type, vector_type, ArrayShape, INT32, UINT64,
+            UINT8,
+        },
+        evaluators::random_evaluate,
+        graphs::create_context,
+    };
+
+    use super::*;
+
     #[test]
     fn test_prf() {
         let helper = |iv: u64, t: Type| -> Result<()> {
@@ -689,7 +821,7 @@ mod tests {
             let v = evaluator.evaluate_context(c, Vec::new())?;
             let ot = vector_type(3, t.clone());
             assert_eq!(evaluator.prfs.len(), 2);
-            assert!((*v).borrow().check_type(ot)?);
+            assert!(v.check_type(ot)?);
             Ok(())
         };
         || -> Result<()> {
@@ -718,5 +850,97 @@ mod tests {
             )
         }()
         .unwrap()
+    }
+
+    fn cuckoo_helper(
+        input_shape: ArrayShape,
+        hash_shape: ArrayShape,
+        inputs: Vec<Value>,
+    ) -> Result<Vec<u64>> {
+        let c = create_context()?;
+        let g = c.create_graph()?;
+        let i = g.input(array_type(input_shape.clone(), BIT))?;
+        let hash_matrix = g.input(array_type(hash_shape.clone(), BIT))?;
+        let o = i.cuckoo_hash(hash_matrix)?;
+        g.set_output_node(o)?;
+        g.finalize()?;
+        c.set_main_graph(g.clone())?;
+        c.finalize()?;
+        let result_value = random_evaluate(g, inputs)?;
+        let mut result_shape = input_shape[0..input_shape.len() - 2].to_vec();
+        result_shape.push(1 << hash_shape[1]);
+        let result_type = array_type(result_shape, UINT64);
+        result_value.to_flattened_array_u64(result_type)
+    }
+
+    #[test]
+    fn test_cuckoo_hash() {
+        || -> Result<()> {
+            // no collision
+            {
+                // [2,3]-array
+                let input = Value::from_flattened_array(&[1, 0, 1, 0, 0, 1], BIT)?;
+                // [3,2,3]-array
+                let hash_matrix = Value::from_flattened_array(
+                    &[1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 0, 0, 1],
+                    BIT,
+                )?;
+                // output [4]-array
+                // Hashing results in: h_0(input[0]) = 00, h_0(input[1]) = 10
+                let expected = vec![0, 1, u64::MAX, u64::MAX];
+                assert_eq!(
+                    cuckoo_helper(vec![2, 3], vec![3, 2, 3], vec![input, hash_matrix])?,
+                    expected
+                );
+            }
+            // collision
+            {
+                // [2,3]-array
+                let input = Value::from_flattened_array(&[1, 0, 1, 0, 0, 0], BIT)?;
+                // [3,2,3]-array
+                let hash_matrix = Value::from_flattened_array(
+                    &[1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 0, 0, 1],
+                    BIT,
+                )?;
+                // output [4]-array
+                // Hashing results in:
+                // h_0(input[0]) = 00, h_0(input[1]) = 00
+                // h_1(input[0]) = 00, h_1(input[0]) = 00
+                // h_2(input[0]) = 11
+                let expected = vec![1, u64::MAX, u64::MAX, 0];
+                assert_eq!(
+                    cuckoo_helper(vec![2, 3], vec![3, 2, 3], vec![input, hash_matrix])?,
+                    expected
+                );
+            }
+            // failure
+            {
+                // [2,3]-array
+                let input = Value::from_flattened_array(&[1, 0, 1, 0, 0, 0], BIT)?;
+                // [3,2,3]-array
+                // Hashes everything to 0
+                let hash_matrix = Value::from_flattened_array(&[0; 18], BIT)?;
+                let e = catch_unwind(AssertUnwindSafe(|| {
+                    cuckoo_helper(vec![2, 3], vec![3, 2, 3], vec![input, hash_matrix])
+                }));
+                assert!(e.is_err());
+            }
+            // somewhat big example
+            for _ in 0..1000 {
+                let mut prng = PRNG::new(None)?;
+                // Probability of getting two equal strings in each [512,32]-subarray is 3*10^(-5) by the birthday paradox
+                let input_shape = vec![512, 32];
+                let input = prng.get_random_value(array_type(input_shape.clone(), BIT))?;
+                // The size of hash table per each input set is 1024.
+                // Thus, the number of rows of hash matrices is log_2(1024) = 10.
+                // The estimated failure probability is ~2^(-108) according to <https://eprint.iacr.org/2018/579.pdf>, Appendix B.
+                // However, the probability that there is a pair of elements with hashes equal to a fixed value is Omega(1/1024^3).
+                let hash_shape = vec![3, 10, 32];
+                let hash_matrix = prng.get_random_value(array_type(hash_shape.clone(), BIT))?;
+                assert!(cuckoo_helper(input_shape, hash_shape, vec![input, hash_matrix]).is_ok());
+            }
+            Ok(())
+        }()
+        .unwrap();
     }
 }

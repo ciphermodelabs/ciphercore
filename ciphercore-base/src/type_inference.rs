@@ -236,7 +236,8 @@ fn get_number_of_node_dependencies(operation: Operation) -> Option<u64> {
         | Operation::Dot
         | Operation::Matmul
         | Operation::VectorGet
-        | Operation::Iterate => Some(2),
+        | Operation::Iterate
+        | Operation::CuckooHash => Some(2),
         Operation::Stack(_)
         | Operation::CreateTuple
         | Operation::CreateNamedTuple(_)
@@ -908,6 +909,55 @@ impl TypeInferenceWorker {
                     ))
                 }
             }
+            Operation::CuckooHash => {
+                let input_t = node_dependencies_types[0].clone();
+                let hash_t = node_dependencies_types[1].clone();
+                if !matches!(input_t, Type::Array(_, BIT)) {
+                    return Err(runtime_error!(
+                        "CuckooHash can't be applied to a non-binary arrays"
+                    ));
+                }
+                let input_shape = input_t.get_shape();
+                if input_shape.len() < 2 {
+                    return Err(runtime_error!(
+                        "Input shape must have at least 2 dimensions"
+                    ));
+                }
+                if !matches!(hash_t, Type::Array(_, BIT)) {
+                    return Err(runtime_error!(
+                        "CuckooHash needs a binary array as a hash matrix"
+                    ));
+                }
+                let hash_shape = hash_t.get_shape();
+                if hash_shape.len() != 3 {
+                    return Err(runtime_error!("Hash array should have 3 dimensions"));
+                }
+                if hash_shape[0] < 3 {
+                    return Err(runtime_error!(
+                        "At least 3 hash matrices should be provided"
+                    ));
+                }
+                if hash_shape[1] > 63 {
+                    return Err(runtime_error!(
+                        "Hash map is too big. Decrease the number of rows of hash matrices"
+                    ));
+                }
+                let input_element_length = input_shape[input_shape.len() - 1];
+                if hash_shape[2] != input_element_length {
+                    return Err(runtime_error!(
+                        "Hash matrix accepts bitstrings of length {}, but input strings are of length {}",
+                        hash_shape[2],
+                        input_element_length
+                    ));
+                }
+                // For each subarray, the output hash map contains indices of this array
+                let mut output_shape = input_shape[0..input_shape.len() - 2].to_vec();
+                let hash_map_size = 1 << hash_shape[1];
+                output_shape.push(hash_map_size);
+                let result = array_type(output_shape, UINT64);
+                self.register_result(node, result.clone())?;
+                Ok(result)
+            }
             // Here we can end up in an infinite loop due
             // to circular dependencies between instantiations.
             // For now we just crash with stack overflow.
@@ -938,7 +988,6 @@ impl TypeInferenceWorker {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
     use crate::data_types::{create_scalar_type, ArrayShape, Type, BIT, INT32, INT8, UINT32};
     use crate::data_values::Value;
@@ -2377,5 +2426,69 @@ mod tests {
         test_vector_to_array_worker_fail(vector_type(0, array_type(vec![3, 8], BIT)));
         test_vector_to_array_worker_fail(tuple_type(vec![]));
         test_vector_to_array_worker_fail(vector_type(10, tuple_type(vec![])));
+    }
+
+    fn test_cuckoo_hash_worker(t0: Type, t1: Type, expected: Type) -> Result<()> {
+        let context = create_unchecked_context()?;
+        let graph = context.create_graph()?;
+        let mut worker = create_type_inference_worker(context.clone());
+        let i = graph.input(t0)?;
+        let h = graph.input(t1)?;
+        let o = graph.cuckoo_hash(i, h)?;
+        let t = worker.process_node(o)?;
+        assert_eq!(t, expected);
+        Ok(())
+    }
+
+    fn test_cuckoo_hash_fail(t0: Type, t1: Type) -> Result<()> {
+        let context = create_unchecked_context()?;
+        let graph = context.create_graph()?;
+        let mut worker = create_type_inference_worker(context.clone());
+        let i = graph.input(t0)?;
+        let h = graph.input(t1)?;
+        let o = graph.cuckoo_hash(i, h)?;
+        let t = worker.process_node(o);
+        assert!(t.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_cuckoo_hash() {
+        || -> Result<()> {
+            test_cuckoo_hash_worker(
+                array_type(vec![5, 6], BIT),
+                array_type(vec![3, 4, 6], BIT),
+                array_type(vec![16], UINT64),
+            )?;
+            test_cuckoo_hash_worker(
+                array_type(vec![4, 6], BIT),
+                array_type(vec![3, 3, 6], BIT),
+                array_type(vec![8], UINT64),
+            )?;
+            test_cuckoo_hash_worker(
+                array_type(vec![11, 4, 6], BIT),
+                array_type(vec![4, 5, 6], BIT),
+                array_type(vec![11, 32], UINT64),
+            )?;
+
+            test_cuckoo_hash_fail(scalar_type(BIT), array_type(vec![3, 3, 6], BIT))?;
+            test_cuckoo_hash_fail(array_type(vec![4, 6], INT8), array_type(vec![3, 4, 6], BIT))?;
+            test_cuckoo_hash_fail(array_type(vec![6], BIT), array_type(vec![3, 4, 8], BIT))?;
+            test_cuckoo_hash_fail(
+                array_type(vec![4, 6], BIT),
+                vector_type(2, array_type(vec![3, 4, 6], BIT)),
+            )?;
+            test_cuckoo_hash_fail(
+                array_type(vec![4, 6], BIT),
+                array_type(vec![3, 4, 6], UINT64),
+            )?;
+            test_cuckoo_hash_fail(array_type(vec![4, 6], BIT), array_type(vec![3, 6], BIT))?;
+            test_cuckoo_hash_fail(array_type(vec![4, 6], BIT), array_type(vec![2, 4, 6], BIT))?;
+            test_cuckoo_hash_fail(array_type(vec![4, 6], BIT), array_type(vec![3, 4, 7], BIT))?;
+            test_cuckoo_hash_fail(array_type(vec![4, 6], BIT), array_type(vec![3, 64, 6], BIT))?;
+
+            Ok(())
+        }()
+        .unwrap();
     }
 }
