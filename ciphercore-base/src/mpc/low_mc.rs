@@ -157,7 +157,6 @@ impl CustomOperationBody for LowMC {
         let state_type = state.get_type()?;
         let state_shape = state_type.get_shape();
         let mut extended_state_shape = state_shape.clone();
-        //extended_state_shape.push(1);
         extended_state_shape.insert(extended_state_shape.len() - 1, 1);
         let extended_state_type = array_type(extended_state_shape.clone(), BIT);
         let state_element_shape = state_shape[0..state_shape.len() - 1].to_vec();
@@ -216,7 +215,7 @@ impl CustomOperationBody for LowMC {
                 .vector_to_array()?;
             state = put_in_bits(state)?;
 
-            // Make state of the shape [..., block_size, 1] to multiply it by the linear layer matrix
+            // Make state of the shape [..., 1, block_size] to multiply it by the linear layer matrix
             state = state.reshape(extended_state_type.clone())?;
             // Linear layer: multiply by pre-generated random matrices
             state = linear_matrices

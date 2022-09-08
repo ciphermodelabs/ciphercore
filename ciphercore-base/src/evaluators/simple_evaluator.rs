@@ -905,7 +905,7 @@ mod tests {
                 // output [4]-array
                 // Hashing results in:
                 // h_0(input[0]) = 00, h_0(input[1]) = 00
-                // h_1(input[0]) = 00, h_1(input[0]) = 00
+                // h_1(input[0]) = 00, h_1(input[1]) = 00
                 // h_2(input[0]) = 11
                 let expected = vec![1, u64::MAX, u64::MAX, 0];
                 assert_eq!(

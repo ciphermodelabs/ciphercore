@@ -1457,6 +1457,7 @@ impl Graph {
     ///
     /// If the input array has shape `[..., n, b]` and hash matrices are given as an `[h, m, b]`-array,
     /// then the hash map is an array of shape `[..., 2^m]`.
+    /// The hash table element with index `[..., i]` is equal to `j` if the `[..., j]`-th input `b`-bit string is hashed to `i` by some of the given hash functions.
     ///
     /// The number of hash matrices (the first dimension of hash matrices) must be at least 3.
     ///
@@ -1467,7 +1468,7 @@ impl Graph {
     /// # Arguments
     ///
     /// `array` - input array of binary strings of shape [..., n, b]
-    /// `hash_matrices` - random binary [m, b]-matrix.
+    /// `hash_matrices` - random binary [h, m, b]-array.
     ///
     /// # Returns
     ///
