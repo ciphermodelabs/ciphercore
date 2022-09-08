@@ -381,8 +381,6 @@ struct Graph {
 
   Node matmul(Node a, Node b) const;
 
-  Node cuckoo_hash(Node a, Node b) const;
-
   Node truncate(Node a, uint64_t scale) const;
 
   Node sum(Node a, std::vector<uint64_t> &axes) const;
@@ -497,8 +495,6 @@ struct Node {
   Node dot(Node b) const;
 
   Node matmul(Node b) const;
-
-  Node cuckoo_hash(Node b) const;
 
   Node truncate(uint64_t scale) const;
 
@@ -671,11 +667,6 @@ Node Graph::dot(Node a, Node b) const {
 
 Node Graph::matmul(Node a, Node b) const {
   auto result = CCipherCore::graph_matmul(body->g, a.body->n, b.body->n);
-  return Node(extract_ok(result), *this);
-}
-
-Node Graph::cuckoo_hash(Node a, Node b) const {
-  auto result = CCipherCore::graph_cuckoo_hash(body->g, a.body->n, b.body->n);
   return Node(extract_ok(result), *this);
 }
 
@@ -942,7 +933,6 @@ enum class OperationKind {
   MixedMultiply,
   Dot,
   Matmul,
-  CuckooHash,
   Truncate,
   Sum,
   PermuteAxes,
@@ -992,9 +982,6 @@ pybind11::object convert_operation(CCipherCore::COperation *operation) {
   }
   if (operation->tag == CCipherCore::Matmul) {
     return pybind11::make_tuple(OperationKind::Matmul);
-  }
-  if (operation->tag == CCipherCore::CuckooHash) {
-    return pybind11::make_tuple(OperationKind::CuckooHash);
   }
   if (operation->tag == CCipherCore::Truncate) {
     return pybind11::make_tuple(OperationKind::Truncate, operation->truncate);
@@ -1154,11 +1141,6 @@ Node Node::matmul(Node b) const {
   return Node(extract_ok(result), parent_graph);
 }
 
-Node Node::cuckoo_hash(Node b) const {
-  auto result = CCipherCore::node_cuckoo_hash(body->n, b.body->n);
-  return Node(extract_ok(result), parent_graph);
-}
-
 Node Node::truncate(uint64_t scale) const {
   auto result = CCipherCore::node_truncate(body->n, scale);
   return Node(extract_ok(result), parent_graph);
@@ -1300,7 +1282,6 @@ PYBIND11_MODULE(ciphercore_native, m) {
       .def("mixed_multiply", &PyCipherCore::Graph::mixed_multiply)
       .def("dot", &PyCipherCore::Graph::dot)
       .def("matmul", &PyCipherCore::Graph::matmul)
-      .def("cuckoo_hash", &PyCipherCore::Graph::cuckoo_hash)
       .def("truncate", &PyCipherCore::Graph::truncate)
       .def("sum", &PyCipherCore::Graph::sum)
       .def("permute_axes", &PyCipherCore::Graph::permute_axes)
@@ -1352,7 +1333,6 @@ PYBIND11_MODULE(ciphercore_native, m) {
       .def("mixed_multiply", &PyCipherCore::Node::mixed_multiply)
       .def("dot", &PyCipherCore::Node::dot)
       .def("matmul", &PyCipherCore::Node::matmul)
-      .def("cuckoo_hash", &PyCipherCore::Node::cuckoo_hash)
       .def("truncate", &PyCipherCore::Node::truncate)
       .def("sum", &PyCipherCore::Node::sum)
       .def("permute_axes", &PyCipherCore::Node::permute_axes)
@@ -1391,7 +1371,6 @@ PYBIND11_MODULE(ciphercore_native, m) {
       .value("MixedMultiply", PyCipherCore::OperationKind::MixedMultiply)
       .value("Dot", PyCipherCore::OperationKind::Dot)
       .value("Matmul", PyCipherCore::OperationKind::Matmul)
-      .value("CuckooHash", PyCipherCore::OperationKind::CuckooHash)
       .value("Truncate", PyCipherCore::OperationKind::Truncate)
       .value("Sum", PyCipherCore::OperationKind::Sum)
       .value("PermuteAxes", PyCipherCore::OperationKind::PermuteAxes)

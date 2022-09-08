@@ -423,7 +423,6 @@ pub enum COperation {
     MixedMultiply,
     Dot,
     Matmul,
-    CuckooHash,
     Truncate(u64),
     Sum(*mut CVecVal<u64>),
     PermuteAxes(*mut CVecVal<u64>),
@@ -461,7 +460,6 @@ impl COperation {
             Self::MixedMultiply => Operation::MixedMultiply,
             Self::Dot => Operation::Dot,
             Self::Matmul => Operation::Matmul,
-            Self::CuckooHash => Operation::CuckooHash,
             Self::Truncate(x) => Operation::Truncate(*x),
             Self::Sum(cvec) => Operation::Sum(vector_from_unsafe_cvec_val(*cvec)?),
             Self::PermuteAxes(cvec) => Operation::PermuteAxes(vector_from_unsafe_cvec_val(*cvec)?),
@@ -516,7 +514,6 @@ impl COperation {
             Operation::MixedMultiply => Self::MixedMultiply,
             Operation::Dot => Self::Dot,
             Operation::Matmul => Self::Matmul,
-            Operation::CuckooHash => Self::CuckooHash,
             Operation::Truncate(x) => Self::Truncate(x),
             Operation::Sum(vec) => Self::Sum(unsafe_ref(CVecVal::from_vec(vec))),
             Operation::PermuteAxes(vec) => Self::PermuteAxes(unsafe_ref(CVecVal::from_vec(vec))),
@@ -554,6 +551,9 @@ impl COperation {
             Operation::Custom(cust_op) => Self::Custom(CCustomOperation::from_custom_op(cust_op)?),
             Operation::Constant(t, v) => {
                 Self::Constant(unsafe_ref(CTypedValue::from_type_and_value(t, v)?))
+            }
+            _ => {
+                panic!("There is no such public operation");
             }
         };
         Ok(cop)
