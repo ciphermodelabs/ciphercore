@@ -29,8 +29,6 @@ struct CResult_Node node_dot(struct Node *node_ptr, struct Node *b_ptr);
 
 struct CResult_Node node_matmul(struct Node *node_ptr, struct Node *b_ptr);
 
-struct CResult_Node node_cuckoo_hash(struct Node *node_ptr, struct Node *b_ptr);
-
 struct CResult_Node node_truncate(struct Node *node_ptr, uint64_t scale);
 
 struct CResult_Node node_sum(struct Node *node_ptr, struct CVecVal_u64 axis);

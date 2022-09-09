@@ -97,6 +97,7 @@ pub enum Operation {
     Iterate,
     ArrayToVector,
     VectorToArray,
+    Gather(u64),
     CuckooHash,
     Custom(CustomOperation),
 }
@@ -726,6 +727,13 @@ impl Node {
     /// ```
     pub fn vector_to_array(&self) -> Result<Node> {
         self.get_graph().vector_to_array(self.clone())
+    }
+
+    /// Adds a node to the parent graph converting a vector associated with the node to an array.
+    ///
+    /// Applies [Graph::gather] to the parent graph and `this` node.
+    pub fn gather(&self, indices: Node, axis: u64) -> Result<Node> {
+        self.get_graph().gather(self.clone(), indices, axis)
     }
 
     /// Adds a node that creates a vector with `n` copies of a value of this node.
@@ -1457,6 +1465,7 @@ impl Graph {
     ///
     /// If the input array has shape `[..., n, b]` and hash matrices are given as an `[h, m, b]`-array,
     /// then the hash map is an array of shape `[..., 2^m]`.
+    /// The hash table element with index `[..., i]` is equal to `j` if the `[..., j]`-th input `b`-bit string is hashed to `i` by some of the given hash functions.
     ///
     /// The number of hash matrices (the first dimension of hash matrices) must be at least 3.
     ///
@@ -1467,7 +1476,7 @@ impl Graph {
     /// # Arguments
     ///
     /// `array` - input array of binary strings of shape [..., n, b]
-    /// `hash_matrices` - random binary [m, b]-matrix.
+    /// `hash_matrices` - random binary [h, m, b]-array.
     ///
     /// # Returns
     ///
@@ -1977,6 +1986,31 @@ impl Graph {
     /// ```
     pub fn vector_to_array(&self, a: Node) -> Result<Node> {
         self.add_node(vec![a], vec![], Operation::VectorToArray)
+    }
+
+    /// Adds a node creating an array from the elements of an input array indexed by another array along a given axis.
+    ///
+    /// Given an input array, this node replaces the dimension `axis` with the dimensions introduced by the indexing array.
+    ///
+    /// Indices must be unique to prevent possible duplication of shares/ciphertexts.
+    /// Such duplicates might cause devastating data leakage.
+    ///
+    /// This operation is similar to [the NumPy take operation](https://numpy.org/doc/stable/reference/generated/numpy.take.html).
+    ///
+    /// **WARNING**: this function should not be used before MPC compilation.
+    ///
+    /// # Arguments
+    ///
+    /// `input` - node containing an input array
+    /// `indices` - node containing indices
+    /// `axis` - index of the axis along which indices are chosen
+    ///
+    /// # Returns
+    ///
+    /// New Gather node
+    #[doc(hidden)]
+    pub fn gather(&self, input: Node, indices: Node, axis: u64) -> Result<Node> {
+        self.add_node(vec![input, indices], vec![], Operation::Gather(axis))
     }
 
     /// Checks that the graph has an output node and finalizes the graph.

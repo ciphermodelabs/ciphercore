@@ -236,6 +236,7 @@ fn get_number_of_node_dependencies(operation: Operation) -> Option<u64> {
         | Operation::Dot
         | Operation::Matmul
         | Operation::VectorGet
+        | Operation::Gather(_)
         | Operation::Iterate
         | Operation::CuckooHash => Some(2),
         Operation::Stack(_)
@@ -908,6 +909,38 @@ impl TypeInferenceWorker {
                         "VectorToArray can't be applied to a non-vector"
                     ))
                 }
+            }
+            Operation::Gather(axis) => {
+                let input_t = node_dependencies_types[0].clone();
+                if !input_t.is_array() {
+                    return Err(runtime_error!("Take can be only applied to an array"));
+                }
+                let indices_t = node_dependencies_types[1].clone();
+                // TODO: support UINT32
+                if !matches!(indices_t, Type::Array(_, UINT64)) {
+                    return Err(runtime_error!("Indices must be an array of UINT64"));
+                }
+                let input_shape = input_t.get_shape();
+                if axis >= input_shape.len() as u64 {
+                    return Err(runtime_error!(
+                        "Invalid axis. The axis index should be smaller than {}",
+                        input_shape.len()
+                    ));
+                }
+                let indices_shape = indices_t.get_shape();
+                let indices_size = indices_shape.iter().product::<u64>();
+                if indices_size > input_shape[axis as usize] {
+                    return Err(runtime_error!(
+                        "Number of indices is too big. At most {} elements can be extracted.",
+                        input_shape[axis as usize]
+                    ));
+                }
+                let mut result_shape = input_shape[0..axis as usize].to_vec();
+                result_shape.extend_from_slice(&indices_shape);
+                result_shape.extend_from_slice(&input_shape[(axis + 1) as usize..]);
+                let result = array_type(result_shape, input_t.get_scalar_type());
+                self.register_result(node, result.clone())?;
+                Ok(result)
             }
             Operation::CuckooHash => {
                 let input_t = node_dependencies_types[0].clone();
@@ -2426,6 +2459,77 @@ mod tests {
         test_vector_to_array_worker_fail(vector_type(0, array_type(vec![3, 8], BIT)));
         test_vector_to_array_worker_fail(tuple_type(vec![]));
         test_vector_to_array_worker_fail(vector_type(10, tuple_type(vec![])));
+    }
+
+    fn gather_helper(
+        input_t: Type,
+        indices_t: Type,
+        axis: u64,
+        expected: Option<Type>,
+    ) -> Result<()> {
+        let context = create_unchecked_context()?;
+        let graph = context.create_graph()?;
+        let mut worker = create_type_inference_worker(context.clone());
+        let inp = graph.input(input_t)?;
+        let ind = graph.input(indices_t)?;
+        let o = graph.gather(inp, ind, axis)?;
+        let t = worker.process_node(o);
+        if let Some(expected_t) = expected {
+            assert_eq!(t?, expected_t);
+        } else {
+            assert!(t.is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_gather() {
+        || -> Result<()> {
+            gather_helper(
+                array_type(vec![2, 3, 4], BIT),
+                array_type(vec![2], UINT64),
+                1,
+                Some(array_type(vec![2, 2, 4], BIT)),
+            )?;
+
+            gather_helper(
+                array_type(vec![4], BIT),
+                array_type(vec![3], UINT64),
+                0,
+                Some(array_type(vec![3], BIT)),
+            )?;
+
+            gather_helper(
+                array_type(vec![2, 3, 7, 5], BIT),
+                array_type(vec![2, 3], UINT64),
+                2,
+                Some(array_type(vec![2, 3, 2, 3, 5], BIT)),
+            )?;
+
+            gather_helper(scalar_type(BIT), array_type(vec![2], UINT64), 1, None)?;
+            gather_helper(array_type(vec![2, 3, 4], BIT), scalar_type(UINT64), 1, None)?;
+            gather_helper(
+                array_type(vec![2, 3, 4], BIT),
+                array_type(vec![2], UINT32),
+                1,
+                None,
+            )?;
+            gather_helper(
+                array_type(vec![2, 3, 4], BIT),
+                array_type(vec![2], UINT64),
+                3,
+                None,
+            )?;
+            gather_helper(
+                array_type(vec![2, 3, 4], BIT),
+                array_type(vec![2, 2], UINT64),
+                1,
+                None,
+            )?;
+
+            Ok(())
+        }()
+        .unwrap();
     }
 
     fn test_cuckoo_hash_worker(t0: Type, t1: Type, expected: Type) -> Result<()> {

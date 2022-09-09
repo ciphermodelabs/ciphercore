@@ -17,8 +17,6 @@ struct CResult_Node graph_dot(struct Graph *graph_ptr, struct Node *a_ptr, struc
 
 struct CResult_Node graph_matmul(struct Graph *graph_ptr, struct Node *a_ptr, struct Node *b_ptr);
 
-struct CResult_Node graph_cuckoo_hash(struct Graph *graph_ptr, struct Node *a_ptr, struct Node *b_ptr);
-
 struct CResult_Node graph_truncate(struct Graph *graph_ptr, struct Node *a_ptr, uint64_t scale);
 
 struct CResult_Node graph_sum(struct Graph *graph_ptr, struct Node *a_ptr, struct CVecVal_u64 axis);
