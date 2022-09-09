@@ -779,6 +779,53 @@ impl Evaluator for SimpleEvaluator {
                     result_type,
                 )
             }
+            Operation::Gather(axis) => {
+                let input_value = dependencies_values[0].clone();
+                let indices_value = dependencies_values[1].clone();
+
+                let input_t = node.get_node_dependencies()[0].get_type()?;
+                let input_entries = input_value.to_flattened_array_u64(input_t.clone())?;
+                let indices_t = node.get_node_dependencies()[1].get_type()?;
+                let indices_entries = indices_value.to_flattened_array_u64(indices_t)?;
+
+                // Check uniqueness of indices
+                // Panic here because this operation isn't public and, ideally, this case should not happen
+                let mut dedup_indices_entries = indices_entries.clone();
+                dedup_indices_entries.dedup();
+                if dedup_indices_entries != indices_entries {
+                    panic!("Indices must be unique");
+                }
+
+                let mut output_entries = vec![];
+
+                let input_shape = input_t.get_shape();
+
+                // Number of subarrays whose indices are selected
+                let num_arrays = input_shape[..axis as usize]
+                    .to_vec()
+                    .iter()
+                    .product::<u64>();
+
+                // Number of elements in each row indexed by the indices
+                let row_size = input_shape[(axis + 1) as usize..]
+                    .to_vec()
+                    .iter()
+                    .product::<u64>();
+
+                for array_i in 0..num_arrays {
+                    for index_entry in indices_entries.iter() {
+                        let input_flat_index =
+                            (array_i * input_shape[axis as usize] + index_entry) * row_size;
+                        output_entries.extend_from_slice(
+                            &input_entries
+                                [input_flat_index as usize..(input_flat_index + row_size) as usize],
+                        );
+                    }
+                }
+
+                let result_type = node.get_type()?;
+                Value::from_flattened_array(&output_entries, result_type.get_scalar_type())
+            }
             _ => Err(runtime_error!("Not implemented")),
         }
     }
@@ -790,8 +837,8 @@ mod tests {
 
     use crate::{
         data_types::{
-            named_tuple_type, scalar_type, tuple_type, vector_type, ArrayShape, INT32, UINT64,
-            UINT8,
+            named_tuple_type, scalar_type, tuple_type, vector_type, ArrayShape, INT32, UINT32,
+            UINT64, UINT8,
         },
         evaluators::random_evaluate,
         graphs::create_context,
@@ -862,14 +909,12 @@ mod tests {
         let i = g.input(array_type(input_shape.clone(), BIT))?;
         let hash_matrix = g.input(array_type(hash_shape.clone(), BIT))?;
         let o = i.cuckoo_hash(hash_matrix)?;
-        g.set_output_node(o)?;
+        g.set_output_node(o.clone())?;
         g.finalize()?;
         c.set_main_graph(g.clone())?;
         c.finalize()?;
         let result_value = random_evaluate(g, inputs)?;
-        let mut result_shape = input_shape[0..input_shape.len() - 2].to_vec();
-        result_shape.push(1 << hash_shape[1]);
-        let result_type = array_type(result_shape, UINT64);
+        let result_type = o.get_type()?;
         result_value.to_flattened_array_u64(result_type)
     }
 
@@ -905,7 +950,7 @@ mod tests {
                 // output [4]-array
                 // Hashing results in:
                 // h_0(input[0]) = 00, h_0(input[1]) = 00
-                // h_1(input[0]) = 00, h_1(input[0]) = 00
+                // h_1(input[0]) = 00, h_1(input[1]) = 00
                 // h_2(input[0]) = 11
                 let expected = vec![1, u64::MAX, u64::MAX, 0];
                 assert_eq!(
@@ -938,6 +983,97 @@ mod tests {
                 let hash_shape = vec![3, 10, 32];
                 let hash_matrix = prng.get_random_value(array_type(hash_shape.clone(), BIT))?;
                 assert!(cuckoo_helper(input_shape, hash_shape, vec![input, hash_matrix]).is_ok());
+            }
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    fn gather_helper(
+        input_shape: ArrayShape,
+        indices_shape: ArrayShape,
+        axis: u64,
+        inputs: Vec<Value>,
+    ) -> Result<Vec<u64>> {
+        let c = create_context()?;
+        let g = c.create_graph()?;
+        let inp = g.input(array_type(input_shape.clone(), UINT32))?;
+        let ind = g.input(array_type(indices_shape.clone(), UINT64))?;
+        let o = inp.gather(ind, axis)?;
+        g.set_output_node(o.clone())?;
+        g.finalize()?;
+        c.set_main_graph(g.clone())?;
+        c.finalize()?;
+        let result_value = random_evaluate(g, inputs)?;
+        let result_type = o.get_type()?;
+        result_value.to_flattened_array_u64(result_type)
+    }
+
+    #[test]
+    fn test_gather() {
+        || -> Result<()> {
+            {
+                // [5]-array
+                let input = Value::from_flattened_array(&[1, 2, 3, 4, 5], UINT32)?;
+                // [3]-array
+                let indices = Value::from_flattened_array(&[2, 0, 4], UINT64)?;
+                // output [3]-array
+                let expected = vec![3, 1, 5];
+                assert_eq!(
+                    gather_helper(vec![5], vec![3], 0, vec![input, indices])?,
+                    expected
+                );
+            }
+            {
+                // [3]-array
+                let input = Value::from_flattened_array(&[1, 2, 3], UINT32)?;
+                // [3]-array
+                let indices = Value::from_flattened_array(&[2, 0, 1], UINT64)?;
+                // output [3]-array
+                let expected = vec![3, 1, 2];
+                assert_eq!(
+                    gather_helper(vec![3], vec![3], 0, vec![input, indices])?,
+                    expected
+                );
+            }
+            {
+                // [2,3,2]-array
+                let input =
+                    Value::from_flattened_array(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], UINT32)?;
+                // [2]-array
+                let indices = Value::from_flattened_array(&[2, 0], UINT64)?;
+                // output [2,2,2]-array
+                let expected = vec![5, 6, 1, 2, 11, 12, 7, 8];
+                assert_eq!(
+                    gather_helper(vec![2, 3, 2], vec![2], 1, vec![input, indices])?,
+                    expected
+                );
+            }
+            {
+                let mut input_entries = vec![];
+                for i in 1..=20 {
+                    input_entries.push(i);
+                }
+                // [2,5,2]-array
+                let input = Value::from_flattened_array(&input_entries, UINT32)?;
+                // [2,2]-array
+                let indices = Value::from_flattened_array(&[1, 0, 2, 4], UINT64)?;
+                // output [2,2,2,2]-array
+                let expected = vec![3, 4, 1, 2, 5, 6, 9, 10, 13, 14, 11, 12, 15, 16, 19, 20];
+                assert_eq!(
+                    gather_helper(vec![2, 5, 2], vec![2, 2], 1, vec![input, indices])?,
+                    expected
+                );
+            }
+            {
+                // [5]-array
+                let input = Value::from_flattened_array(&[1, 2, 3, 4, 5], UINT32)?;
+                // [3]-array
+                let indices = Value::from_flattened_array(&[2, 0, 0], UINT64)?;
+                let e = catch_unwind(AssertUnwindSafe(|| {
+                    gather_helper(vec![5], vec![3], 0, vec![input, indices])
+                }));
+                assert!(e.is_err());
             }
             Ok(())
         }()

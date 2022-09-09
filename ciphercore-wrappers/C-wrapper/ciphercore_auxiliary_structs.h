@@ -68,7 +68,6 @@ typedef enum COperation_Tag {
   MixedMultiply,
   Dot,
   Matmul,
-  CuckooHash,
   Truncate,
   Sum,
   PermuteAxes,
