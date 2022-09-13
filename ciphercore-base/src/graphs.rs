@@ -99,6 +99,7 @@ pub enum Operation {
     VectorToArray,
     Gather(u64),
     CuckooHash,
+    InversePermutation,
     Custom(CustomOperation),
 }
 
@@ -504,6 +505,14 @@ impl Node {
     /// ```
     pub fn permute_axes(&self, axes: ArrayShape) -> Result<Node> {
         self.get_graph().permute_axes(self.clone(), axes)
+    }
+
+    /// Adds a node to the parent graph that inverts a given permutation.
+    ///
+    /// Applies [Graph::inverse_permutation] to the parent graph and `this` node.
+    #[doc(hidden)]
+    pub fn inverse_permutation(&self) -> Result<Node> {
+        self.get_graph().inverse_permutation(self.clone())
     }
 
     /// Adds a node to the parent graph that extracts a sub-array with a given index from the array associated with the node.
@@ -1313,6 +1322,27 @@ impl Graph {
     /// ```
     pub fn permute_axes(&self, a: Node, axes: ArrayShape) -> Result<Node> {
         self.add_node(vec![a], vec![], Operation::PermuteAxes(axes))
+    }
+
+    /// Adds a node to the parent graph that inverts a given permutation.
+    ///
+    /// An input permutation should be given by a 1-dimensional array of length n, containing unique integers between 0 and n-1.
+    /// The i-th element of an output array is output[i] = j if input[j] = i.
+    ///
+    /// This operation could be realized through [the Scatter operation](https://en.wikipedia.org/wiki/Gather-scatter_(vector_addressing)#Scatter).
+    /// However, the Scatter operation poses a security risk as the corresponding map should hide empty output positions.
+    /// This is usually done by padding an input array with dummy values such that its size is equal to the output size.
+    /// Then, the Scatter map can be turned into a permutation, which can be easily split into a composition of random permutation maps.
+    /// But permutation maps can be performed by Gather, thus making Scatter unnecessary.
+    ///
+    /// **WARNING**: this function should not be used before MPC compilation.
+    ///
+    /// # Arguments
+    ///
+    /// `a` - node containing an array with permutation.
+    #[doc(hidden)]
+    pub fn inverse_permutation(&self, a: Node) -> Result<Node> {
+        self.add_node(vec![a], vec![], Operation::InversePermutation)
     }
 
     /// Adds a node that extracts a sub-array with a given index. This is a special case of [get_slice](Graph::get_slice) and corresponds to single element indexing as in [NumPy](https://numpy.org/doc/stable/user/basics.indexing.html).

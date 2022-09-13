@@ -217,6 +217,7 @@ fn get_number_of_node_dependencies(operation: Operation) -> Option<u64> {
         Operation::Truncate(_)
         | Operation::Sum(_)
         | Operation::PermuteAxes(_)
+        | Operation::InversePermutation
         | Operation::Get(_)
         | Operation::GetSlice(_)
         | Operation::Reshape(_)
@@ -524,6 +525,22 @@ impl TypeInferenceWorker {
                 let result = array_type(rs, st);
                 self.register_result(node, result.clone())?;
                 Ok(result)
+            }
+            Operation::InversePermutation => {
+                let t = node_dependencies_types[0].clone();
+                if !t.is_array() {
+                    return Err(runtime_error!("Input type should be an array"));
+                }
+                if t.get_scalar_type() != UINT64 {
+                    return Err(runtime_error!("Input elements must be 64-bit integers"));
+                }
+                if t.get_shape().len() > 1 {
+                    return Err(runtime_error!(
+                        "Input type should be an array with one dimension"
+                    ));
+                }
+                self.register_result(node, t.clone())?;
+                Ok(t)
             }
             Operation::Get(s) => {
                 let t = node_dependencies_types[0].clone();
@@ -2590,6 +2607,43 @@ mod tests {
             test_cuckoo_hash_fail(array_type(vec![4, 6], BIT), array_type(vec![2, 4, 6], BIT))?;
             test_cuckoo_hash_fail(array_type(vec![4, 6], BIT), array_type(vec![3, 4, 7], BIT))?;
             test_cuckoo_hash_fail(array_type(vec![4, 6], BIT), array_type(vec![3, 64, 6], BIT))?;
+
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    fn test_inverse_permutation_worker(t0: Type, expected: Type) -> Result<()> {
+        let context = create_unchecked_context()?;
+        let graph = context.create_graph()?;
+        let mut worker = create_type_inference_worker(context.clone());
+        let i = graph.input(t0)?;
+        let o = graph.inverse_permutation(i)?;
+        let t = worker.process_node(o)?;
+        assert_eq!(t, expected);
+        Ok(())
+    }
+
+    fn test_inverse_permutation_fail(t0: Type) -> Result<()> {
+        let context = create_unchecked_context()?;
+        let graph = context.create_graph()?;
+        let mut worker = create_type_inference_worker(context.clone());
+        let i = graph.input(t0)?;
+        let o = graph.inverse_permutation(i)?;
+        let t = worker.process_node(o);
+        assert!(t.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_inverse_permutation() {
+        || -> Result<()> {
+            let t = array_type(vec![10], UINT64);
+            test_inverse_permutation_worker(t.clone(), t)?;
+
+            test_inverse_permutation_fail(scalar_type(UINT64))?;
+            test_inverse_permutation_fail(array_type(vec![10, 5], UINT64))?;
+            test_inverse_permutation_fail(array_type(vec![10], UINT32))?;
 
             Ok(())
         }()

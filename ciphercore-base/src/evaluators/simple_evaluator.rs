@@ -620,6 +620,25 @@ impl Evaluator for SimpleEvaluator {
                 }
                 Value::from_flattened_array(&result, t.get_scalar_type())
             }
+            Operation::InversePermutation => {
+                let dependency = node.get_node_dependencies()[0].clone();
+                let t = dependency.get_type()?;
+                let values = dependencies_values[0].to_flattened_array_u64(t.clone())?;
+                let mut values_without_dup = values.clone();
+                values_without_dup.dedup();
+                if values != values_without_dup {
+                    panic!("Input array doesn't contain a valid permutation");
+                }
+                let mut result = vec![0u64; values.len()];
+                for i in 0..values.len() {
+                    let value = values[i] as usize;
+                    if value >= values.len() {
+                        panic!("Input array doesn't contain a valid permutation");
+                    }
+                    result[value] = i as u64;
+                }
+                Value::from_flattened_array(&result, t.get_scalar_type())
+            }
             Operation::Sum(axes) => {
                 let dependency = node.get_node_dependencies()[0].clone();
                 let inp_t = dependency.get_type()?;
@@ -989,6 +1008,20 @@ mod tests {
         .unwrap();
     }
 
+    fn inverse_permutation_helper(n: u64, inputs: Vec<Value>) -> Result<Vec<u64>> {
+        let c = create_context()?;
+        let g = c.create_graph()?;
+        let input_type = array_type(vec![n], UINT64);
+        let i = g.input(input_type.clone())?;
+        let o = i.inverse_permutation()?;
+        g.set_output_node(o)?;
+        g.finalize()?;
+        c.set_main_graph(g.clone())?;
+        c.finalize()?;
+        let result_value = random_evaluate(g, inputs)?;
+        result_value.to_flattened_array_u64(input_type)
+    }
+
     fn gather_helper(
         input_shape: ArrayShape,
         indices_shape: ArrayShape,
@@ -1007,6 +1040,49 @@ mod tests {
         let result_value = random_evaluate(g, inputs)?;
         let result_type = o.get_type()?;
         result_value.to_flattened_array_u64(result_type)
+    }
+
+    #[test]
+    fn test_inverse_permutation() {
+        || -> Result<()> {
+            {
+                let input = Value::from_flattened_array(&[0], UINT64)?;
+                let expected = vec![0];
+                assert_eq!(inverse_permutation_helper(1, vec![input])?, expected);
+            }
+            {
+                let input = Value::from_flattened_array(&[0, 1, 2, 3, 4], UINT64)?;
+                let expected = vec![0, 1, 2, 3, 4];
+                assert_eq!(inverse_permutation_helper(5, vec![input])?, expected);
+            }
+            {
+                let input = Value::from_flattened_array(&[4, 3, 2, 1, 0], UINT64)?;
+                let expected = vec![4, 3, 2, 1, 0];
+                assert_eq!(inverse_permutation_helper(5, vec![input])?, expected);
+            }
+            {
+                let input = Value::from_flattened_array(&[2, 0, 1, 4, 3], UINT64)?;
+                let expected = vec![1, 2, 0, 4, 3];
+                assert_eq!(inverse_permutation_helper(5, vec![input])?, expected);
+            }
+            // malformed input
+            {
+                let input = Value::from_flattened_array(&[2, 0, 1, 4, 4], UINT64)?;
+                let e = catch_unwind(AssertUnwindSafe(|| {
+                    inverse_permutation_helper(5, vec![input])
+                }));
+                assert!(e.is_err());
+            }
+            {
+                let input = Value::from_flattened_array(&[2, 0, 1, 4, 5], UINT64)?;
+                let e = catch_unwind(AssertUnwindSafe(|| {
+                    inverse_permutation_helper(5, vec![input])
+                }));
+                assert!(e.is_err());
+            }
+            Ok(())
+        }()
+        .unwrap();
     }
 
     #[test]
