@@ -213,7 +213,10 @@ fn b2a_type_inference(t: Type, st: ScalarType) -> Result<Type> {
 /// None means the number can be variable.
 fn get_number_of_node_dependencies(operation: Operation) -> Option<u64> {
     match operation {
-        Operation::Input(_) | Operation::Random(_) | Operation::Constant(_, _) => Some(0),
+        Operation::Input(_)
+        | Operation::Random(_)
+        | Operation::Constant(_, _)
+        | Operation::RandomPermutation(_) => Some(0),
         Operation::Truncate(_)
         | Operation::Sum(_)
         | Operation::PermuteAxes(_)
@@ -608,6 +611,14 @@ impl TypeInferenceWorker {
                 Ok(t)
             }
             Operation::Random(t) => {
+                self.register_result(node, t.clone())?;
+                Ok(t)
+            }
+            Operation::RandomPermutation(n) => {
+                if n == 0 {
+                    return Err(runtime_error!("Permutation length should be non-zero"));
+                }
+                let t = array_type(vec![n], UINT64);
                 self.register_result(node, t.clone())?;
                 Ok(t)
             }
@@ -2607,6 +2618,33 @@ mod tests {
             test_cuckoo_hash_fail(array_type(vec![4, 6], BIT), array_type(vec![2, 4, 6], BIT))?;
             test_cuckoo_hash_fail(array_type(vec![4, 6], BIT), array_type(vec![3, 4, 7], BIT))?;
             test_cuckoo_hash_fail(array_type(vec![4, 6], BIT), array_type(vec![3, 64, 6], BIT))?;
+
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    fn test_random_permutation_worker(n: u64) -> Result<Type> {
+        let context = create_unchecked_context()?;
+        let graph = context.create_graph()?;
+        let mut worker = create_type_inference_worker(context.clone());
+        let o = graph.random_permutation(n)?;
+        worker.process_node(o)
+    }
+
+    #[test]
+    fn test_random_permutation() {
+        || -> Result<()> {
+            assert_eq!(
+                test_random_permutation_worker(1)?,
+                array_type(vec![1], UINT64)
+            );
+            assert_eq!(
+                test_random_permutation_worker(100)?,
+                array_type(vec![100], UINT64)
+            );
+
+            assert!(test_random_permutation_worker(0).is_err());
 
             Ok(())
         }()

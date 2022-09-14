@@ -762,6 +762,17 @@ impl Evaluator for SimpleEvaluator {
                 let new_value = self.prng.get_random_value(t)?;
                 Ok(new_value)
             }
+            Operation::RandomPermutation(n) => {
+                let mut result_array: Vec<u64> = (0..n).collect();
+
+                // Fisher-Yates shuffle (<https://en.wikipedia.org/wiki/Fisher%E2%80%93Yates_shuffle>)
+                for i in (1..n).rev() {
+                    let j = self.prng.get_random_in_range(Some(i + 1))?;
+                    result_array.swap(j as usize, i as usize);
+                }
+
+                Value::from_flattened_array(&result_array, UINT64)
+            }
             Operation::PRF(iv, t) => {
                 let key_value = dependencies_values[0].clone();
                 let key = key_value.access_bytes(|bytes| Ok(bytes.to_vec()))?;
@@ -861,6 +872,7 @@ mod tests {
         },
         evaluators::random_evaluate,
         graphs::create_context,
+        random::chi_statistics,
     };
 
     use super::*;
@@ -1151,6 +1163,71 @@ mod tests {
                 }));
                 assert!(e.is_err());
             }
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    fn random_permutation_helper(n: u64) -> Result<()> {
+        let c = create_context()?;
+        let g = c.create_graph()?;
+        let o = g.random_permutation(n)?;
+        g.set_output_node(o.clone())?;
+        g.finalize()?;
+        c.set_main_graph(g.clone())?;
+        c.finalize()?;
+        let result_type = o.get_type()?;
+
+        let mut perm_statistics: HashMap<Vec<u64>, u64> = HashMap::new();
+        let expected_count_per_perm = 100;
+        let n_factorial: u64 = (2..=n).product();
+        let runs = expected_count_per_perm * n_factorial;
+        for _ in 0..runs {
+            let result_value = random_evaluate(g.clone(), vec![])?;
+            let perm = result_value.to_flattened_array_u64(result_type.clone())?;
+
+            let mut perm_without_dup = perm.clone();
+            perm_without_dup.dedup();
+            assert_eq!(perm, perm_without_dup);
+
+            let mut perm_sorted = perm.clone();
+            perm_sorted.sort();
+            let range_vec: Vec<u64> = (0..n).collect();
+            assert_eq!(perm_sorted, range_vec);
+
+            perm_statistics
+                .entry(perm)
+                .and_modify(|counter| *counter += 1)
+                .or_insert(0);
+        }
+
+        // Check that all permutations occurred in the experiments
+        assert_eq!(perm_statistics.len() as u64, n_factorial);
+
+        // Chi-square test with significance level 10^(-6)
+        // <https://www.itl.nist.gov/div898/handbook/eda/section3/eda35f.htm>
+        if n > 1 {
+            let counters: Vec<u64> = perm_statistics.values().map(|c| *c).collect();
+            let chi2 = chi_statistics(&counters, expected_count_per_perm);
+            // Critical value is computed with n!-1 degrees of freedom
+            if n == 4 {
+                assert!(chi2 < 70.5496_f64);
+            }
+            if n == 5 {
+                assert!(chi2 < 207.1986_f64);
+            }
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_random_permutation() {
+        || -> Result<()> {
+            random_permutation_helper(1)?;
+            random_permutation_helper(4)?;
+            random_permutation_helper(5)?;
+
             Ok(())
         }()
         .unwrap();

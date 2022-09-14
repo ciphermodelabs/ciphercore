@@ -97,6 +97,7 @@ pub enum Operation {
     Iterate,
     ArrayToVector,
     VectorToArray,
+    RandomPermutation(u64),
     Gather(u64),
     CuckooHash,
     InversePermutation,
@@ -1483,6 +1484,24 @@ impl Graph {
     #[doc(hidden)]
     pub fn random(&self, output_type: Type) -> Result<Node> {
         self.add_node(vec![], vec![], Operation::Random(output_type))
+    }
+
+    /// Adds a node creating a random permutation map of a one-dimensional array of length `n`.
+    ///
+    /// This operation generates a random array of all 64-bit integers from 0 to n-1 in random order.
+    ///
+    /// **WARNING**: this function should not be used before MPC compilation.
+    ///
+    /// # Arguments
+    ///
+    /// `n` - length of permutation
+    ///
+    /// # Returns
+    ///
+    /// New random permutation node
+    #[doc(hidden)]
+    pub fn random_permutation(&self, n: u64) -> Result<Node> {
+        self.add_node(vec![], vec![], Operation::RandomPermutation(n))
     }
 
     /// Adds a node returning the Cuckoo hash map of an input array of binary strings using provided hash functions.
