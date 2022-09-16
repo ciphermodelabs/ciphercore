@@ -11,6 +11,7 @@ use crate::graphs::{Node, Operation};
 use crate::random::{Prf, PRNG, SEED_SIZE};
 use crate::slices::slice_index;
 
+use std::cmp::min;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::iter::repeat;
@@ -403,6 +404,29 @@ fn evaluate_cuckoo(
     Value::from_flattened_array(&hash_table, UINT64)
 }
 
+// Fisher-Yates shuffle (<https://en.wikipedia.org/wiki/Fisher%E2%80%93Yates_shuffle>)
+fn shuffle_array(array: &mut Vec<u64>, prng: &mut PRNG) -> Result<()> {
+    for i in (1..array.len() as u64).rev() {
+        let j = prng.get_random_in_range(Some(i + 1))?;
+        array.swap(j as usize, i as usize);
+    }
+    Ok(())
+}
+
+// Choose `a` if `c = 1` and `b` if `c=0` in constant time.
+//
+// `c` must be equal to `0` or `1`.
+//
+// **WARNING**: This approach might have potential problems when compiled to WASM,
+// see <https://blog.trailofbits.com/2022/01/26/part-1-the-life-of-an-optimization-barrier/>
+#[inline(never)]
+fn constant_time_select(a: u64, b: u64, c: u64) -> u64 {
+    // Tells the compiler that the memory at &c is volatile and that it cannot make any assumptions about it.
+    let mut c_per_bit = unsafe { core::ptr::read_volatile(&c as *const u64) };
+    c_per_bit *= u64::MAX;
+    c_per_bit & (a ^ b) ^ b
+}
+
 pub struct SimpleEvaluator {
     prng: PRNG,
     prfs: HashMap<Vec<u8>, Prf>,
@@ -625,8 +649,9 @@ impl Evaluator for SimpleEvaluator {
                 let t = dependency.get_type()?;
                 let values = dependencies_values[0].to_flattened_array_u64(t.clone())?;
                 let mut values_without_dup = values.clone();
+                values_without_dup.sort_unstable();
                 values_without_dup.dedup();
-                if values != values_without_dup {
+                if values.len() != values_without_dup.len() {
                     panic!("Input array doesn't contain a valid permutation");
                 }
                 let mut result = vec![0u64; values.len()];
@@ -765,12 +790,74 @@ impl Evaluator for SimpleEvaluator {
             Operation::RandomPermutation(n) => {
                 let mut result_array: Vec<u64> = (0..n).collect();
 
-                // Fisher-Yates shuffle (<https://en.wikipedia.org/wiki/Fisher%E2%80%93Yates_shuffle>)
-                for i in (1..n).rev() {
-                    let j = self.prng.get_random_in_range(Some(i + 1))?;
-                    result_array.swap(j as usize, i as usize);
-                }
+                shuffle_array(&mut result_array, &mut self.prng)?;
 
+                Value::from_flattened_array(&result_array, UINT64)
+            }
+            Operation::CuckooToPermutation => {
+                let input_node = node.get_node_dependencies()[0].clone();
+                let t = input_node.get_type()?;
+                let input_value = dependencies_values[0].clone();
+                let input_array = input_value.to_flattened_array_u64(t.clone())?;
+
+                let input_shape = t.get_shape();
+                let num_cuckoo_tables = input_shape
+                    .iter()
+                    .take(input_shape.len() - 1)
+                    .product::<u64>();
+                let table_size = input_shape[input_shape.len() - 1];
+                let mut result_array = vec![0; (num_cuckoo_tables * table_size) as usize];
+
+                for table_i in 0..num_cuckoo_tables as usize {
+                    let mut num_dummies = 0;
+                    let table_start = table_i * table_size as usize;
+                    for i in 0..table_size as usize {
+                        // Compute the bit input element == CUCKOO_DUMMY_ELEMENT using the fact that CUCKOO_DUMMY_ELEMENT = u64::MAX
+                        num_dummies += input_array[table_start + i] / CUCKOO_DUMMY_ELEMENT;
+                    }
+                    // Check that after removing the dummies there are no other duplicates removed
+                    let mut input_wout_dup =
+                        input_array[table_start..table_start + table_size as usize].to_vec();
+                    input_wout_dup.sort_unstable();
+                    input_wout_dup.dedup();
+                    if num_dummies > 1 {
+                        if input_wout_dup.len() as u64 + num_dummies - 1 != table_size {
+                            panic!("Input array contains duplicate indices");
+                        }
+                    } else if input_wout_dup.len() as u64 != table_size {
+                        panic!("Input array contains duplicate indices");
+                    }
+                    let mut remaining_indices: Vec<u64> =
+                        (table_size - num_dummies..table_size).collect();
+                    // If there are no dummy elements, set remaining indices to [CUCKOO_DUMMY_ELEMENT] to support the constant-time selection below.
+                    if remaining_indices.is_empty() {
+                        remaining_indices.push(CUCKOO_DUMMY_ELEMENT);
+                    }
+                    // Shuffle remaining indices
+                    shuffle_array(&mut remaining_indices, &mut self.prng)?;
+                    let mut current_index = 0;
+                    for i in 0..table_size as usize {
+                        // Check that non-dummy elements of the Cuckoo table are correct indices of an array of length `table_size - num_dummies`.
+                        if input_array[table_start + i] >= table_size - num_dummies
+                            && input_array[table_start + i] != CUCKOO_DUMMY_ELEMENT
+                        {
+                            panic!("Indices are incorrect");
+                        }
+                        // Compute the bit input element == CUCKOO_DUMMY_ELEMENT using the fact that CUCKOO_DUMMY_ELEMENT = u64::MAX
+                        let is_dummy = input_array[table_start + i] / CUCKOO_DUMMY_ELEMENT;
+                        // Select either an input array element or a random index if this element is dummy
+                        // Select in constant time to avoid possible leakage of dummy positions
+                        result_array[table_start + i] = constant_time_select(
+                            remaining_indices[current_index],
+                            input_array[table_start + i],
+                            is_dummy,
+                        );
+                        current_index = min(
+                            current_index + is_dummy as usize,
+                            remaining_indices.len() - 1,
+                        );
+                    }
+                }
                 Value::from_flattened_array(&result_array, UINT64)
             }
             Operation::PRF(iv, t) => {
@@ -821,8 +908,9 @@ impl Evaluator for SimpleEvaluator {
                 // Check uniqueness of indices
                 // Panic here because this operation isn't public and, ideally, this case should not happen
                 let mut dedup_indices_entries = indices_entries.clone();
+                dedup_indices_entries.sort_unstable();
                 dedup_indices_entries.dedup();
-                if dedup_indices_entries != indices_entries {
+                if dedup_indices_entries.len() != indices_entries.len() {
                     panic!("Indices must be unique");
                 }
 
@@ -870,7 +958,7 @@ mod tests {
             named_tuple_type, scalar_type, tuple_type, vector_type, ArrayShape, INT32, UINT32,
             UINT64, UINT8,
         },
-        evaluators::random_evaluate,
+        evaluators::{evaluate_simple_evaluator, random_evaluate},
         graphs::create_context,
         random::chi_statistics,
     };
@@ -1186,10 +1274,6 @@ mod tests {
             let result_value = random_evaluate(g.clone(), vec![])?;
             let perm = result_value.to_flattened_array_u64(result_type.clone())?;
 
-            let mut perm_without_dup = perm.clone();
-            perm_without_dup.dedup();
-            assert_eq!(perm, perm_without_dup);
-
             let mut perm_sorted = perm.clone();
             perm_sorted.sort();
             let range_vec: Vec<u64> = (0..n).collect();
@@ -1228,6 +1312,129 @@ mod tests {
             random_permutation_helper(4)?;
             random_permutation_helper(5)?;
 
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    fn cuckoo_to_permutation_helper(
+        shape: ArrayShape,
+        input_value: Value,
+        seed: Option<[u8; 16]>,
+    ) -> Result<Vec<u64>> {
+        let c = create_context()?;
+        let g = c.create_graph()?;
+        let input_type = array_type(shape, UINT64);
+        let i = g.input(input_type.clone())?;
+        let o = i.cuckoo_to_permutation()?;
+        g.set_output_node(o)?;
+        g.finalize()?;
+        c.set_main_graph(g.clone())?;
+        c.finalize()?;
+        let result_value = evaluate_simple_evaluator(g, vec![input_value], seed)?;
+        result_value.to_flattened_array_u64(input_type)
+    }
+
+    #[test]
+    fn test_cuckoo_to_permutation() {
+        || -> Result<()> {
+            let seed = Some([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+            let x = CUCKOO_DUMMY_ELEMENT;
+            // fixed seed
+            {
+                let input_value = Value::from_flattened_array(&[0, 1, 2, 3], UINT64)?;
+                let expected = vec![0, 1, 2, 3];
+                assert_eq!(
+                    cuckoo_to_permutation_helper(vec![4], input_value, seed)?,
+                    expected
+                );
+            }
+            {
+                let input_value = Value::from_flattened_array(&[0, x, 2, 1], UINT64)?;
+                let expected = vec![0, 3, 2, 1];
+                assert_eq!(
+                    cuckoo_to_permutation_helper(vec![4], input_value, seed)?,
+                    expected
+                );
+            }
+            {
+                let input_value = Value::from_flattened_array(&[0, x, 2, 1, x, 3, 4, x], UINT64)?;
+                let expected = vec![0, 6, 2, 1, 5, 3, 4, 7];
+                assert_eq!(
+                    cuckoo_to_permutation_helper(vec![8], input_value, seed)?,
+                    expected
+                );
+            }
+            {
+                let input_value = Value::from_flattened_array(&[0, x, 2, 1, x, 0, 1, x], UINT64)?;
+                let expected = vec![0, 3, 2, 1, 2, 0, 1, 3];
+                assert_eq!(
+                    cuckoo_to_permutation_helper(vec![2, 4], input_value, seed)?,
+                    expected
+                );
+            }
+            {
+                let input_value = Value::from_flattened_array(&[0, x, 2, 1, x, 4, 4, x], UINT64)?;
+                let e = catch_unwind(AssertUnwindSafe(|| {
+                    cuckoo_to_permutation_helper(vec![8], input_value, seed)
+                }));
+                assert!(e.is_err());
+            }
+            {
+                let input_value = Value::from_flattened_array(&[0, x, 2, 1, x, 5, 4, x], UINT64)?;
+                let e = catch_unwind(AssertUnwindSafe(|| {
+                    cuckoo_to_permutation_helper(vec![8], input_value, seed)
+                }));
+                assert!(e.is_err());
+            }
+            // random seed
+            {
+                let input_array = vec![0, x, 2, 1, x, x, 3, x];
+                let max_element = 3;
+                let input_value = Value::from_flattened_array(&input_array, UINT64)?;
+                let mut perm_statistics: HashMap<Vec<u64>, u64> = HashMap::new();
+                let expected_count_per_perm = 100;
+                let n = 4;
+                let n_factorial = (2..=n).product::<u64>();
+                let runs = expected_count_per_perm * n_factorial;
+                for _ in 0..runs {
+                    let res = cuckoo_to_permutation_helper(vec![8], input_value.clone(), None)?;
+
+                    // Extract generated random indices
+                    let mut perm = vec![];
+                    for i in res {
+                        if i > max_element {
+                            perm.push(i);
+                        }
+                    }
+
+                    let mut perm_without_dup = perm.clone();
+                    perm_without_dup.sort_unstable();
+                    perm_without_dup.dedup();
+                    assert_eq!(perm.len(), perm_without_dup.len());
+
+                    let mut perm_sorted = perm.clone();
+                    perm_sorted.sort();
+                    let range_vec: Vec<u64> = (max_element + 1..input_array.len() as u64).collect();
+                    assert_eq!(perm_sorted, range_vec);
+
+                    perm_statistics
+                        .entry(perm)
+                        .and_modify(|counter| *counter += 1)
+                        .or_insert(0);
+                }
+
+                // Check that all permutations occurred in the experiments
+                assert_eq!(perm_statistics.len() as u64, n_factorial);
+
+                // Chi-square test with significance level 10^(-6)
+                // Critical value is computed with n!-1 degrees of freedom
+                // <https://www.itl.nist.gov/div898/handbook/eda/section3/eda35f.htm>
+                let counters: Vec<u64> = perm_statistics.values().map(|c| *c).collect();
+                let chi2 = chi_statistics(&counters, expected_count_per_perm);
+
+                assert!(chi2 < 70.5496_f64);
+            }
             Ok(())
         }()
         .unwrap();

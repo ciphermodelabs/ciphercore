@@ -329,8 +329,8 @@ mod tests {
             let key = g.input(array_type(vec![key_size], BIT))?;
             let o = g.custom_op(
                 CustomOperation::new(LowMC {
-                    s_boxes_per_round: 10,
-                    rounds: 20,
+                    s_boxes_per_round: 42,
+                    rounds: 4,
                 }),
                 vec![i, key],
             )?;

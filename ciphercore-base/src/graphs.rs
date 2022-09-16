@@ -101,6 +101,7 @@ pub enum Operation {
     Gather(u64),
     CuckooHash,
     InversePermutation,
+    CuckooToPermutation,
     Custom(CustomOperation),
 }
 
@@ -771,6 +772,14 @@ impl Node {
     #[doc(hidden)]
     pub fn cuckoo_hash(&self, hash_matrices: Node) -> Result<Node> {
         self.get_graph().cuckoo_hash(self.clone(), hash_matrices)
+    }
+
+    /// Adds a node that converts a Cuckoo hash table to a random permutation.
+    ///
+    /// Applies [Graph::cuckoo_to_permutation] to the parent graph and `this` node.
+    #[doc(hidden)]
+    pub fn cuckoo_to_permutation(&self) -> Result<Node> {
+        self.get_graph().cuckoo_to_permutation(self.clone())
     }
 
     /// Applies [Graph::set_output_node] to the parent graph and `this` node.
@@ -1533,6 +1542,24 @@ impl Graph {
     #[doc(hidden)]
     pub fn cuckoo_hash(&self, array: Node, hash_matrices: Node) -> Result<Node> {
         self.add_node(vec![array, hash_matrices], vec![], Operation::CuckooHash)
+    }
+
+    /// Adds a node that converts a Cuckoo hash table to a random permutation.
+    ///
+    /// Conversion is done via replacing dummy hash elements by random indices such that the resulting array constitute a permutation.
+    ///
+    /// **WARNING**: this function should not be used before MPC compilation.
+    ///
+    /// # Arguments
+    ///
+    /// `cuckoo_map` - an array containing a Cuckoo hash map with dummy values
+    ///
+    /// # Returns
+    ///
+    /// New CuckooToPermutation node
+    #[doc(hidden)]
+    pub fn cuckoo_to_permutation(&self, cuckoo_map: Node) -> Result<Node> {
+        self.add_node(vec![cuckoo_map], vec![], Operation::CuckooToPermutation)
     }
 
     /// Adds a node that joins a sequence of arrays governed by a given shape.
