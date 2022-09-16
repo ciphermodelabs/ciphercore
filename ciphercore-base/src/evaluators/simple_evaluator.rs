@@ -3,7 +3,7 @@ use crate::bytes::{
     add_u64, add_vectors_u64, multiply_u64, multiply_vectors_u64, subtract_vectors_u64,
 };
 use crate::bytes::{vec_from_bytes, vec_to_bytes};
-use crate::data_types::{array_type, Type, BIT};
+use crate::data_types::{array_type, Type, BIT, UINT64};
 use crate::data_values::Value;
 use crate::errors::Result;
 use crate::evaluators::Evaluator;
@@ -11,6 +11,7 @@ use crate::graphs::{Node, Operation};
 use crate::random::{Prf, PRNG, SEED_SIZE};
 use crate::slices::slice_index;
 
+use std::cmp::min;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::iter::repeat;
@@ -300,6 +301,132 @@ fn evaluate_matmul(
     }
 }
 
+// Dummy value in Cuckoo hash tables that contain indices of arrays
+const CUCKOO_DUMMY_ELEMENT: u64 = u64::MAX;
+
+// Cuckoo hashing is computed as in <https://eprint.iacr.org/2018/579.pdf>, Section 3.2
+fn evaluate_cuckoo(
+    input_type: Type,
+    input_value: Value,
+    hash_matrices_type: Type,
+    hash_matrices_value: Value,
+    result_type: Type,
+) -> Result<Value> {
+    if !input_type.is_array() || !hash_matrices_type.is_array() {
+        panic!("Inconsistency with type checker");
+    }
+    let input_shape = input_type.get_shape();
+    let hash_matrices_shape = hash_matrices_type.get_shape();
+    let input_bits = input_value.to_flattened_array_u64(input_type)?;
+    let hash_matrices_bits = hash_matrices_value.to_flattened_array_u64(hash_matrices_type)?;
+    let result_shape = result_type.get_shape();
+
+    let size_of_output_table = result_shape[result_shape.len() - 1] as usize;
+    let result_length = result_shape.into_iter().product::<u64>() as usize;
+
+    // Initialize the hash table and table of used hash functions per element with dummy indices.
+    let mut hash_table = vec![CUCKOO_DUMMY_ELEMENT; result_length];
+    let mut used_hash_functions = vec![usize::MAX; result_length];
+
+    let hash_functions = hash_matrices_shape[0] as usize;
+    let hash_matrix_rows = hash_matrices_shape[1] as usize;
+    let hash_matrix_columns = hash_matrices_shape[2] as usize;
+    let hash_matrix_size = (hash_matrix_rows * hash_matrix_columns) as usize;
+
+    let num_input_sets = input_shape
+        .iter()
+        .take(input_shape.len() - 2)
+        .product::<u64>() as usize;
+    let num_input_strings_per_set = input_shape[input_shape.len() - 2] as usize;
+    let input_string_length = input_shape[input_shape.len() - 1] as usize;
+
+    for set_i in 0..num_input_sets {
+        for string_i in 0..num_input_strings_per_set {
+            let mut current_string_index = string_i;
+            let mut current_hash_function_index = 0;
+            let mut reinsert_attempt = 0;
+
+            let mut insertion_failed = true;
+            // If the number of consecutive re-insertions exceeds the bound, the hashing fails.
+            // 100 is an empirical bound taken from <https://eprint.iacr.org/2018/579.pdf>, Appendix B.
+            while reinsert_attempt < 100 {
+                let string_start = (set_i * num_input_strings_per_set + current_string_index)
+                    * input_string_length;
+                let input_string = &input_bits[string_start..string_start + input_string_length];
+
+                // Compute the hash of the input string
+                let mut new_index = 0;
+                // TODO: this matrix-vector product can be optimized
+                for row in 0..hash_matrix_rows {
+                    let mut hash_index_bit = 0;
+                    for (column, input_bit) in
+                        input_string.iter().enumerate().take(hash_matrix_columns)
+                    {
+                        hash_index_bit ^= hash_matrices_bits[hash_matrix_size
+                            * current_hash_function_index
+                            + row * hash_matrix_columns
+                            + column]
+                            & input_bit;
+                    }
+                    new_index ^= hash_index_bit << row;
+                }
+
+                // Check that the hash table is empty at the hash index
+                let result_index = set_i * size_of_output_table + new_index as usize;
+                if hash_table[result_index] == CUCKOO_DUMMY_ELEMENT {
+                    // If yes, insert the current index into the hash table
+                    // and the current hash function into the table of used hash functions
+                    hash_table[result_index] = current_string_index as u64;
+                    used_hash_functions[result_index] = current_hash_function_index;
+                    insertion_failed = false;
+                    break;
+                } else {
+                    // If no, extract the index and the corresponding hash function from the occupied cells
+                    let old_string_index = hash_table[result_index] as usize;
+                    let old_hash_function_index = used_hash_functions[result_index];
+                    hash_table[result_index] = current_string_index as u64;
+                    used_hash_functions[result_index] = current_hash_function_index;
+
+                    // Re-insert the string with the extracted index using the next hash function
+                    // NOTE: we change hash functions iteratively in contrast to the default random walk regime.
+                    // It shouldn't significantly affect the failure probability as discussed in <https://eprint.iacr.org/2018/579.pdf>, Appendix B.
+                    current_string_index = old_string_index;
+                    current_hash_function_index = (old_hash_function_index + 1) % hash_functions;
+                    reinsert_attempt += 1;
+                }
+            }
+            if insertion_failed {
+                panic!("Cuckoo hashing failed");
+            }
+        }
+    }
+
+    Value::from_flattened_array(&hash_table, UINT64)
+}
+
+// Fisher-Yates shuffle (<https://en.wikipedia.org/wiki/Fisher%E2%80%93Yates_shuffle>)
+fn shuffle_array(array: &mut Vec<u64>, prng: &mut PRNG) -> Result<()> {
+    for i in (1..array.len() as u64).rev() {
+        let j = prng.get_random_in_range(Some(i + 1))?;
+        array.swap(j as usize, i as usize);
+    }
+    Ok(())
+}
+
+// Choose `a` if `c = 1` and `b` if `c=0` in constant time.
+//
+// `c` must be equal to `0` or `1`.
+//
+// **WARNING**: This approach might have potential problems when compiled to WASM,
+// see <https://blog.trailofbits.com/2022/01/26/part-1-the-life-of-an-optimization-barrier/>
+#[inline(never)]
+fn constant_time_select(a: u64, b: u64, c: u64) -> u64 {
+    // Tells the compiler that the memory at &c is volatile and that it cannot make any assumptions about it.
+    let mut c_per_bit = unsafe { core::ptr::read_volatile(&c as *const u64) };
+    c_per_bit *= u64::MAX;
+    c_per_bit & (a ^ b) ^ b
+}
+
 pub struct SimpleEvaluator {
     prng: PRNG,
     prfs: HashMap<Vec<u8>, Prf>,
@@ -517,6 +644,26 @@ impl Evaluator for SimpleEvaluator {
                 }
                 Value::from_flattened_array(&result, t.get_scalar_type())
             }
+            Operation::InversePermutation => {
+                let dependency = node.get_node_dependencies()[0].clone();
+                let t = dependency.get_type()?;
+                let values = dependencies_values[0].to_flattened_array_u64(t.clone())?;
+                let mut values_without_dup = values.clone();
+                values_without_dup.sort_unstable();
+                values_without_dup.dedup();
+                if values.len() != values_without_dup.len() {
+                    panic!("Input array doesn't contain a valid permutation");
+                }
+                let mut result = vec![0u64; values.len()];
+                for i in 0..values.len() {
+                    let value = values[i] as usize;
+                    if value >= values.len() {
+                        panic!("Input array doesn't contain a valid permutation");
+                    }
+                    result[value] = i as u64;
+                }
+                Value::from_flattened_array(&result, t.get_scalar_type())
+            }
             Operation::Sum(axes) => {
                 let dependency = node.get_node_dependencies()[0].clone();
                 let inp_t = dependency.get_type()?;
@@ -640,6 +787,79 @@ impl Evaluator for SimpleEvaluator {
                 let new_value = self.prng.get_random_value(t)?;
                 Ok(new_value)
             }
+            Operation::RandomPermutation(n) => {
+                let mut result_array: Vec<u64> = (0..n).collect();
+
+                shuffle_array(&mut result_array, &mut self.prng)?;
+
+                Value::from_flattened_array(&result_array, UINT64)
+            }
+            Operation::CuckooToPermutation => {
+                let input_node = node.get_node_dependencies()[0].clone();
+                let t = input_node.get_type()?;
+                let input_value = dependencies_values[0].clone();
+                let input_array = input_value.to_flattened_array_u64(t.clone())?;
+
+                let input_shape = t.get_shape();
+                let num_cuckoo_tables = input_shape
+                    .iter()
+                    .take(input_shape.len() - 1)
+                    .product::<u64>();
+                let table_size = input_shape[input_shape.len() - 1];
+                let mut result_array = vec![0; (num_cuckoo_tables * table_size) as usize];
+
+                for table_i in 0..num_cuckoo_tables as usize {
+                    let mut num_dummies = 0;
+                    let table_start = table_i * table_size as usize;
+                    for i in 0..table_size as usize {
+                        // Compute the bit input element == CUCKOO_DUMMY_ELEMENT using the fact that CUCKOO_DUMMY_ELEMENT = u64::MAX
+                        num_dummies += input_array[table_start + i] / CUCKOO_DUMMY_ELEMENT;
+                    }
+                    // Check that after removing the dummies there are no other duplicates removed
+                    let mut input_wout_dup =
+                        input_array[table_start..table_start + table_size as usize].to_vec();
+                    input_wout_dup.sort_unstable();
+                    input_wout_dup.dedup();
+                    if num_dummies > 1 {
+                        if input_wout_dup.len() as u64 + num_dummies - 1 != table_size {
+                            panic!("Input array contains duplicate indices");
+                        }
+                    } else if input_wout_dup.len() as u64 != table_size {
+                        panic!("Input array contains duplicate indices");
+                    }
+                    let mut remaining_indices: Vec<u64> =
+                        (table_size - num_dummies..table_size).collect();
+                    // If there are no dummy elements, set remaining indices to [CUCKOO_DUMMY_ELEMENT] to support the constant-time selection below.
+                    if remaining_indices.is_empty() {
+                        remaining_indices.push(CUCKOO_DUMMY_ELEMENT);
+                    }
+                    // Shuffle remaining indices
+                    shuffle_array(&mut remaining_indices, &mut self.prng)?;
+                    let mut current_index = 0;
+                    for i in 0..table_size as usize {
+                        // Check that non-dummy elements of the Cuckoo table are correct indices of an array of length `table_size - num_dummies`.
+                        if input_array[table_start + i] >= table_size - num_dummies
+                            && input_array[table_start + i] != CUCKOO_DUMMY_ELEMENT
+                        {
+                            panic!("Indices are incorrect");
+                        }
+                        // Compute the bit input element == CUCKOO_DUMMY_ELEMENT using the fact that CUCKOO_DUMMY_ELEMENT = u64::MAX
+                        let is_dummy = input_array[table_start + i] / CUCKOO_DUMMY_ELEMENT;
+                        // Select either an input array element or a random index if this element is dummy
+                        // Select in constant time to avoid possible leakage of dummy positions
+                        result_array[table_start + i] = constant_time_select(
+                            remaining_indices[current_index],
+                            input_array[table_start + i],
+                            is_dummy,
+                        );
+                        current_index = min(
+                            current_index + is_dummy as usize,
+                            remaining_indices.len() - 1,
+                        );
+                    }
+                }
+                Value::from_flattened_array(&result_array, UINT64)
+            }
             Operation::PRF(iv, t) => {
                 let key_value = dependencies_values[0].clone();
                 let key = key_value.access_bytes(|bytes| Ok(bytes.to_vec()))?;
@@ -660,13 +880,91 @@ impl Evaluator for SimpleEvaluator {
                 };
                 Ok(new_value)
             }
+            Operation::CuckooHash => {
+                let input_value = dependencies_values[0].clone();
+                let hash_matrices_value = dependencies_values[1].clone();
+
+                let input_type = node.get_node_dependencies()[0].get_type()?;
+                let hash_matrices_type = node.get_node_dependencies()[1].get_type()?;
+
+                let result_type = node.get_type()?;
+                evaluate_cuckoo(
+                    input_type,
+                    input_value,
+                    hash_matrices_type,
+                    hash_matrices_value,
+                    result_type,
+                )
+            }
+            Operation::Gather(axis) => {
+                let input_value = dependencies_values[0].clone();
+                let indices_value = dependencies_values[1].clone();
+
+                let input_t = node.get_node_dependencies()[0].get_type()?;
+                let input_entries = input_value.to_flattened_array_u64(input_t.clone())?;
+                let indices_t = node.get_node_dependencies()[1].get_type()?;
+                let indices_entries = indices_value.to_flattened_array_u64(indices_t)?;
+
+                // Check uniqueness of indices
+                // Panic here because this operation isn't public and, ideally, this case should not happen
+                let mut dedup_indices_entries = indices_entries.clone();
+                dedup_indices_entries.sort_unstable();
+                dedup_indices_entries.dedup();
+                if dedup_indices_entries.len() != indices_entries.len() {
+                    panic!("Indices must be unique");
+                }
+
+                let mut output_entries = vec![];
+
+                let input_shape = input_t.get_shape();
+
+                // Number of subarrays whose indices are selected
+                let num_arrays = input_shape[..axis as usize]
+                    .to_vec()
+                    .iter()
+                    .product::<u64>();
+
+                // Number of elements in each row indexed by the indices
+                let row_size = input_shape[(axis + 1) as usize..]
+                    .to_vec()
+                    .iter()
+                    .product::<u64>();
+
+                for array_i in 0..num_arrays {
+                    for index_entry in indices_entries.iter() {
+                        let input_flat_index =
+                            (array_i * input_shape[axis as usize] + index_entry) * row_size;
+                        output_entries.extend_from_slice(
+                            &input_entries
+                                [input_flat_index as usize..(input_flat_index + row_size) as usize],
+                        );
+                    }
+                }
+
+                let result_type = node.get_type()?;
+                Value::from_flattened_array(&output_entries, result_type.get_scalar_type())
+            }
             _ => Err(runtime_error!("Not implemented")),
         }
     }
 }
 
-#[cfg(tests)]
+#[cfg(test)]
 mod tests {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    use crate::{
+        data_types::{
+            named_tuple_type, scalar_type, tuple_type, vector_type, ArrayShape, INT32, UINT32,
+            UINT64, UINT8,
+        },
+        evaluators::{evaluate_simple_evaluator, random_evaluate},
+        graphs::create_context,
+        random::chi_statistics,
+    };
+
+    use super::*;
+
     #[test]
     fn test_prf() {
         let helper = |iv: u64, t: Type| -> Result<()> {
@@ -689,7 +987,7 @@ mod tests {
             let v = evaluator.evaluate_context(c, Vec::new())?;
             let ot = vector_type(3, t.clone());
             assert_eq!(evaluator.prfs.len(), 2);
-            assert!((*v).borrow().check_type(ot)?);
+            assert!(v.check_type(ot)?);
             Ok(())
         };
         || -> Result<()> {
@@ -718,5 +1016,427 @@ mod tests {
             )
         }()
         .unwrap()
+    }
+
+    fn cuckoo_helper(
+        input_shape: ArrayShape,
+        hash_shape: ArrayShape,
+        inputs: Vec<Value>,
+    ) -> Result<Vec<u64>> {
+        let c = create_context()?;
+        let g = c.create_graph()?;
+        let i = g.input(array_type(input_shape.clone(), BIT))?;
+        let hash_matrix = g.input(array_type(hash_shape.clone(), BIT))?;
+        let o = i.cuckoo_hash(hash_matrix)?;
+        g.set_output_node(o.clone())?;
+        g.finalize()?;
+        c.set_main_graph(g.clone())?;
+        c.finalize()?;
+        let result_value = random_evaluate(g, inputs)?;
+        let result_type = o.get_type()?;
+        result_value.to_flattened_array_u64(result_type)
+    }
+
+    #[test]
+    fn test_cuckoo_hash() {
+        || -> Result<()> {
+            // no collision
+            {
+                // [2,3]-array
+                let input = Value::from_flattened_array(&[1, 0, 1, 0, 0, 1], BIT)?;
+                // [3,2,3]-array
+                let hash_matrix = Value::from_flattened_array(
+                    &[1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 0, 0, 1],
+                    BIT,
+                )?;
+                // output [4]-array
+                // Hashing results in: h_0(input[0]) = 00, h_0(input[1]) = 10
+                let expected = vec![0, 1, u64::MAX, u64::MAX];
+                assert_eq!(
+                    cuckoo_helper(vec![2, 3], vec![3, 2, 3], vec![input, hash_matrix])?,
+                    expected
+                );
+            }
+            // collision
+            {
+                // [2,3]-array
+                let input = Value::from_flattened_array(&[1, 0, 1, 0, 0, 0], BIT)?;
+                // [3,2,3]-array
+                let hash_matrix = Value::from_flattened_array(
+                    &[1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 0, 0, 1],
+                    BIT,
+                )?;
+                // output [4]-array
+                // Hashing results in:
+                // h_0(input[0]) = 00, h_0(input[1]) = 00
+                // h_1(input[0]) = 00, h_1(input[1]) = 00
+                // h_2(input[0]) = 11
+                let expected = vec![1, u64::MAX, u64::MAX, 0];
+                assert_eq!(
+                    cuckoo_helper(vec![2, 3], vec![3, 2, 3], vec![input, hash_matrix])?,
+                    expected
+                );
+            }
+            // failure
+            {
+                // [2,3]-array
+                let input = Value::from_flattened_array(&[1, 0, 1, 0, 0, 0], BIT)?;
+                // [3,2,3]-array
+                // Hashes everything to 0
+                let hash_matrix = Value::from_flattened_array(&[0; 18], BIT)?;
+                let e = catch_unwind(AssertUnwindSafe(|| {
+                    cuckoo_helper(vec![2, 3], vec![3, 2, 3], vec![input, hash_matrix])
+                }));
+                assert!(e.is_err());
+            }
+            // somewhat big example
+            for _ in 0..1000 {
+                let mut prng = PRNG::new(None)?;
+                // Probability of getting two equal strings in each [512,32]-subarray is 3*10^(-5) by the birthday paradox
+                let input_shape = vec![512, 32];
+                let input = prng.get_random_value(array_type(input_shape.clone(), BIT))?;
+                // The size of hash table per each input set is 1024.
+                // Thus, the number of rows of hash matrices is log_2(1024) = 10.
+                // The estimated failure probability is ~2^(-108) according to <https://eprint.iacr.org/2018/579.pdf>, Appendix B.
+                // However, the probability that there is a pair of elements with hashes equal to a fixed value is Omega(1/1024^3).
+                let hash_shape = vec![3, 10, 32];
+                let hash_matrix = prng.get_random_value(array_type(hash_shape.clone(), BIT))?;
+                assert!(cuckoo_helper(input_shape, hash_shape, vec![input, hash_matrix]).is_ok());
+            }
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    fn inverse_permutation_helper(n: u64, inputs: Vec<Value>) -> Result<Vec<u64>> {
+        let c = create_context()?;
+        let g = c.create_graph()?;
+        let input_type = array_type(vec![n], UINT64);
+        let i = g.input(input_type.clone())?;
+        let o = i.inverse_permutation()?;
+        g.set_output_node(o)?;
+        g.finalize()?;
+        c.set_main_graph(g.clone())?;
+        c.finalize()?;
+        let result_value = random_evaluate(g, inputs)?;
+        result_value.to_flattened_array_u64(input_type)
+    }
+
+    fn gather_helper(
+        input_shape: ArrayShape,
+        indices_shape: ArrayShape,
+        axis: u64,
+        inputs: Vec<Value>,
+    ) -> Result<Vec<u64>> {
+        let c = create_context()?;
+        let g = c.create_graph()?;
+        let inp = g.input(array_type(input_shape.clone(), UINT32))?;
+        let ind = g.input(array_type(indices_shape.clone(), UINT64))?;
+        let o = inp.gather(ind, axis)?;
+        g.set_output_node(o.clone())?;
+        g.finalize()?;
+        c.set_main_graph(g.clone())?;
+        c.finalize()?;
+        let result_value = random_evaluate(g, inputs)?;
+        let result_type = o.get_type()?;
+        result_value.to_flattened_array_u64(result_type)
+    }
+
+    #[test]
+    fn test_inverse_permutation() {
+        || -> Result<()> {
+            {
+                let input = Value::from_flattened_array(&[0], UINT64)?;
+                let expected = vec![0];
+                assert_eq!(inverse_permutation_helper(1, vec![input])?, expected);
+            }
+            {
+                let input = Value::from_flattened_array(&[0, 1, 2, 3, 4], UINT64)?;
+                let expected = vec![0, 1, 2, 3, 4];
+                assert_eq!(inverse_permutation_helper(5, vec![input])?, expected);
+            }
+            {
+                let input = Value::from_flattened_array(&[4, 3, 2, 1, 0], UINT64)?;
+                let expected = vec![4, 3, 2, 1, 0];
+                assert_eq!(inverse_permutation_helper(5, vec![input])?, expected);
+            }
+            {
+                let input = Value::from_flattened_array(&[2, 0, 1, 4, 3], UINT64)?;
+                let expected = vec![1, 2, 0, 4, 3];
+                assert_eq!(inverse_permutation_helper(5, vec![input])?, expected);
+            }
+            // malformed input
+            {
+                let input = Value::from_flattened_array(&[2, 0, 1, 4, 4], UINT64)?;
+                let e = catch_unwind(AssertUnwindSafe(|| {
+                    inverse_permutation_helper(5, vec![input])
+                }));
+                assert!(e.is_err());
+            }
+            {
+                let input = Value::from_flattened_array(&[2, 0, 1, 4, 5], UINT64)?;
+                let e = catch_unwind(AssertUnwindSafe(|| {
+                    inverse_permutation_helper(5, vec![input])
+                }));
+                assert!(e.is_err());
+            }
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    #[test]
+    fn test_gather() {
+        || -> Result<()> {
+            {
+                // [5]-array
+                let input = Value::from_flattened_array(&[1, 2, 3, 4, 5], UINT32)?;
+                // [3]-array
+                let indices = Value::from_flattened_array(&[2, 0, 4], UINT64)?;
+                // output [3]-array
+                let expected = vec![3, 1, 5];
+                assert_eq!(
+                    gather_helper(vec![5], vec![3], 0, vec![input, indices])?,
+                    expected
+                );
+            }
+            {
+                // [3]-array
+                let input = Value::from_flattened_array(&[1, 2, 3], UINT32)?;
+                // [3]-array
+                let indices = Value::from_flattened_array(&[2, 0, 1], UINT64)?;
+                // output [3]-array
+                let expected = vec![3, 1, 2];
+                assert_eq!(
+                    gather_helper(vec![3], vec![3], 0, vec![input, indices])?,
+                    expected
+                );
+            }
+            {
+                // [2,3,2]-array
+                let input =
+                    Value::from_flattened_array(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], UINT32)?;
+                // [2]-array
+                let indices = Value::from_flattened_array(&[2, 0], UINT64)?;
+                // output [2,2,2]-array
+                let expected = vec![5, 6, 1, 2, 11, 12, 7, 8];
+                assert_eq!(
+                    gather_helper(vec![2, 3, 2], vec![2], 1, vec![input, indices])?,
+                    expected
+                );
+            }
+            {
+                let mut input_entries = vec![];
+                for i in 1..=20 {
+                    input_entries.push(i);
+                }
+                // [2,5,2]-array
+                let input = Value::from_flattened_array(&input_entries, UINT32)?;
+                // [2,2]-array
+                let indices = Value::from_flattened_array(&[1, 0, 2, 4], UINT64)?;
+                // output [2,2,2,2]-array
+                let expected = vec![3, 4, 1, 2, 5, 6, 9, 10, 13, 14, 11, 12, 15, 16, 19, 20];
+                assert_eq!(
+                    gather_helper(vec![2, 5, 2], vec![2, 2], 1, vec![input, indices])?,
+                    expected
+                );
+            }
+            {
+                // [5]-array
+                let input = Value::from_flattened_array(&[1, 2, 3, 4, 5], UINT32)?;
+                // [3]-array
+                let indices = Value::from_flattened_array(&[2, 0, 0], UINT64)?;
+                let e = catch_unwind(AssertUnwindSafe(|| {
+                    gather_helper(vec![5], vec![3], 0, vec![input, indices])
+                }));
+                assert!(e.is_err());
+            }
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    fn random_permutation_helper(n: u64) -> Result<()> {
+        let c = create_context()?;
+        let g = c.create_graph()?;
+        let o = g.random_permutation(n)?;
+        g.set_output_node(o.clone())?;
+        g.finalize()?;
+        c.set_main_graph(g.clone())?;
+        c.finalize()?;
+        let result_type = o.get_type()?;
+
+        let mut perm_statistics: HashMap<Vec<u64>, u64> = HashMap::new();
+        let expected_count_per_perm = 100;
+        let n_factorial: u64 = (2..=n).product();
+        let runs = expected_count_per_perm * n_factorial;
+        for _ in 0..runs {
+            let result_value = random_evaluate(g.clone(), vec![])?;
+            let perm = result_value.to_flattened_array_u64(result_type.clone())?;
+
+            let mut perm_sorted = perm.clone();
+            perm_sorted.sort();
+            let range_vec: Vec<u64> = (0..n).collect();
+            assert_eq!(perm_sorted, range_vec);
+
+            perm_statistics
+                .entry(perm)
+                .and_modify(|counter| *counter += 1)
+                .or_insert(0);
+        }
+
+        // Check that all permutations occurred in the experiments
+        assert_eq!(perm_statistics.len() as u64, n_factorial);
+
+        // Chi-square test with significance level 10^(-6)
+        // <https://www.itl.nist.gov/div898/handbook/eda/section3/eda35f.htm>
+        if n > 1 {
+            let counters: Vec<u64> = perm_statistics.values().map(|c| *c).collect();
+            let chi2 = chi_statistics(&counters, expected_count_per_perm);
+            // Critical value is computed with n!-1 degrees of freedom
+            if n == 4 {
+                assert!(chi2 < 70.5496_f64);
+            }
+            if n == 5 {
+                assert!(chi2 < 207.1986_f64);
+            }
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_random_permutation() {
+        || -> Result<()> {
+            random_permutation_helper(1)?;
+            random_permutation_helper(4)?;
+            random_permutation_helper(5)?;
+
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    fn cuckoo_to_permutation_helper(
+        shape: ArrayShape,
+        input_value: Value,
+        seed: Option<[u8; 16]>,
+    ) -> Result<Vec<u64>> {
+        let c = create_context()?;
+        let g = c.create_graph()?;
+        let input_type = array_type(shape, UINT64);
+        let i = g.input(input_type.clone())?;
+        let o = i.cuckoo_to_permutation()?;
+        g.set_output_node(o)?;
+        g.finalize()?;
+        c.set_main_graph(g.clone())?;
+        c.finalize()?;
+        let result_value = evaluate_simple_evaluator(g, vec![input_value], seed)?;
+        result_value.to_flattened_array_u64(input_type)
+    }
+
+    #[test]
+    fn test_cuckoo_to_permutation() {
+        || -> Result<()> {
+            let seed = Some([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+            let x = CUCKOO_DUMMY_ELEMENT;
+            // fixed seed
+            {
+                let input_value = Value::from_flattened_array(&[0, 1, 2, 3], UINT64)?;
+                let expected = vec![0, 1, 2, 3];
+                assert_eq!(
+                    cuckoo_to_permutation_helper(vec![4], input_value, seed)?,
+                    expected
+                );
+            }
+            {
+                let input_value = Value::from_flattened_array(&[0, x, 2, 1], UINT64)?;
+                let expected = vec![0, 3, 2, 1];
+                assert_eq!(
+                    cuckoo_to_permutation_helper(vec![4], input_value, seed)?,
+                    expected
+                );
+            }
+            {
+                let input_value = Value::from_flattened_array(&[0, x, 2, 1, x, 3, 4, x], UINT64)?;
+                let expected = vec![0, 6, 2, 1, 5, 3, 4, 7];
+                assert_eq!(
+                    cuckoo_to_permutation_helper(vec![8], input_value, seed)?,
+                    expected
+                );
+            }
+            {
+                let input_value = Value::from_flattened_array(&[0, x, 2, 1, x, 0, 1, x], UINT64)?;
+                let expected = vec![0, 3, 2, 1, 2, 0, 1, 3];
+                assert_eq!(
+                    cuckoo_to_permutation_helper(vec![2, 4], input_value, seed)?,
+                    expected
+                );
+            }
+            {
+                let input_value = Value::from_flattened_array(&[0, x, 2, 1, x, 4, 4, x], UINT64)?;
+                let e = catch_unwind(AssertUnwindSafe(|| {
+                    cuckoo_to_permutation_helper(vec![8], input_value, seed)
+                }));
+                assert!(e.is_err());
+            }
+            {
+                let input_value = Value::from_flattened_array(&[0, x, 2, 1, x, 5, 4, x], UINT64)?;
+                let e = catch_unwind(AssertUnwindSafe(|| {
+                    cuckoo_to_permutation_helper(vec![8], input_value, seed)
+                }));
+                assert!(e.is_err());
+            }
+            // random seed
+            {
+                let input_array = vec![0, x, 2, 1, x, x, 3, x];
+                let max_element = 3;
+                let input_value = Value::from_flattened_array(&input_array, UINT64)?;
+                let mut perm_statistics: HashMap<Vec<u64>, u64> = HashMap::new();
+                let expected_count_per_perm = 100;
+                let n = 4;
+                let n_factorial = (2..=n).product::<u64>();
+                let runs = expected_count_per_perm * n_factorial;
+                for _ in 0..runs {
+                    let res = cuckoo_to_permutation_helper(vec![8], input_value.clone(), None)?;
+
+                    // Extract generated random indices
+                    let mut perm = vec![];
+                    for i in res {
+                        if i > max_element {
+                            perm.push(i);
+                        }
+                    }
+
+                    let mut perm_without_dup = perm.clone();
+                    perm_without_dup.sort_unstable();
+                    perm_without_dup.dedup();
+                    assert_eq!(perm.len(), perm_without_dup.len());
+
+                    let mut perm_sorted = perm.clone();
+                    perm_sorted.sort();
+                    let range_vec: Vec<u64> = (max_element + 1..input_array.len() as u64).collect();
+                    assert_eq!(perm_sorted, range_vec);
+
+                    perm_statistics
+                        .entry(perm)
+                        .and_modify(|counter| *counter += 1)
+                        .or_insert(0);
+                }
+
+                // Check that all permutations occurred in the experiments
+                assert_eq!(perm_statistics.len() as u64, n_factorial);
+
+                // Chi-square test with significance level 10^(-6)
+                // Critical value is computed with n!-1 degrees of freedom
+                // <https://www.itl.nist.gov/div898/handbook/eda/section3/eda35f.htm>
+                let counters: Vec<u64> = perm_statistics.values().map(|c| *c).collect();
+                let chi2 = chi_statistics(&counters, expected_count_per_perm);
+
+                assert!(chi2 < 70.5496_f64);
+            }
+            Ok(())
+        }()
+        .unwrap();
     }
 }

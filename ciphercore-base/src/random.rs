@@ -1,4 +1,5 @@
-use crate::data_types::{get_size_in_bits, get_types_vector, Type};
+use crate::bytes::vec_from_bytes;
+use crate::data_types::{get_size_in_bits, get_types_vector, Type, UINT64};
 use crate::data_values::Value;
 use crate::errors::Result;
 
@@ -131,6 +132,30 @@ impl PRNG {
             }
         }
     }
+
+    // Generates a random 64-bit integer modulo a given modulus.
+    // To avoid modulo bias, rejection sampling is performed.
+    // Rejection sampling bound is 2^64 - (2^64 mod modulus).
+    // Each sampling attempt can succeed with probability 1 - (2^64 mod modulus)/2^64.
+    // Thus, the expected number of sampling rounds is  2^64/(2^64 - (2^64 mod modulus)) < 2 according to the geometric distribution.
+    //
+    // **WARNING**: this function might leak modulus bits. Don't use it if you want to hide the modulus.
+    pub fn get_random_in_range(&mut self, modulus: Option<u64>) -> Result<u64> {
+        if let Some(m) = modulus {
+            let rem = ((u64::MAX % m) + 1) % m;
+            let rejection_bound = u64::MAX - rem;
+            let mut r;
+            loop {
+                r = vec_from_bytes(&self.get_random_bytes(8)?, UINT64)?[0];
+                if r <= rejection_bound {
+                    break;
+                }
+            }
+            Ok(r % m)
+        } else {
+            Ok(vec_from_bytes(&self.get_random_bytes(8)?, UINT64)?[0])
+        }
+    }
 }
 
 /// Pseudo-random function (Prf/PRF) based on AES-128.
@@ -253,6 +278,36 @@ impl Prf {
     }
 }
 
+// Basic entropy test.
+// The plugin estimator is computed and compared to the expected entropy
+// of uniform distribution, i.e. 8 as we output bytes.
+// The estimation error, abs(entropy - 8), can be heuristically bounded
+// with overwhelming probability by 4*(d-1)/n with d = 256 in our case
+// (see Theorem 1 in https://www.cs.cmu.edu/~aarti/Class/10704_Fall16/lec5.pdf
+// and On a statistical estimate for the entropy of a sequence of independent random variables by
+// Basharin, GP (1959);
+// note that sigma = 0 for any uniform distribution).
+// Use this test to check uniformity of bytes.
+// In general case, it is too strict.
+pub fn entropy_test(counters: [u32; 256], n: u64) -> bool {
+    let mut entropy = 0f64;
+    for c in counters {
+        let prob_c = (c as f64) / (n as f64);
+        entropy -= prob_c.log2() * prob_c;
+    }
+    let precision = (1020_f64) / (n as f64);
+    (entropy - 8f64).abs() < precision
+}
+
+// Computes chi squared statistics
+pub fn chi_statistics(counters: &[u64], expected_count_per_element: u64) -> f64 {
+    let mut chi_statistics = 0_f64;
+    for c in counters {
+        chi_statistics += (*c as f64 - expected_count_per_element as f64).powi(2);
+    }
+    chi_statistics / expected_count_per_element as f64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,25 +331,6 @@ mod tests {
         helper(1).unwrap();
         helper(19).unwrap();
         helper(1000).unwrap();
-    }
-
-    // Basic entropy test.
-    // The plugin estimator is computed and compared to the expected entropy
-    // of uniform distribution, i.e. 8 as we output bytes.
-    // The estimation error, abs(entropy - 8), can be heuristically bounded
-    // with overwhelming probability by 4*(d-1)/n with d = 256 in our case
-    // (see Theorem 1 in https://www.cs.cmu.edu/~aarti/Class/10704_Fall16/lec5.pdf
-    // and On a statistical estimate for the entropy of a sequence of independent random variables by
-    // Basharin, GP (1959);
-    // note that sigma = 0 for any uniform distribution).
-    fn entropy_test(counters: [u32; 256], n: u64) -> bool {
-        let mut entropy = 0f64;
-        for c in counters {
-            let prob_c = (c as f64) / (n as f64);
-            entropy -= prob_c.log2() * prob_c;
-        }
-        let precision = (1020 as f64) / (n as f64);
-        (entropy - 8f64).abs() < precision
     }
 
     #[test]
@@ -360,9 +396,32 @@ mod tests {
         }()
         .unwrap();
     }
+    #[test]
+    fn test_prng_random_u64_modulo() {
+        || -> Result<()> {
+            let mut g = PRNG::new(None).unwrap();
+
+            let m = 100_u64;
+            let mut counters = vec![0; m as usize];
+            let expected_count_per_int = 1000;
+            let n = expected_count_per_int * m;
+            for _ in 0..n {
+                let r = g.get_random_in_range(Some(m))?;
+                counters[r as usize] += 1;
+            }
+
+            // Chi-square test with significance level 10^(-6)
+            // <https://www.itl.nist.gov/div898/handbook/eda/section3/eda35f.htm>
+            // Critical value is computed with m-1 degrees of freedom
+            let chi2 = chi_statistics(&counters, expected_count_per_int);
+            assert!(chi2 < 180.792_f64);
+
+            Ok(())
+        }()
+        .unwrap();
+    }
 
     #[test]
-
     fn test_prf_fixed_key() {
         || -> Result<()> {
             let key = b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F";

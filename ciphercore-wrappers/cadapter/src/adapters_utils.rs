@@ -552,6 +552,9 @@ impl COperation {
             Operation::Constant(t, v) => {
                 Self::Constant(unsafe_ref(CTypedValue::from_type_and_value(t, v)?))
             }
+            _ => {
+                panic!("There is no such public operation");
+            }
         };
         Ok(cop)
     }

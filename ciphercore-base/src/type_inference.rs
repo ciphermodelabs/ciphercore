@@ -213,10 +213,15 @@ fn b2a_type_inference(t: Type, st: ScalarType) -> Result<Type> {
 /// None means the number can be variable.
 fn get_number_of_node_dependencies(operation: Operation) -> Option<u64> {
     match operation {
-        Operation::Input(_) | Operation::Random(_) | Operation::Constant(_, _) => Some(0),
+        Operation::Input(_)
+        | Operation::Random(_)
+        | Operation::Constant(_, _)
+        | Operation::RandomPermutation(_) => Some(0),
         Operation::Truncate(_)
         | Operation::Sum(_)
         | Operation::PermuteAxes(_)
+        | Operation::InversePermutation
+        | Operation::CuckooToPermutation
         | Operation::Get(_)
         | Operation::GetSlice(_)
         | Operation::Reshape(_)
@@ -236,7 +241,9 @@ fn get_number_of_node_dependencies(operation: Operation) -> Option<u64> {
         | Operation::Dot
         | Operation::Matmul
         | Operation::VectorGet
-        | Operation::Iterate => Some(2),
+        | Operation::Gather(_)
+        | Operation::Iterate
+        | Operation::CuckooHash => Some(2),
         Operation::Stack(_)
         | Operation::CreateTuple
         | Operation::CreateNamedTuple(_)
@@ -523,6 +530,33 @@ impl TypeInferenceWorker {
                 self.register_result(node, result.clone())?;
                 Ok(result)
             }
+            Operation::InversePermutation => {
+                let t = node_dependencies_types[0].clone();
+                if !t.is_array() {
+                    return Err(runtime_error!("Input type should be an array"));
+                }
+                if t.get_scalar_type() != UINT64 {
+                    return Err(runtime_error!("Input elements must be 64-bit integers"));
+                }
+                if t.get_shape().len() > 1 {
+                    return Err(runtime_error!(
+                        "Input type should be an array with one dimension"
+                    ));
+                }
+                self.register_result(node, t.clone())?;
+                Ok(t)
+            }
+            Operation::CuckooToPermutation => {
+                let t = node_dependencies_types[0].clone();
+                if !t.is_array() {
+                    return Err(runtime_error!("Input type should be an array"));
+                }
+                if t.get_scalar_type() != UINT64 {
+                    return Err(runtime_error!("Input elements must be 64-bit integers"));
+                }
+                self.register_result(node, t.clone())?;
+                Ok(t)
+            }
             Operation::Get(s) => {
                 let t = node_dependencies_types[0].clone();
                 if !t.is_array() {
@@ -589,6 +623,14 @@ impl TypeInferenceWorker {
                 Ok(t)
             }
             Operation::Random(t) => {
+                self.register_result(node, t.clone())?;
+                Ok(t)
+            }
+            Operation::RandomPermutation(n) => {
+                if n == 0 {
+                    return Err(runtime_error!("Permutation length should be non-zero"));
+                }
+                let t = array_type(vec![n], UINT64);
                 self.register_result(node, t.clone())?;
                 Ok(t)
             }
@@ -908,6 +950,87 @@ impl TypeInferenceWorker {
                     ))
                 }
             }
+            Operation::Gather(axis) => {
+                let input_t = node_dependencies_types[0].clone();
+                if !input_t.is_array() {
+                    return Err(runtime_error!("Take can be only applied to an array"));
+                }
+                let indices_t = node_dependencies_types[1].clone();
+                // TODO: support UINT32
+                if !matches!(indices_t, Type::Array(_, UINT64)) {
+                    return Err(runtime_error!("Indices must be an array of UINT64"));
+                }
+                let input_shape = input_t.get_shape();
+                if axis >= input_shape.len() as u64 {
+                    return Err(runtime_error!(
+                        "Invalid axis. The axis index should be smaller than {}",
+                        input_shape.len()
+                    ));
+                }
+                let indices_shape = indices_t.get_shape();
+                let indices_size = indices_shape.iter().product::<u64>();
+                if indices_size > input_shape[axis as usize] {
+                    return Err(runtime_error!(
+                        "Number of indices is too big. At most {} elements can be extracted.",
+                        input_shape[axis as usize]
+                    ));
+                }
+                let mut result_shape = input_shape[0..axis as usize].to_vec();
+                result_shape.extend_from_slice(&indices_shape);
+                result_shape.extend_from_slice(&input_shape[(axis + 1) as usize..]);
+                let result = array_type(result_shape, input_t.get_scalar_type());
+                self.register_result(node, result.clone())?;
+                Ok(result)
+            }
+            Operation::CuckooHash => {
+                let input_t = node_dependencies_types[0].clone();
+                let hash_t = node_dependencies_types[1].clone();
+                if !matches!(input_t, Type::Array(_, BIT)) {
+                    return Err(runtime_error!(
+                        "CuckooHash can't be applied to a non-binary arrays"
+                    ));
+                }
+                let input_shape = input_t.get_shape();
+                if input_shape.len() < 2 {
+                    return Err(runtime_error!(
+                        "Input shape must have at least 2 dimensions"
+                    ));
+                }
+                if !matches!(hash_t, Type::Array(_, BIT)) {
+                    return Err(runtime_error!(
+                        "CuckooHash needs a binary array as a hash matrix"
+                    ));
+                }
+                let hash_shape = hash_t.get_shape();
+                if hash_shape.len() != 3 {
+                    return Err(runtime_error!("Hash array should have 3 dimensions"));
+                }
+                if hash_shape[0] < 3 {
+                    return Err(runtime_error!(
+                        "At least 3 hash matrices should be provided"
+                    ));
+                }
+                if hash_shape[1] > 63 {
+                    return Err(runtime_error!(
+                        "Hash map is too big. Decrease the number of rows of hash matrices"
+                    ));
+                }
+                let input_element_length = input_shape[input_shape.len() - 1];
+                if hash_shape[2] != input_element_length {
+                    return Err(runtime_error!(
+                        "Hash matrix accepts bitstrings of length {}, but input strings are of length {}",
+                        hash_shape[2],
+                        input_element_length
+                    ));
+                }
+                // For each subarray, the output hash map contains indices of this array
+                let mut output_shape = input_shape[0..input_shape.len() - 2].to_vec();
+                let hash_map_size = 1 << hash_shape[1];
+                output_shape.push(hash_map_size);
+                let result = array_type(output_shape, UINT64);
+                self.register_result(node, result.clone())?;
+                Ok(result)
+            }
             // Here we can end up in an infinite loop due
             // to circular dependencies between instantiations.
             // For now we just crash with stack overflow.
@@ -938,7 +1061,6 @@ impl TypeInferenceWorker {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
     use crate::data_types::{create_scalar_type, ArrayShape, Type, BIT, INT32, INT8, UINT32};
     use crate::data_values::Value;
@@ -2377,5 +2499,242 @@ mod tests {
         test_vector_to_array_worker_fail(vector_type(0, array_type(vec![3, 8], BIT)));
         test_vector_to_array_worker_fail(tuple_type(vec![]));
         test_vector_to_array_worker_fail(vector_type(10, tuple_type(vec![])));
+    }
+
+    fn gather_helper(
+        input_t: Type,
+        indices_t: Type,
+        axis: u64,
+        expected: Option<Type>,
+    ) -> Result<()> {
+        let context = create_unchecked_context()?;
+        let graph = context.create_graph()?;
+        let mut worker = create_type_inference_worker(context.clone());
+        let inp = graph.input(input_t)?;
+        let ind = graph.input(indices_t)?;
+        let o = graph.gather(inp, ind, axis)?;
+        let t = worker.process_node(o);
+        if let Some(expected_t) = expected {
+            assert_eq!(t?, expected_t);
+        } else {
+            assert!(t.is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_gather() {
+        || -> Result<()> {
+            gather_helper(
+                array_type(vec![2, 3, 4], BIT),
+                array_type(vec![2], UINT64),
+                1,
+                Some(array_type(vec![2, 2, 4], BIT)),
+            )?;
+
+            gather_helper(
+                array_type(vec![4], BIT),
+                array_type(vec![3], UINT64),
+                0,
+                Some(array_type(vec![3], BIT)),
+            )?;
+
+            gather_helper(
+                array_type(vec![2, 3, 7, 5], BIT),
+                array_type(vec![2, 3], UINT64),
+                2,
+                Some(array_type(vec![2, 3, 2, 3, 5], BIT)),
+            )?;
+
+            gather_helper(scalar_type(BIT), array_type(vec![2], UINT64), 1, None)?;
+            gather_helper(array_type(vec![2, 3, 4], BIT), scalar_type(UINT64), 1, None)?;
+            gather_helper(
+                array_type(vec![2, 3, 4], BIT),
+                array_type(vec![2], UINT32),
+                1,
+                None,
+            )?;
+            gather_helper(
+                array_type(vec![2, 3, 4], BIT),
+                array_type(vec![2], UINT64),
+                3,
+                None,
+            )?;
+            gather_helper(
+                array_type(vec![2, 3, 4], BIT),
+                array_type(vec![2, 2], UINT64),
+                1,
+                None,
+            )?;
+
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    fn test_cuckoo_hash_worker(t0: Type, t1: Type, expected: Type) -> Result<()> {
+        let context = create_unchecked_context()?;
+        let graph = context.create_graph()?;
+        let mut worker = create_type_inference_worker(context.clone());
+        let i = graph.input(t0)?;
+        let h = graph.input(t1)?;
+        let o = graph.cuckoo_hash(i, h)?;
+        let t = worker.process_node(o)?;
+        assert_eq!(t, expected);
+        Ok(())
+    }
+
+    fn test_cuckoo_hash_fail(t0: Type, t1: Type) -> Result<()> {
+        let context = create_unchecked_context()?;
+        let graph = context.create_graph()?;
+        let mut worker = create_type_inference_worker(context.clone());
+        let i = graph.input(t0)?;
+        let h = graph.input(t1)?;
+        let o = graph.cuckoo_hash(i, h)?;
+        let t = worker.process_node(o);
+        assert!(t.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_cuckoo_hash() {
+        || -> Result<()> {
+            test_cuckoo_hash_worker(
+                array_type(vec![5, 6], BIT),
+                array_type(vec![3, 4, 6], BIT),
+                array_type(vec![16], UINT64),
+            )?;
+            test_cuckoo_hash_worker(
+                array_type(vec![4, 6], BIT),
+                array_type(vec![3, 3, 6], BIT),
+                array_type(vec![8], UINT64),
+            )?;
+            test_cuckoo_hash_worker(
+                array_type(vec![11, 4, 6], BIT),
+                array_type(vec![4, 5, 6], BIT),
+                array_type(vec![11, 32], UINT64),
+            )?;
+
+            test_cuckoo_hash_fail(scalar_type(BIT), array_type(vec![3, 3, 6], BIT))?;
+            test_cuckoo_hash_fail(array_type(vec![4, 6], INT8), array_type(vec![3, 4, 6], BIT))?;
+            test_cuckoo_hash_fail(array_type(vec![6], BIT), array_type(vec![3, 4, 8], BIT))?;
+            test_cuckoo_hash_fail(
+                array_type(vec![4, 6], BIT),
+                vector_type(2, array_type(vec![3, 4, 6], BIT)),
+            )?;
+            test_cuckoo_hash_fail(
+                array_type(vec![4, 6], BIT),
+                array_type(vec![3, 4, 6], UINT64),
+            )?;
+            test_cuckoo_hash_fail(array_type(vec![4, 6], BIT), array_type(vec![3, 6], BIT))?;
+            test_cuckoo_hash_fail(array_type(vec![4, 6], BIT), array_type(vec![2, 4, 6], BIT))?;
+            test_cuckoo_hash_fail(array_type(vec![4, 6], BIT), array_type(vec![3, 4, 7], BIT))?;
+            test_cuckoo_hash_fail(array_type(vec![4, 6], BIT), array_type(vec![3, 64, 6], BIT))?;
+
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    fn test_random_permutation_worker(n: u64) -> Result<Type> {
+        let context = create_unchecked_context()?;
+        let graph = context.create_graph()?;
+        let mut worker = create_type_inference_worker(context.clone());
+        let o = graph.random_permutation(n)?;
+        worker.process_node(o)
+    }
+
+    #[test]
+    fn test_random_permutation() {
+        || -> Result<()> {
+            assert_eq!(
+                test_random_permutation_worker(1)?,
+                array_type(vec![1], UINT64)
+            );
+            assert_eq!(
+                test_random_permutation_worker(100)?,
+                array_type(vec![100], UINT64)
+            );
+
+            assert!(test_random_permutation_worker(0).is_err());
+
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    fn test_inverse_permutation_worker(t0: Type, expected: Type) -> Result<()> {
+        let context = create_unchecked_context()?;
+        let graph = context.create_graph()?;
+        let mut worker = create_type_inference_worker(context.clone());
+        let i = graph.input(t0)?;
+        let o = graph.inverse_permutation(i)?;
+        let t = worker.process_node(o)?;
+        assert_eq!(t, expected);
+        Ok(())
+    }
+
+    fn test_inverse_permutation_fail(t0: Type) -> Result<()> {
+        let context = create_unchecked_context()?;
+        let graph = context.create_graph()?;
+        let mut worker = create_type_inference_worker(context.clone());
+        let i = graph.input(t0)?;
+        let o = graph.inverse_permutation(i)?;
+        let t = worker.process_node(o);
+        assert!(t.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_inverse_permutation() {
+        || -> Result<()> {
+            let t = array_type(vec![10], UINT64);
+            test_inverse_permutation_worker(t.clone(), t)?;
+
+            test_inverse_permutation_fail(scalar_type(UINT64))?;
+            test_inverse_permutation_fail(array_type(vec![10, 5], UINT64))?;
+            test_inverse_permutation_fail(array_type(vec![10], UINT32))?;
+
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    fn test_cuckoo_to_permutation_worker(t0: Type, expected: Type) -> Result<()> {
+        let context = create_unchecked_context()?;
+        let graph = context.create_graph()?;
+        let mut worker = create_type_inference_worker(context.clone());
+        let i = graph.input(t0)?;
+        let o = graph.cuckoo_to_permutation(i)?;
+        let t = worker.process_node(o)?;
+        assert_eq!(t, expected);
+        Ok(())
+    }
+
+    fn test_cuckoo_to_permutation_fail(t0: Type) -> Result<()> {
+        let context = create_unchecked_context()?;
+        let graph = context.create_graph()?;
+        let mut worker = create_type_inference_worker(context.clone());
+        let i = graph.input(t0)?;
+        let o = graph.cuckoo_to_permutation(i)?;
+        let t = worker.process_node(o);
+        assert!(t.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_cuckoo_to_permutation() {
+        || -> Result<()> {
+            let t = array_type(vec![2, 3, 10], UINT64);
+            test_cuckoo_to_permutation_worker(t.clone(), t)?;
+            let t = array_type(vec![10], UINT64);
+            test_cuckoo_to_permutation_worker(t.clone(), t)?;
+
+            test_cuckoo_to_permutation_fail(scalar_type(UINT64))?;
+            test_cuckoo_to_permutation_fail(array_type(vec![10], UINT32))?;
+
+            Ok(())
+        }()
+        .unwrap();
     }
 }
