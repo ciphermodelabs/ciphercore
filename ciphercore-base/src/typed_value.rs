@@ -260,9 +260,7 @@ impl TypedValueOperations<TypedValue> for TypedValue {
                 }
                 Ok(res)
             }
-            _ => {
-                return Err(runtime_error!("Not a vector!"));
-            }
+            _ => Err(runtime_error!("Not a vector!")),
         }
     }
 
@@ -860,12 +858,10 @@ impl TypedValue {
                     };
                     Ok(TypedValue::new(result_type, Value::from_vector(values))?)
                 }
-                _ => {
-                    return Err(runtime_error!("Unknown kind: {}", kind));
-                }
+                _ => Err(runtime_error!("Unknown kind: {}", kind)),
             }
         } else {
-            return Err(runtime_error!("JSON object expected"));
+            Err(runtime_error!("JSON object expected"))
         }
     }
 
@@ -1000,10 +996,10 @@ impl TypedValue {
                 )?;
                 Ok(TypedValue::new((*tv[0]).clone(), v_output)?)
             } else {
-                return Err(runtime_error!("Not a secret-shared type/value"));
+                Err(runtime_error!("Not a secret-shared type/value"))
             }
         } else {
-            return Err(runtime_error!("Not a secret-shared type/value"));
+            Err(runtime_error!("Not a secret-shared type/value"))
         }
     }
 }
