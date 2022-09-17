@@ -11,11 +11,11 @@ ciphercore-base = { path = "../../ciphercore-base", features=["py-binding"] }
 serde = { version = "1.0.130", features = ["derive", "rc"] }
 serde_json = "1.0.68"
 ndarray = "0.15.1"
-numpy = "0.16.2"
+numpy = "0.17.2"
 pywrapper-macro = { path = "../pywrapper-macro" }
 
 [dependencies.pyo3]
-version = "0.16.5"
+version = "0.17.1"
 features = ["extension-module"]
 
 [features]

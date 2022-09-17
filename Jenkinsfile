@@ -94,14 +94,5 @@ pipeline {
          }
        } 
     }
-    stage('Benchmarks') {
-      agent any
-      steps {
-        prepare()
-        dir("${CI_DIR}") {
-          sh './run_benchmarks_docker.sh'
-        }
-      }
-    }
   }
 }
