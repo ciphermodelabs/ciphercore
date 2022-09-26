@@ -233,7 +233,8 @@ fn get_number_of_node_dependencies(operation: Operation) -> Option<u64> {
         | Operation::NamedTupleGet(_)
         | Operation::Repeat(_)
         | Operation::ArrayToVector
-        | Operation::VectorToArray => Some(1),
+        | Operation::VectorToArray
+        | Operation::DecomposeSwitchingMap(_) => Some(1),
         Operation::Add
         | Operation::Subtract
         | Operation::Multiply
@@ -556,6 +557,22 @@ impl TypeInferenceWorker {
                 }
                 self.register_result(node, t.clone())?;
                 Ok(t)
+            }
+            Operation::DecomposeSwitchingMap(n) => {
+                let t = node_dependencies_types[0].clone();
+                if !t.is_array() {
+                    return Err(runtime_error!("Input type should be an array"));
+                }
+                if t.get_scalar_type() != UINT64 {
+                    return Err(runtime_error!("Input elements must be 64-bit integers"));
+                }
+                let shape = t.get_shape();
+                if shape[0] > n {
+                    return Err(runtime_error!("Switching map is longer than expected"));
+                }
+                let duplication_map_t = array_type(shape, BIT);
+                let output_t = tuple_type(vec![t.clone(), duplication_map_t, t]);
+                Ok(output_t)
             }
             Operation::Get(s) => {
                 let t = node_dependencies_types[0].clone();
@@ -2732,6 +2749,47 @@ mod tests {
 
             test_cuckoo_to_permutation_fail(scalar_type(UINT64))?;
             test_cuckoo_to_permutation_fail(array_type(vec![10], UINT32))?;
+
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    fn test_decompose_switching_map_worker(t: Type, n: u64) -> Result<()> {
+        let context = create_unchecked_context()?;
+        let graph = context.create_graph()?;
+        let mut worker = create_type_inference_worker(context.clone());
+        let i = graph.input(t.clone())?;
+        let o = i.decompose_switching_map(n)?;
+        let res_t = worker.process_node(o)?;
+        let shape = t.get_shape();
+        let duplication_map_t = array_type(shape, BIT);
+        assert_eq!(res_t, tuple_type(vec![t.clone(), duplication_map_t, t]));
+        Ok(())
+    }
+
+    fn test_decompose_switching_map_fail(t: Type, n: u64) -> Result<()> {
+        let context = create_unchecked_context()?;
+        let graph = context.create_graph()?;
+        let mut worker = create_type_inference_worker(context.clone());
+        let i = graph.input(t)?;
+        let o = i.decompose_switching_map(n)?;
+        let res_t = worker.process_node(o);
+        assert!(res_t.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_decompose_switching_map() {
+        || -> Result<()> {
+            let t = array_type(vec![2, 3, 10], UINT64);
+            test_decompose_switching_map_worker(t, 10)?;
+            let t = array_type(vec![10], UINT64);
+            test_decompose_switching_map_worker(t, 11)?;
+
+            test_decompose_switching_map_fail(scalar_type(UINT64), 10)?;
+            test_decompose_switching_map_fail(array_type(vec![10], UINT32), 10)?;
+            test_decompose_switching_map_fail(array_type(vec![10], UINT64), 9)?;
 
             Ok(())
         }()

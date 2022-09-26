@@ -102,6 +102,7 @@ pub enum Operation {
     CuckooHash,
     InversePermutation,
     CuckooToPermutation,
+    DecomposeSwitchingMap(u64),
     Custom(CustomOperation),
 }
 
@@ -772,6 +773,19 @@ impl Node {
     #[doc(hidden)]
     pub fn cuckoo_hash(&self, hash_matrices: Node) -> Result<Node> {
         self.get_graph().cuckoo_hash(self.clone(), hash_matrices)
+    }
+
+    /// Adds a node that converts a switching map array into a tuple of the following components:
+    /// - a permutation map array with deletion,
+    /// - a duplication map array,
+    /// - a permutation map array without deletion.
+    ///
+    /// The composition of these maps is equal to the input switching map, which is an array containing non-unique indices of some array.
+    ///
+    /// Applies [Graph::decompose_switching_map] to the parent graph and `this`.
+    #[doc(hidden)]
+    pub fn decompose_switching_map(&self, n: u64) -> Result<Node> {
+        self.get_graph().decompose_switching_map(self.clone(), n)
     }
 
     /// Adds a node that converts a Cuckoo hash table to a random permutation.
@@ -1542,6 +1556,58 @@ impl Graph {
     #[doc(hidden)]
     pub fn cuckoo_hash(&self, array: Node, hash_matrices: Node) -> Result<Node> {
         self.add_node(vec![array, hash_matrices], vec![], Operation::CuckooHash)
+    }
+
+    /// Adds a node that converts a switching map array into a random tuple of the following components:
+    /// - a permutation map array with deletion (some indices of this map are uniformly random, see below),
+    /// - a duplication map array,
+    /// - a permutation map array without deletion.
+    ///
+    /// The composition of these maps is equal to the input switching map, which is an array containing non-unique indices of some array.
+    ///
+    /// To create a permutation with deletion, this operation first groups identical indices of the input map together and shifts other indices accordingly, e.g.
+    ///
+    /// [1, 4, 5, 7, 2, 4] -> [1, 4, 4, 5, 7, 2].
+    ///
+    /// This can be done by permutation p = [1, 2, 6, 3, 4, 5].
+    /// Then, it replaces copies with unique random indices not present in the switching map, e.g.
+    ///
+    /// [1, 4, 4, 5, 7, 2] -> [1, 4, 3, 5, 7, 2].
+    ///
+    /// A duplication map is a one-dimensional array containing only zeros and ones.
+    /// If its i-th element is zero, it means that the duplication map doesn't change the i-th element of an array it acts upon.
+    /// If map's i-th element is one, then the map copies the previous element of the result.
+    /// This rules can be summarized by the following equation
+    ///
+    /// output[i] = dup_map[i] * output[i-1] + (1 - dup_map[i]) * input[i].
+    ///
+    /// A duplication map is created from the above switching map with grouped indices, replacing the first index occurrence with 0 and other copies with 1, e.g.
+    ///
+    ///  [1, 4, 4, 5, 7, 2] -> [0, 0, 1, 0, 0, 0].
+    ///
+    /// The last permutation is the inverse of the above permutation p, i.e.
+    ///
+    /// [1, 2, 4, 5, 6, 3].
+    ///
+    /// This operation supports vectorization.
+    ///
+    /// **WARNING**: this function should not be used before MPC compilation.
+    ///
+    /// # Arguments
+    ///
+    /// - `switching_map` - an array of one-dimensional arrays containing non-unique indices of some array of length `n` (usually a simple hash table),
+    /// - `n` - length of an array that can be mapped by the above switching map.
+    ///
+    /// # Returns
+    ///
+    /// New DecomposeSwitchingMap node
+    #[doc(hidden)]
+    pub fn decompose_switching_map(&self, switching_map: Node, n: u64) -> Result<Node> {
+        self.add_node(
+            vec![switching_map],
+            vec![],
+            Operation::DecomposeSwitchingMap(n),
+        )
     }
 
     /// Adds a node that converts a Cuckoo hash table to a random permutation.

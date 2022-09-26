@@ -329,7 +329,9 @@ pub(super) fn generate_equivalence_class(
                         equivalence_classes.insert(node.get_global_id(), current_class);
                     }
                 }
-                Operation::RandomPermutation(_) | Operation::CuckooToPermutation => {
+                Operation::RandomPermutation(_)
+                | Operation::CuckooToPermutation
+                | Operation::DecomposeSwitchingMap(_) => {
                     equivalence_classes.insert(
                         node.get_global_id(),
                         EquivalenceClasses::Atomic(vec![vec![0], vec![1], vec![2]]),

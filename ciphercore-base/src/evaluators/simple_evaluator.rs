@@ -794,6 +794,101 @@ impl Evaluator for SimpleEvaluator {
 
                 Value::from_flattened_array(&result_array, UINT64)
             }
+            Operation::DecomposeSwitchingMap(n) => {
+                let input_node = node.get_node_dependencies()[0].clone();
+                let t = input_node.get_type()?;
+                let input_value = dependencies_values[0].clone();
+                let input_array = input_value.to_flattened_array_u64(t.clone())?;
+
+                let input_shape = t.get_shape();
+                let num_maps = input_shape
+                    .iter()
+                    .take(input_shape.len() - 1)
+                    .product::<u64>() as usize;
+                let map_size = input_shape[input_shape.len() - 1] as usize;
+                // Permutation with deletion map
+                let mut perm1_array = vec![];
+                // Duplication map
+                let mut duplication_array = vec![];
+                // Permutation without deletion map
+                let mut perm2_array = vec![];
+
+                for map_i in 0..num_maps {
+                    let map_start = map_i * map_size;
+
+                    // Permutation with deletion
+                    let mut little_perm1_array = vec![];
+                    // Permutation used for grouping identical indices of the input switching map
+                    let mut perm_from_switch_to_perm1 = vec![];
+                    // Duplication map
+                    let mut little_duplication_array = vec![];
+
+                    // true if index isn't present in the map
+                    let mut missing_indices_flags = vec![true; n as usize];
+                    let mut existing_indices = vec![];
+
+                    // Hash map with the locations of the switching map elements
+                    let mut switch_indexes: HashMap<u64, Vec<u64>> = HashMap::new();
+                    for i in 0..map_size {
+                        let input_index = input_array[map_start + i];
+                        if input_index >= n {
+                            panic!("Switching map has incorrect indices");
+                        }
+                        if let Some(v) = switch_indexes.get_mut(&input_index) {
+                            v.push(i as u64);
+                        } else {
+                            switch_indexes.insert(input_index, vec![i as u64]);
+                            existing_indices.push(input_index);
+                        }
+                        missing_indices_flags[input_index as usize] = false;
+                    }
+
+                    // Indices not present in the switching map
+                    let mut missing_indices = vec![];
+                    for (i, flag) in missing_indices_flags.iter().enumerate() {
+                        if *flag {
+                            missing_indices.push(i as u64);
+                        }
+                    }
+                    // Randomize the order of remaining indices
+                    shuffle_array(&mut missing_indices, &mut self.prng)?;
+
+                    // Indices that didn't appear in the switching map
+                    let mut missing_indices_index = 0;
+
+                    for input_index in existing_indices {
+                        let locations_vec = switch_indexes.get(&input_index).unwrap();
+                        let num_copies = locations_vec.len();
+                        little_perm1_array.push(input_index);
+                        little_duplication_array.push(0u64);
+                        for _ in 0..num_copies - 1 {
+                            little_perm1_array.push(missing_indices[missing_indices_index]);
+                            little_duplication_array.push(1);
+                            missing_indices_index += 1;
+                        }
+                        perm_from_switch_to_perm1.extend_from_slice(locations_vec);
+                    }
+
+                    // Invert permutation that was used for grouping identical indices of the input switching map
+                    let mut little_perm2_array = vec![0; map_size];
+                    for i in 0..map_size {
+                        little_perm2_array[perm_from_switch_to_perm1[i] as usize] = i;
+                    }
+
+                    perm1_array.extend_from_slice(&little_perm1_array);
+                    duplication_array.extend_from_slice(&little_duplication_array);
+                    perm2_array.extend_from_slice(&little_perm2_array);
+                }
+
+                let perm1_val = Value::from_flattened_array(&perm1_array, UINT64)?;
+                let duplication_val = Value::from_flattened_array(&duplication_array, BIT)?;
+                let perm2_val = Value::from_flattened_array(&perm2_array, UINT64)?;
+                Ok(Value::from_vector(vec![
+                    perm1_val,
+                    duplication_val,
+                    perm2_val,
+                ]))
+            }
             Operation::CuckooToPermutation => {
                 let input_node = node.get_node_dependencies()[0].clone();
                 let t = input_node.get_type()?;
@@ -1435,6 +1530,174 @@ mod tests {
 
                 assert!(chi2 < 70.5496_f64);
             }
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    fn decompose_switching_map_helper(
+        shape: ArrayShape,
+        n: u64,
+        input_value: Value,
+        seed: Option<[u8; 16]>,
+    ) -> Result<(Vec<u64>, Vec<u64>, Vec<u64>)> {
+        let c = create_context()?;
+        let g = c.create_graph()?;
+        let input_type = array_type(shape.clone(), UINT64);
+        let i = g.input(input_type.clone())?;
+        let o = i.decompose_switching_map(n)?;
+        g.set_output_node(o)?;
+        g.finalize()?;
+        c.set_main_graph(g.clone())?;
+        c.finalize()?;
+        let result_vector = evaluate_simple_evaluator(g, vec![input_value], seed)?.to_vector()?;
+
+        let perm1 = result_vector[0].to_flattened_array_u64(input_type.clone())?;
+        let dup_map = result_vector[1].to_flattened_array_u64(array_type(shape, BIT))?;
+        let perm2 = result_vector[2].to_flattened_array_u64(input_type.clone())?;
+
+        Ok((perm1, dup_map, perm2))
+    }
+
+    fn compose_maps(perm1: &[u64], duplication_map: &[u64], perm2: &[u64]) -> Result<Vec<u64>> {
+        let mut result = vec![0; perm1.len()];
+
+        let mut duplication_indices_map = vec![0; duplication_map.len()];
+
+        for i in 1..duplication_map.len() {
+            let bit = duplication_map[i];
+            duplication_indices_map[i] =
+                bit * duplication_indices_map[i - 1] + (1 - bit) * i as u64;
+        }
+
+        for i in 0..perm2.len() {
+            result[i] = perm1[duplication_indices_map[perm2[i] as usize] as usize];
+        }
+
+        Ok(result)
+    }
+
+    #[test]
+    fn test_decompose_switching_map() {
+        || -> Result<()> {
+            let seed = Some([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+
+            let helper = |switching_map: &[u64],
+                          n: u64,
+                          expected_perm1: &[u64],
+                          expected_dup_map: &[u64],
+                          expected_perm2: &[u64]|
+             -> Result<()> {
+                let input_value = Value::from_flattened_array(switching_map, UINT64)?;
+                let (res_perm1, res_dup_map, res_perm2) = decompose_switching_map_helper(
+                    vec![switching_map.len() as u64],
+                    n,
+                    input_value,
+                    seed,
+                )?;
+
+                assert_eq!(
+                    (&res_perm1[..], &res_dup_map[..], &res_perm2[..]),
+                    (expected_perm1, expected_dup_map, expected_perm2)
+                );
+
+                let res_composition = compose_maps(&res_perm1, &res_dup_map, &res_perm2)?;
+                assert_eq!(&res_composition, switching_map);
+
+                Ok(())
+            };
+
+            // fixed seed
+            {
+                let input_map = vec![2, 0, 1, 3, 2, 4, 3, 8];
+
+                let expected_perm1 = vec![2, 6, 0, 1, 3, 5, 4, 8];
+                let expected_dup_map = vec![0, 1, 0, 0, 0, 1, 0, 0];
+                let expected_perm2 = vec![0, 2, 3, 4, 1, 6, 5, 7];
+
+                helper(
+                    &input_map,
+                    9,
+                    &expected_perm1,
+                    &expected_dup_map,
+                    &expected_perm2,
+                )?;
+            }
+            {
+                let input_map = vec![0, 1, 2, 3, 4, 5, 6];
+                let expected_perm1 = vec![0, 1, 2, 3, 4, 5, 6];
+                let expected_dup_map = vec![0; 7];
+                let expected_perm2 = vec![0, 1, 2, 3, 4, 5, 6];
+
+                helper(
+                    &input_map,
+                    7,
+                    &expected_perm1,
+                    &expected_dup_map,
+                    &expected_perm2,
+                )?;
+            }
+            {
+                let input_map = vec![6, 6, 6, 6, 6, 6, 6];
+                let expected_perm1 = vec![6, 0, 1, 3, 4, 2, 5];
+                let expected_dup_map = vec![0, 1, 1, 1, 1, 1, 1];
+                let expected_perm2 = vec![0, 1, 2, 3, 4, 5, 6];
+
+                helper(
+                    &input_map,
+                    7,
+                    &expected_perm1,
+                    &expected_dup_map,
+                    &expected_perm2,
+                )?;
+            }
+            {
+                let input_map = Value::from_flattened_array(&[0, 1, 5], UINT64)?;
+                let e = catch_unwind(AssertUnwindSafe(|| {
+                    decompose_switching_map_helper(vec![3], 5, input_map, seed)
+                }));
+                assert!(e.is_err());
+            }
+            // random seed
+            {
+                let input_array = vec![0, 2, 2, 1, 3, 1, 3, 2];
+                let input_value = Value::from_flattened_array(&input_array, UINT64)?;
+                let mut perm_statistics: HashMap<Vec<u64>, u64> = HashMap::new();
+                let expected_count_per_perm = 100;
+                let random_indices = 4;
+                let random_indices_factorial = (2..=random_indices).product::<u64>();
+                let runs = expected_count_per_perm * random_indices_factorial;
+                let n = input_array.len() as u64;
+                for _ in 0..runs {
+                    let (res_perm1, res_dup_map, res_perm2) =
+                        decompose_switching_map_helper(vec![n], n, input_value.clone(), None)?;
+
+                    let res_composition = compose_maps(&res_perm1, &res_dup_map, &res_perm2)?;
+                    assert_eq!(res_composition, input_array);
+
+                    let mut perm_sorted = res_perm1.clone();
+                    perm_sorted.sort();
+                    let range_vec: Vec<u64> = (0..n).collect();
+                    assert_eq!(perm_sorted, range_vec);
+
+                    perm_statistics
+                        .entry(res_perm1)
+                        .and_modify(|counter| *counter += 1)
+                        .or_insert(0);
+                }
+
+                // Check that all permutations occurred in the experiments
+                assert_eq!(perm_statistics.len() as u64, random_indices_factorial);
+
+                // Chi-square test with significance level 10^(-6)
+                // Critical value is computed with n!-1 degrees of freedom
+                // <https://www.itl.nist.gov/div898/handbook/eda/section3/eda35f.htm>
+                let counters: Vec<u64> = perm_statistics.values().map(|c| *c).collect();
+                let chi2 = chi_statistics(&counters, expected_count_per_perm);
+
+                assert!(chi2 < 70.5496_f64);
+            }
+
             Ok(())
         }()
         .unwrap();
