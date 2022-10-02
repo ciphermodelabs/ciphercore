@@ -89,6 +89,15 @@ fn compare_vector(vector1: Vec<u64>, vector2: Vec<u64>) -> Result<bool> {
     Ok(unmatched_count == 0)
 }
 
+#[allow(dead_code)]
+pub(super) fn vector_class(v: Vec<EquivalenceClasses>) -> EquivalenceClasses {
+    let mut dependencies = vec![];
+    for class in v {
+        dependencies.push(Arc::new(class));
+    }
+    EquivalenceClasses::Vector(dependencies)
+}
+
 //This function generates equivalence classes for all nodes in the input compiled context.
 //As the index of VectorGet depends on the input data, we cannot return a correct EquivalenceClasses without the knowledge of the input data. Thus, we restrict that all elements in the input Vector should have a same EquivalenceClasses.
 #[allow(dead_code)]
@@ -198,7 +207,9 @@ pub(super) fn generate_equivalence_class(
                 | Operation::Multiply
                 | Operation::MixedMultiply
                 | Operation::Dot
-                | Operation::Matmul => {
+                | Operation::Matmul
+                | Operation::CuckooHash
+                | Operation::Gather(_) => {
                     equivalence_classes.insert(
                         node.get_global_id(),
                         combine_class(
@@ -214,7 +225,8 @@ pub(super) fn generate_equivalence_class(
                 | Operation::GetSlice(_)
                 | Operation::Reshape(_)
                 | Operation::A2B
-                | Operation::B2A(_) => {
+                | Operation::B2A(_)
+                | Operation::InversePermutation => {
                     equivalence_classes
                         .insert(node.get_global_id(), (*dependencies_class[0]).clone());
                 }
@@ -317,8 +329,15 @@ pub(super) fn generate_equivalence_class(
                         equivalence_classes.insert(node.get_global_id(), current_class);
                     }
                 }
-
-                _ => return Err(runtime_error!("node not supported")),
+                Operation::RandomPermutation(_)
+                | Operation::CuckooToPermutation
+                | Operation::DecomposeSwitchingMap(_) => {
+                    equivalence_classes.insert(
+                        node.get_global_id(),
+                        EquivalenceClasses::Atomic(vec![vec![0], vec![1], vec![2]]),
+                    );
+                }
+                _ => return Err(runtime_error!("Operation is not supported")),
             }
         }
     }
@@ -524,7 +543,6 @@ mod tests {
     use crate::inline::inline_ops::{InlineConfig, InlineMode};
     use crate::mpc::mpc_compiler::{prepare_for_mpc_evaluation, IOStatus};
     use std::collections::HashMap;
-    use std::sync::Arc;
 
     #[test]
     fn eq_equivalence_class_test() {
@@ -545,31 +563,23 @@ mod tests {
         let b = share12_0.clone();
         assert_eq!(a, b);
 
-        let a = EquivalenceClasses::Vector(vec![EquivalenceClassesPointer::new(share0_12.clone())]);
-        let b = EquivalenceClasses::Vector(vec![EquivalenceClassesPointer::new(share0_12.clone())]);
+        let a = vector_class(vec![share0_12.clone()]);
+        let b = vector_class(vec![share0_12.clone()]);
         assert_eq!(a, b);
 
-        let a = EquivalenceClasses::Vector(vec![EquivalenceClassesPointer::new(share0_12.clone())]);
+        let a = vector_class(vec![share0_12.clone()]);
         let b = share0_12.clone();
         assert!(a != b);
 
-        let a = EquivalenceClasses::Vector(vec![
-            EquivalenceClassesPointer::new(share0_12.clone()),
-            EquivalenceClassesPointer::new(share0_12.clone()),
-            EquivalenceClassesPointer::new(share0_12.clone()),
-        ]);
+        let a = vector_class(vec![share0_12.clone(); 3]);
         let b = a.clone();
         assert_eq!(a, b);
 
-        let a = EquivalenceClasses::Vector(vec![
-            EquivalenceClassesPointer::new(share0_12.clone()),
-            EquivalenceClassesPointer::new(share0_12.clone()),
-            EquivalenceClassesPointer::new(share0_12.clone()),
-        ]);
-        let b = EquivalenceClasses::Vector(vec![
-            EquivalenceClassesPointer::new(share1_02.clone()),
-            EquivalenceClassesPointer::new(share0_12.clone()),
-            EquivalenceClassesPointer::new(share0_12.clone()),
+        let a = vector_class(vec![share0_12.clone(); 3]);
+        let b = vector_class(vec![
+            share1_02.clone(),
+            share0_12.clone(),
+            share0_12.clone(),
         ]);
         assert!(a != b);
     }
@@ -697,19 +707,14 @@ mod tests {
         let share1_02 = EquivalenceClasses::Atomic(vec![vec![1], vec![0, 2]]);
         let share2_01 = EquivalenceClasses::Atomic(vec![vec![2], vec![0, 1]]);
 
-        let class_i1 = EquivalenceClasses::Vector(vec![
-            Arc::new(share1_02.clone()),
-            Arc::new(share2_01.clone()),
-            Arc::new(share0_12.clone()),
+        let class_i1 = vector_class(vec![
+            share1_02.clone(),
+            share2_01.clone(),
+            share0_12.clone(),
         ]);
         let class_i2 = class_i1.clone();
         let class_i3 = public_class.clone();
-        let class_i4 = EquivalenceClasses::Vector(vec![
-            Arc::new(private_class.clone()),
-            Arc::new(private_class.clone()),
-            Arc::new(private_class.clone()),
-            Arc::new(private_class.clone()),
-        ]);
+        let class_i4 = vector_class(vec![private_class.clone(); 4]);
         let class_i5 = class_i1.clone();
         let class_add_op1 = share1_02.clone();
         let class_add_op2 = share2_01.clone();
@@ -717,25 +722,13 @@ mod tests {
         let class_subtract = private_class.clone();
         let class_multiply = private_class.clone();
         let class_rand1 = private_class.clone();
-        let class_rand2 = EquivalenceClasses::Vector(vec![
-            Arc::new(private_class.clone()),
-            Arc::new(private_class.clone()),
-            Arc::new(private_class.clone()),
-        ]);
+        let class_rand2 = vector_class(vec![private_class.clone(); 3]);
         let class_nop = class_i3.clone();
-        let class_prf1 = EquivalenceClasses::Vector(vec![
-            Arc::new(public_class.clone()),
-            Arc::new(public_class.clone()),
-            Arc::new(public_class.clone()),
-            Arc::new(public_class.clone()),
-        ]);
+        let class_prf1 = vector_class(vec![public_class.clone(); 4]);
 
         let class_tuple_get1 = share2_01.clone();
         let class_tuple_get2 = private_class.clone();
-        let class_create_tuple = EquivalenceClasses::Vector(vec![
-            Arc::new(share2_01.clone()),
-            Arc::new(private_class.clone()),
-        ]);
+        let class_create_tuple = vector_class(vec![share2_01.clone(), private_class.clone()]);
 
         assert_eq!(
             *test_class1
@@ -1028,10 +1021,10 @@ mod tests {
         )
         .unwrap();
 
-        let class2_i1 = EquivalenceClasses::Vector(vec![
-            Arc::new(share1_02.clone()),
-            Arc::new(share2_01.clone()),
-            Arc::new(share0_12.clone()),
+        let class2_i1 = vector_class(vec![
+            share1_02.clone(),
+            share2_01.clone(),
+            share0_12.clone(),
         ]);
         let class2_i2 = class_i1.clone();
         let class2_i3 = public_class.clone();
@@ -1039,12 +1032,7 @@ mod tests {
         let class2_b2a = public_class.clone();
         let class2_tuple_get1 = share1_02.clone();
         let class2_tuple_get2 = share2_01.clone();
-        let class2_repeat = EquivalenceClasses::Vector(vec![
-            Arc::new(share1_02.clone()),
-            Arc::new(share1_02.clone()),
-            Arc::new(share1_02.clone()),
-            Arc::new(share1_02.clone()),
-        ]);
+        let class2_repeat = vector_class(vec![share1_02.clone(); 4]);
         let class2_vector_to_array = share1_02.clone();
         let class2_permuteaxe = share1_02.clone();
         let class2_reshape = share1_02.clone();
@@ -1052,31 +1040,16 @@ mod tests {
         let class2_constant = public_class.clone();
         let class2_trunc = share1_02.clone();
         let class2_get_slice = share1_02.clone();
-        let class2_array_to_vector = EquivalenceClasses::Vector(vec![
-            Arc::new(share1_02.clone()),
-            Arc::new(share1_02.clone()),
-        ]);
-        let class2_zip = EquivalenceClasses::Vector(vec![
-            Arc::new(class2_array_to_vector.clone()),
-            Arc::new(class2_array_to_vector.clone()),
-        ]);
-        let class2_vector_get = EquivalenceClasses::Vector(vec![
-            Arc::new(share1_02.clone()),
-            Arc::new(share1_02.clone()),
-        ]);
+        let class2_array_to_vector = vector_class(vec![share1_02.clone(); 2]);
+        let class2_zip = vector_class(vec![class2_array_to_vector.clone(); 2]);
+        let class2_vector_get = vector_class(vec![share1_02.clone(); 2]);
         let class2_sum = share1_02.clone();
         let class2_matmul = share1_02.clone();
         let class2_get = share1_02.clone();
         let class2_dot = share1_02.clone();
-        let class2_create_named_tuple = EquivalenceClasses::Vector(vec![
-            Arc::new(share1_02.clone()),
-            Arc::new(share1_02.clone()),
-        ]);
+        let class2_create_named_tuple = vector_class(vec![share1_02.clone(); 2]);
         let class2_named_tuple_get = share1_02.clone();
-        let class2_create_vector = EquivalenceClasses::Vector(vec![
-            Arc::new(public_class.clone()),
-            Arc::new(public_class.clone()),
-        ]);
+        let class2_create_vector = vector_class(vec![public_class.clone(); 2]);
         assert_eq!(
             *test_class2
                 .get(
@@ -1401,10 +1374,10 @@ mod tests {
             let share0_12 = EquivalenceClasses::Atomic(vec![vec![0], vec![1, 2]]);
             let share1_02 = EquivalenceClasses::Atomic(vec![vec![1], vec![0, 2]]);
             let share2_01 = EquivalenceClasses::Atomic(vec![vec![2], vec![0, 1]]);
-            let shared = EquivalenceClasses::Vector(vec![
-                Arc::new(share1_02.clone()),
-                Arc::new(share2_01.clone()),
-                Arc::new(share0_12.clone()),
+            let shared = vector_class(vec![
+                share1_02.clone(),
+                share2_01.clone(),
+                share0_12.clone(),
             ]);
             assert_eq!(*test_class1.get(&(0, 0)).unwrap(), private_class.clone());
             assert_eq!(*test_class1.get(&(0, 1)).unwrap(), share1_02.clone());
@@ -1445,10 +1418,10 @@ mod tests {
             let share0_12 = EquivalenceClasses::Atomic(vec![vec![0], vec![1, 2]]);
             let share1_02 = EquivalenceClasses::Atomic(vec![vec![1], vec![0, 2]]);
             let share2_01 = EquivalenceClasses::Atomic(vec![vec![2], vec![0, 1]]);
-            let shared = EquivalenceClasses::Vector(vec![
-                Arc::new(share1_02.clone()),
-                Arc::new(share2_01.clone()),
-                Arc::new(share0_12.clone()),
+            let shared = vector_class(vec![
+                share1_02.clone(),
+                share2_01.clone(),
+                share0_12.clone(),
             ]);
             // PRF keys
             assert_eq!(*test_class1.get(&(0, 0)).unwrap(), private_class.clone());
@@ -1513,10 +1486,10 @@ mod tests {
             let share0_12 = EquivalenceClasses::Atomic(vec![vec![0], vec![1, 2]]);
             let share1_02 = EquivalenceClasses::Atomic(vec![vec![1], vec![0, 2]]);
             let share2_01 = EquivalenceClasses::Atomic(vec![vec![2], vec![0, 1]]);
-            let shared = EquivalenceClasses::Vector(vec![
-                Arc::new(share1_02.clone()),
-                Arc::new(share2_01.clone()),
-                Arc::new(share0_12.clone()),
+            let shared = vector_class(vec![
+                share1_02.clone(),
+                share2_01.clone(),
+                share0_12.clone(),
             ]);
             // PRF keys
             assert_eq!(*test_class1.get(&(0, 0)).unwrap(), private_class.clone());
