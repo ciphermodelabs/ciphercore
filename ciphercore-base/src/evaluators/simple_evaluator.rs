@@ -1000,15 +1000,6 @@ impl Evaluator for SimpleEvaluator {
                 let indices_t = node.get_node_dependencies()[1].get_type()?;
                 let indices_entries = indices_value.to_flattened_array_u64(indices_t)?;
 
-                // Check uniqueness of indices
-                // Panic here because this operation isn't public and, ideally, this case should not happen
-                let mut dedup_indices_entries = indices_entries.clone();
-                dedup_indices_entries.sort_unstable();
-                dedup_indices_entries.dedup();
-                if dedup_indices_entries.len() != indices_entries.len() {
-                    panic!("Indices must be unique");
-                }
-
                 let mut output_entries = vec![];
 
                 let input_shape = input_t.get_shape();
@@ -1027,6 +1018,9 @@ impl Evaluator for SimpleEvaluator {
 
                 for array_i in 0..num_arrays {
                     for index_entry in indices_entries.iter() {
+                        if *index_entry >= input_shape[axis as usize] {
+                            panic!("Incorrect index");
+                        }
                         let input_flat_index =
                             (array_i * input_shape[axis as usize] + index_entry) * row_size;
                         output_entries.extend_from_slice(
@@ -1341,6 +1335,18 @@ mod tests {
                 let input = Value::from_flattened_array(&[1, 2, 3, 4, 5], UINT32)?;
                 // [3]-array
                 let indices = Value::from_flattened_array(&[2, 0, 0], UINT64)?;
+                // [3]-array
+                let expected = vec![3, 1, 1];
+                assert_eq!(
+                    gather_helper(vec![5], vec![3], 0, vec![input, indices])?,
+                    expected
+                );
+            }
+            {
+                // [5]-array
+                let input = Value::from_flattened_array(&[1, 2, 3, 4, 5], UINT32)?;
+                // [3]-array
+                let indices = Value::from_flattened_array(&[2, 5, 0], UINT64)?;
                 let e = catch_unwind(AssertUnwindSafe(|| {
                     gather_helper(vec![5], vec![3], 0, vec![input, indices])
                 }));

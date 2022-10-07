@@ -7,7 +7,7 @@ use crate::custom_ops::CustomOperationBody;
 use crate::data_types::{array_type, scalar_size_in_bytes, ScalarType, Type, BIT, UINT8};
 use crate::data_values::Value;
 use crate::errors::Result;
-use crate::graphs::{Context, Graph, NodeAnnotation};
+use crate::graphs::{Context, Graph, Node, NodeAnnotation};
 use crate::random::PRNG;
 
 use super::mpc_compiler::{KEY_LENGTH, PARTIES};
@@ -194,6 +194,23 @@ pub fn share_vector<T: TryInto<u64> + Not<Output = T> + TryInto<u8> + Copy>(
             shares[2].clone(),
         ]),
     ])
+}
+
+/// Selects elements of node 0 if bits of node b are zero and elements of node 1 otherwise.
+///
+/// Broadcasting is applied
+///
+/// # Arguments
+///
+/// - `a0` - node 0 containing an array
+/// - `a1` - node 1 containing an array of the same type as `a`
+/// - `b` - node containing selection bits
+///
+/// # Returns
+///
+/// Node containing an array with selected elements of `a0` or `a1`
+pub fn select_node(b: Node, a1: Node, a0: Node) -> Result<Node> {
+    a1.subtract(a0.clone())?.mixed_multiply(b)?.add(a0)
 }
 
 #[cfg(test)]
