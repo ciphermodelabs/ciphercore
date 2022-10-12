@@ -2335,7 +2335,7 @@ impl Graph {
     /// # Returns
     ///
     /// New operation node that gets added
-    pub(crate) fn add_node(
+    pub fn add_node(
         &self,
         node_dependencies: Vec<Node>,
         graph_dependencies: Vec<Graph>,
