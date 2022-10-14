@@ -991,6 +991,41 @@ impl Evaluator for SimpleEvaluator {
                     result_type,
                 )
             }
+            Operation::SegmentCumSum => {
+                let input_array_value = dependencies_values[0].clone();
+                let binary_array_value = dependencies_values[1].clone();
+                let first_row_value = dependencies_values[2].clone();
+
+                let input_t = node.get_node_dependencies()[0].get_type()?;
+                let binary_t = node.get_node_dependencies()[1].get_type()?;
+                let first_row_t = node.get_node_dependencies()[2].get_type()?;
+
+                let input_array = input_array_value.to_flattened_array_u64(input_t.clone())?;
+                let binary_array = binary_array_value.to_flattened_array_u64(binary_t)?;
+                let input_st = input_t.get_scalar_type();
+                let first_row = if first_row_t.is_scalar() {
+                    vec![first_row_value.to_u64(input_st.clone())?]
+                } else {
+                    first_row_value.to_flattened_array_u64(first_row_t.clone())?
+                };
+
+                let row_size = first_row_t.get_dimensions().iter().product::<u64>() as usize;
+
+                let mut result_array = first_row;
+                for (i, b) in binary_array.iter().enumerate() {
+                    let mut result_row = if *b == 0 {
+                        input_array[i * row_size..(i + 1) * row_size].to_vec()
+                    } else {
+                        // Extract an input row and sum it with the previous output row
+                        let previous_row = &result_array[i * row_size..(i + 1) * row_size];
+                        let input_row = &input_array[i * row_size..(i + 1) * row_size];
+                        add_vectors_u64(input_row, previous_row, input_st.get_modulus())?
+                    };
+                    result_array.append(&mut result_row);
+                }
+
+                Value::from_flattened_array(&result_array, input_st)
+            }
             Operation::Gather(axis) => {
                 let input_value = dependencies_values[0].clone();
                 let indices_value = dependencies_values[1].clone();
@@ -1042,10 +1077,12 @@ impl Evaluator for SimpleEvaluator {
 mod tests {
     use std::panic::{catch_unwind, AssertUnwindSafe};
 
+    use ndarray::array;
+
     use crate::{
         data_types::{
-            named_tuple_type, scalar_type, tuple_type, vector_type, ArrayShape, INT32, UINT32,
-            UINT64, UINT8,
+            named_tuple_type, scalar_type, tuple_type, vector_type, ArrayShape, ScalarType, INT32,
+            UINT32, UINT64, UINT8,
         },
         evaluators::{evaluate_simple_evaluator, random_evaluate},
         graphs::create_context,
@@ -1192,6 +1229,108 @@ mod tests {
                 let hash_matrix = prng.get_random_value(array_type(hash_shape.clone(), BIT))?;
                 assert!(cuckoo_helper(input_shape, hash_shape, vec![input, hash_matrix]).is_ok());
             }
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    fn segment_cumsum_helper(
+        input_shape: ArrayShape,
+        st: ScalarType,
+        inputs: Vec<Value>,
+    ) -> Result<Vec<u64>> {
+        let c = create_context()?;
+        let g = c.create_graph()?;
+        let i = g.input(array_type(input_shape.clone(), st.clone()))?;
+        let b = g.input(array_type(vec![input_shape[0]], BIT))?;
+        let first_row = if input_shape.len() > 1 {
+            g.input(array_type(input_shape[1..].to_vec(), st))?
+        } else {
+            g.input(scalar_type(st))?
+        };
+        let o = i.segment_cumsum(b, first_row)?;
+        g.set_output_node(o.clone())?;
+        g.finalize()?;
+        c.set_main_graph(g.clone())?;
+        c.finalize()?;
+        let result_value = random_evaluate(g, inputs)?;
+        let result_type = o.get_type()?;
+        result_value.to_flattened_array_u64(result_type)
+    }
+
+    #[test]
+    fn test_segment_cumsum() {
+        || -> Result<()> {
+            {
+                let input = Value::from_flattened_array(&[1, 2, 3, 4, 5, 6], INT32)?;
+                let binary = Value::from_flattened_array(&[0, 1, 1, 0, 0, 1], BIT)?;
+                let first_row = Value::from_scalar(10, INT32)?;
+
+                let expected = vec![10, 1, 3, 6, 4, 5, 11];
+                assert_eq!(
+                    segment_cumsum_helper(vec![6], INT32, vec![input, binary, first_row])?,
+                    expected
+                );
+            }
+            {
+                let input = Value::from_flattened_array(&[1, 2, 3, 4, 5, 6], INT32)?;
+                let binary = Value::from_flattened_array(&[0, 0, 0, 0, 0, 0], BIT)?;
+                let first_row = Value::from_scalar(10, INT32)?;
+
+                let expected = vec![10, 1, 2, 3, 4, 5, 6];
+                assert_eq!(
+                    segment_cumsum_helper(vec![6], INT32, vec![input, binary, first_row])?,
+                    expected
+                );
+            }
+            {
+                let input = Value::from_flattened_array(&[1, 2, 3, 4, 5, 6], INT32)?;
+                let binary = Value::from_flattened_array(&[1, 1, 1, 1, 1, 1], BIT)?;
+                let first_row = Value::from_scalar(10, INT32)?;
+
+                let expected = vec![10, 11, 13, 16, 20, 25, 31];
+                assert_eq!(
+                    segment_cumsum_helper(vec![6], INT32, vec![input, binary, first_row])?,
+                    expected
+                );
+            }
+            {
+                let input =
+                    Value::from_ndarray(array!([[1, 2], [3, 4], [5, 6]]).into_dyn(), INT32)?;
+                let binary = Value::from_flattened_array(&[0, 1, 1], BIT)?;
+                let first_row = Value::from_flattened_array(&[10, 20], INT32)?;
+
+                let expected = array!([[10, 20], [1, 2], [4, 6], [9, 12]]).into_raw_vec();
+                assert_eq!(
+                    segment_cumsum_helper(vec![3, 2], INT32, vec![input, binary, first_row])?,
+                    expected
+                );
+            }
+            {
+                let input =
+                    Value::from_ndarray(array!([[1, 2], [3, 4], [5, 6]]).into_dyn(), INT32)?;
+                let binary = Value::from_flattened_array(&[1, 1, 1], BIT)?;
+                let first_row = Value::from_flattened_array(&[10, 20], INT32)?;
+
+                let expected = array!([[10, 20], [11, 22], [14, 26], [19, 32]]).into_raw_vec();
+                assert_eq!(
+                    segment_cumsum_helper(vec![3, 2], INT32, vec![input, binary, first_row])?,
+                    expected
+                );
+            }
+            {
+                let input =
+                    Value::from_ndarray(array!([[1, 2], [3, 4], [5, 6]]).into_dyn(), INT32)?;
+                let binary = Value::from_flattened_array(&[0, 0, 0], BIT)?;
+                let first_row = Value::from_flattened_array(&[10, 20], INT32)?;
+
+                let expected = array!([[10, 20], [1, 2], [3, 4], [5, 6]]).into_raw_vec();
+                assert_eq!(
+                    segment_cumsum_helper(vec![3, 2], INT32, vec![input, binary, first_row])?,
+                    expected
+                );
+            }
+
             Ok(())
         }()
         .unwrap();

@@ -1,8 +1,7 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::custom_ops::CustomOperationBody;
-use crate::data_types::{array_type, scalar_type, tuple_type, vector_type, Type, BIT, UINT64};
+use crate::data_types::{array_type, tuple_type, vector_type, Type, BIT, UINT64};
 use crate::errors::Result;
 use crate::graphs::{Context, Graph, Node, NodeAnnotation, SliceElement};
 use crate::ops::utils::{pull_out_bits, put_in_bits, zeros};
@@ -480,35 +479,6 @@ impl CustomOperationBody for DuplicationMPC {
         let shares_t = argument_types[0].clone();
         let prf_t = argument_types[2].clone();
 
-        let mut helper_graphs = HashMap::new();
-        for column_header_type in column_header_types.clone() {
-            let column_type = (*column_header_type.1).clone();
-            if helper_graphs.contains_key(&column_type) {
-                continue;
-            }
-            // Helper graph that computes output[i] = input[i][0] + input[i][1] * output[i-1]
-            let helper_g = context.create_graph()?;
-            let column_shape = column_type.get_shape();
-            let (entry_type, bit_type) = if column_shape.len() > 1 {
-                let e_t = array_type(column_shape[1..].to_vec(), column_type.get_scalar_type());
-                let b_t = array_type(vec![1; column_shape.len() - 1], BIT);
-                (e_t, b_t)
-            } else {
-                (scalar_type(column_type.get_scalar_type()), scalar_type(BIT))
-            };
-            let state = helper_g.input(entry_type.clone())?;
-            let input_element = helper_g.input(tuple_type(vec![entry_type.clone(), bit_type]))?;
-
-            let input_column = input_element.tuple_get(0)?;
-            let input_bit = input_element.tuple_get(1)?;
-
-            let output_state = input_column.add(state.mixed_multiply(input_bit)?)?;
-            let output = helper_g.create_tuple(vec![output_state.clone(), output_state])?;
-            output.set_as_output()?;
-            helper_g.finalize()?;
-            helper_graphs.insert(column_type, helper_g);
-        }
-
         let g = context.create_graph()?;
 
         let shares = g.input(shares_t)?;
@@ -621,28 +591,17 @@ impl CustomOperationBody for DuplicationMPC {
             //
             // B_p[i] = M_(duplication_bits[i])[i] + W_(rho[i])[i] + duplication_bits[i] * B_p[i-1]
             //
-            // for i in {1,..., num_entries-1}
+            // for i in {1,..., num_entries-1}.
+            // B_p[0] is computed earlier.
             let m_plus_w = select_node(duplication_bits_wout_first_entry.clone(), m1, m0)?
                 .add(selected_w_for_programmer)?;
-            // Compute the iteration using the above helper graphs
-            // TODO: it's a local operation; so it can be replaced by a single primitive and more efficient node.
-            let helper_g = (*helper_graphs.get(&column_t).unwrap()).clone();
-            let bi_p = g
-                .iterate(
-                    helper_g,
-                    b0_p.clone(),
-                    g.zip(vec![
-                        m_plus_w.array_to_vector()?,
-                        duplication_bits_wout_first_entry.array_to_vector()?,
-                    ])?,
-                )?
-                .tuple_get(1)?;
 
-            // Merge B_p[0] and B_p[i] for i in {1,...,num_entries-1}
-            let b_p = g
-                .create_tuple(vec![b0_p.clone(), bi_p])?
-                .reshape(vector_type(num_entries, b0_p.get_type()?))?
-                .vector_to_array()?;
+            let b_p = g.segment_cumsum(
+                m_plus_w,
+                duplication_bits_wout_first_entry
+                    .reshape(array_type(vec![num_entries - 1], BIT))?,
+                b0_p.clone(),
+            )?;
 
             // Compute the share of Programmer which is equal to
             // B_p - R + duplication_map(programmer column share)

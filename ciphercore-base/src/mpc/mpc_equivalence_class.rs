@@ -419,6 +419,10 @@ pub(super) fn generate_equivalence_class(
                     vector_class(vec![private_class(), private_class()]),
                     private_class(),
                 ]),
+                Operation::SegmentCumSum => combine_class(
+                    combine_class(dependencies_class[0].clone(), dependencies_class[1].clone())?,
+                    dependencies_class[2].clone(),
+                )?,
                 _ => return Err(runtime_error!("Operation is not supported")),
             };
             equivalence_classes.insert(node.get_global_id(), result_class);

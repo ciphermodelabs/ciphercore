@@ -103,6 +103,7 @@ pub enum Operation {
     InversePermutation,
     CuckooToPermutation,
     DecomposeSwitchingMap(u64),
+    SegmentCumSum,
     Custom(CustomOperation),
 }
 
@@ -773,6 +774,19 @@ impl Node {
     #[doc(hidden)]
     pub fn cuckoo_hash(&self, hash_matrices: Node) -> Result<Node> {
         self.get_graph().cuckoo_hash(self.clone(), hash_matrices)
+    }
+
+    /// Adds a node that, given an input multidimensional array A, binary one-dimensional array B (first dimension is n in both array) and starting value v, computes the following iteration
+    ///
+    /// output[i] = A[i-1] + B[i-1] * output[i-1]
+    ///
+    /// where i in {1,...,n} and output[0] = v.
+    ///
+    /// Applies [Graph::segment_cumsum] to the parent graph, `this` node, `binary_array` and `first_row`.
+    #[doc(hidden)]
+    pub fn segment_cumsum(&self, binary_array: Node, first_row: Node) -> Result<Node> {
+        self.get_graph()
+            .segment_cumsum(self.clone(), binary_array, first_row)
     }
 
     /// Adds a node that converts a switching map array into a tuple of the following components:
@@ -1547,8 +1561,8 @@ impl Graph {
     ///
     /// # Arguments
     ///
-    /// `array` - input array of binary strings of shape [..., n, b]
-    /// `hash_matrices` - random binary [h, m, b]-array.
+    /// - `array` - input array of binary strings of shape [..., n, b]
+    /// - `hash_matrices` - random binary [h, m, b]-array.
     ///
     /// # Returns
     ///
@@ -1556,6 +1570,41 @@ impl Graph {
     #[doc(hidden)]
     pub fn cuckoo_hash(&self, array: Node, hash_matrices: Node) -> Result<Node> {
         self.add_node(vec![array, hash_matrices], vec![], Operation::CuckooHash)
+    }
+
+    /// Adds a node that, given an input multidimensional array A, binary one-dimensional array B (first dimension is n in both array) and starting value v, computes the following iteration
+    ///
+    /// output[i] = A[i-1] + B[i-1] * output[i-1]
+    ///
+    /// where i in {1,...,n} and output[0] = v.
+    /// This is similar to computing cumulative sums of consecutive elements (segments) of the input array A.
+    /// The locations of these segments are defined by the binary array B.
+    ///
+    /// This iteration is used in the Duplication protocol (see mpc::mpc_psi) and is done locally by one of the computing parties.
+    ///
+    /// **WARNING**: this function should not be used before MPC compilation.
+    ///
+    /// # Arguments
+    ///
+    /// - `input_array` - input array whose rows are summed within the iteration
+    /// - `binary_array` - binary array indicating whether a row of the input array should be added to a previous row of the output array
+    /// - `first_row` - first row of the output array
+    ///
+    /// # Returns
+    ///
+    /// New SegmentCumSum node containing the output array
+    #[doc(hidden)]
+    pub fn segment_cumsum(
+        &self,
+        input_array: Node,
+        binary_array: Node,
+        first_row: Node,
+    ) -> Result<Node> {
+        self.add_node(
+            vec![input_array, binary_array, first_row],
+            vec![],
+            Operation::SegmentCumSum,
+        )
     }
 
     /// Adds a node that converts a switching map array into a random tuple of the following components:
