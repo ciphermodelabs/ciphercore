@@ -46,6 +46,44 @@ impl PartialEq for EquivalenceClasses {
     }
 }
 
+impl EquivalenceClasses {
+    fn is_atomic(&self) -> bool {
+        matches!(self, EquivalenceClasses::Atomic(_))
+    }
+
+    fn is_vector(&self) -> bool {
+        matches!(self, EquivalenceClasses::Vector(_))
+    }
+
+    fn get_class_vector(&self) -> Vec<Arc<EquivalenceClasses>> {
+        if let EquivalenceClasses::Vector(v) = self {
+            (*v).clone()
+        } else {
+            panic!("This class is not a vector");
+        }
+    }
+}
+
+pub(super) fn public_class() -> EquivalenceClasses {
+    EquivalenceClasses::Atomic(vec![vec![0, 1, 2]])
+}
+
+pub(super) fn private_class() -> EquivalenceClasses {
+    EquivalenceClasses::Atomic(vec![vec![0], vec![1], vec![2]])
+}
+
+pub(super) fn share0_class() -> EquivalenceClasses {
+    EquivalenceClasses::Atomic(vec![vec![1], vec![0, 2]])
+}
+
+pub(super) fn share1_class() -> EquivalenceClasses {
+    EquivalenceClasses::Atomic(vec![vec![2], vec![0, 1]])
+}
+
+pub(super) fn share2_class() -> EquivalenceClasses {
+    EquivalenceClasses::Atomic(vec![vec![0], vec![1, 2]])
+}
+
 fn compare_vector_of_vector(vector1: Vec<Vec<u64>>, vector2: Vec<Vec<u64>>) -> Result<bool> {
     if vector1.len() != vector2.len() {
         return Ok(false);
@@ -98,6 +136,65 @@ pub(super) fn vector_class(v: Vec<EquivalenceClasses>) -> EquivalenceClasses {
     EquivalenceClasses::Vector(dependencies)
 }
 
+fn flatten_classes(input_class: EquivalenceClasses) -> Vec<EquivalenceClasses> {
+    match input_class {
+        EquivalenceClasses::Atomic(_) => vec![input_class],
+        EquivalenceClasses::Vector(v) => {
+            let mut result_vec = vec![];
+            for class in v {
+                result_vec.extend(flatten_classes((*class).clone()));
+            }
+            result_vec
+        }
+    }
+}
+
+fn unflatten_classes(
+    flattened_classes: &[EquivalenceClasses],
+    t: Type,
+    position: &mut u64,
+) -> EquivalenceClasses {
+    match t {
+        Type::Array(_, _) | Type::Scalar(_) => {
+            *position += 1;
+            flattened_classes[(*position - 1) as usize].clone()
+        }
+        Type::NamedTuple(v) => {
+            let mut class_vec = vec![];
+            for (_, sub_t) in v {
+                class_vec.push(unflatten_classes(
+                    flattened_classes,
+                    (*sub_t).clone(),
+                    position,
+                ));
+            }
+            vector_class(class_vec)
+        }
+        Type::Tuple(v) => {
+            let mut class_vec = vec![];
+            for sub_t in v {
+                class_vec.push(unflatten_classes(
+                    flattened_classes,
+                    (*sub_t).clone(),
+                    position,
+                ));
+            }
+            vector_class(class_vec)
+        }
+        Type::Vector(n, sub_t) => {
+            let mut class_vec = vec![];
+            for _ in 0..n {
+                class_vec.push(unflatten_classes(
+                    flattened_classes,
+                    (*sub_t).clone(),
+                    position,
+                ));
+            }
+            vector_class(class_vec)
+        }
+    }
+}
+
 //This function generates equivalence classes for all nodes in the input compiled context.
 //As the index of VectorGet depends on the input data, we cannot return a correct EquivalenceClasses without the knowledge of the input data. Thus, we restrict that all elements in the input Vector should have a same EquivalenceClasses.
 #[allow(dead_code)]
@@ -114,36 +211,37 @@ pub(super) fn generate_equivalence_class(
             let dependencies = node.get_node_dependencies();
             let mut dependencies_class = vec![];
             for dependence_node in &dependencies {
-                dependencies_class.push(Arc::new(
+                let node_id = dependence_node.get_global_id();
+                let op = dependence_node.get_operation();
+                dependencies_class.push(
                     equivalence_classes
                         .get(&dependence_node.get_global_id())
-                        .expect("hashmap get error!")
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "{} node {:?} wasn't added to equivalence classes",
+                                op, node_id
+                            )
+                        })
                         .clone(),
-                ));
+                );
             }
-            match node.get_operation() {
+            let result_class = match node.get_operation() {
                 Operation::Input(input_type) => {
-                    equivalence_classes.insert(
-                        node.get_global_id(),
-                        get_input_class(input_type, &input_party_map[0][input_count])?,
-                    );
+                    let result_class =
+                        get_input_class(input_type, &input_party_map[0][input_count])?;
                     input_count += 1;
+                    result_class
                 }
                 Operation::CreateTuple
                 | Operation::CreateNamedTuple(_)
-                | Operation::CreateVector(_) => {
-                    equivalence_classes.insert(
-                        node.get_global_id(),
-                        EquivalenceClasses::Vector(dependencies_class),
-                    );
-                }
+                | Operation::CreateVector(_) => vector_class(dependencies_class),
 
                 Operation::TupleGet(field_id) => {
-                    let previous_class = (*dependencies_class[0]).clone();
-                    if let EquivalenceClasses::Vector(v) = previous_class {
-                        let target_class = v[field_id as usize].clone();
-                        equivalence_classes.insert(node.get_global_id(), (*target_class).clone());
+                    let input_class = dependencies_class[0].clone();
+                    if !input_class.is_vector() {
+                        panic!("TupleGet input class should be Vector")
                     }
+                    (*input_class.get_class_vector()[field_id as usize]).clone()
                 }
 
                 Operation::NamedTupleGet(ref field_name) => {
@@ -158,25 +256,20 @@ pub(super) fn generate_equivalence_class(
                         }
                     }
                     let field_id_raw = field_id.unwrap();
-                    let namedtuple = (*dependencies_class[0]).clone();
-                    if let EquivalenceClasses::Vector(v) = namedtuple {
-                        equivalence_classes
-                            .insert(node.get_global_id(), (*v[field_id_raw as usize]).clone());
+                    let input_class = dependencies_class[0].clone();
+                    if !input_class.is_vector() {
+                        panic!("NamedTupleGet input class should be Vector")
                     }
+                    (*input_class.get_class_vector()[field_id_raw as usize]).clone()
                 }
 
-                Operation::Random(t) => {
-                    equivalence_classes.insert(
-                        node.get_global_id(),
-                        recursive_class_filler(
-                            t,
-                            EquivalenceClasses::Atomic(vec![vec![0], vec![1], vec![2]]),
-                        )?,
-                    );
-                }
+                Operation::Random(t) => recursive_class_filler(
+                    t,
+                    EquivalenceClasses::Atomic(vec![vec![0], vec![1], vec![2]]),
+                )?,
 
                 Operation::NOP => {
-                    let mut previous_class = (*dependencies_class[0]).clone();
+                    let mut previous_class = dependencies_class[0].clone();
                     let annotation = context.get_node_annotations(node.clone())?;
                     for single_communication in annotation {
                         if let NodeAnnotation::Send(source_party, destination_party) =
@@ -186,21 +279,10 @@ pub(super) fn generate_equivalence_class(
                                 get_nop_class(previous_class, source_party, destination_party)?;
                         }
                     }
-                    equivalence_classes.insert(node.get_global_id(), previous_class);
+                    previous_class
                 }
 
-                Operation::PRF(_, t) => {
-                    equivalence_classes.insert(
-                        node.get_global_id(),
-                        recursive_class_filler(
-                            t,
-                            equivalence_classes
-                                .get(&dependencies[0].get_global_id())
-                                .expect("hashmap get error!")
-                                .clone(),
-                        )?,
-                    );
-                }
+                Operation::PRF(_, t) => recursive_class_filler(t, dependencies_class[0].clone())?,
 
                 Operation::Add
                 | Operation::Subtract
@@ -210,135 +292,140 @@ pub(super) fn generate_equivalence_class(
                 | Operation::Matmul
                 | Operation::CuckooHash
                 | Operation::Gather(_) => {
-                    equivalence_classes.insert(
-                        node.get_global_id(),
-                        combine_class(
-                            (*dependencies_class[0]).clone(),
-                            (*dependencies_class[1]).clone(),
-                        )?,
-                    );
+                    if !dependencies_class[0].is_atomic() {
+                        panic!(
+                            "{} first input class should be Atomic",
+                            node.get_operation()
+                        )
+                    }
+                    if !dependencies_class[1].is_atomic() {
+                        panic!(
+                            "{} second input class should be Atomic",
+                            node.get_operation()
+                        )
+                    }
+                    combine_class(dependencies_class[0].clone(), dependencies_class[1].clone())?
                 }
 
                 Operation::Truncate(_)
                 | Operation::Sum(_)
                 | Operation::Get(_)
                 | Operation::GetSlice(_)
-                | Operation::Reshape(_)
                 | Operation::A2B
                 | Operation::B2A(_)
-                | Operation::InversePermutation => {
-                    equivalence_classes
-                        .insert(node.get_global_id(), (*dependencies_class[0]).clone());
+                | Operation::InversePermutation
+                | Operation::PermuteAxes(_) => {
+                    if !dependencies_class[0].is_atomic() {
+                        panic!("{} input class should be Atomic", node.get_operation())
+                    }
+                    dependencies_class[0].clone()
                 }
 
-                Operation::PermuteAxes(_) => {
-                    let previous_class = (*dependencies_class[0]).clone();
-                    if let EquivalenceClasses::Atomic(d) = previous_class {
-                        let current_class = d;
-                        equivalence_classes.insert(
-                            node.get_global_id(),
-                            EquivalenceClasses::Atomic(current_class),
-                        );
-                    }
+                Operation::Reshape(result_type) => {
+                    let input_classes = flatten_classes(dependencies_class[0].clone());
+                    unflatten_classes(&input_classes, result_type, &mut 0)
                 }
 
-                Operation::Stack(_) | Operation::VectorToArray => {
-                    let previous_class = (*dependencies_class[0]).clone();
-                    match previous_class {
-                        EquivalenceClasses::Atomic(d) => {
-                            let current_class = d;
-                            equivalence_classes.insert(
-                                node.get_global_id(),
-                                EquivalenceClasses::Atomic(current_class),
-                            );
-                        }
-
-                        EquivalenceClasses::Vector(v) => {
-                            let mut current_class = (*v[0]).clone();
-                            for e in v {
-                                current_class = combine_class(current_class, (*e).clone())?;
-                            }
-                            equivalence_classes.insert(node.get_global_id(), current_class);
-                        }
+                Operation::Stack(_) => {
+                    let mut result_class = dependencies_class[0].clone();
+                    if !result_class.is_atomic() {
+                        panic!("Stack input classes must be Atomic");
                     }
+                    for class in dependencies_class.iter().skip(1) {
+                        if !class.is_atomic() {
+                            panic!("Stack input classes must be Atomic");
+                        }
+                        result_class = combine_class(result_class, (*class).clone())?;
+                    }
+                    result_class
+                }
+
+                Operation::VectorToArray => {
+                    let input_class = dependencies_class[0].clone();
+                    if !input_class.is_vector() {
+                        panic!("VectorToArray input class must be Vector");
+                    }
+                    let class_vec = input_class.get_class_vector();
+                    let mut result_class = (*class_vec[0]).clone();
+                    for e in class_vec.iter().skip(1) {
+                        result_class = combine_class(result_class, (**e).clone())?;
+                    }
+                    result_class
                 }
 
                 Operation::Zip => {
-                    let mut current_class = vec![];
+                    let mut result_classes = vec![];
                     let mut index = 0;
                     'result_entries: loop {
                         let mut row = vec![];
                         for dependency_class in dependencies_class.clone() {
-                            if let EquivalenceClasses::Vector(v) = &*dependency_class {
-                                if v.len() <= index {
-                                    break 'result_entries;
-                                }
-                                row.push(v[index].clone());
+                            if !dependency_class.is_vector() {
+                                panic!("Zip input class must be Vector");
                             }
+                            let v = dependency_class.get_class_vector();
+                            if v.len() <= index {
+                                break 'result_entries;
+                            }
+                            row.push(v[index].clone());
                         }
-                        current_class.push(Arc::new(EquivalenceClasses::Vector(row)));
+                        result_classes.push(EquivalenceClasses::Vector(row));
                         index += 1;
                     }
-                    equivalence_classes.insert(
-                        node.get_global_id(),
-                        EquivalenceClasses::Vector(current_class),
-                    );
+
+                    vector_class(result_classes)
                 }
 
-                Operation::Constant(t, _) => {
-                    equivalence_classes.insert(
-                        node.get_global_id(),
-                        recursive_class_filler(t, EquivalenceClasses::Atomic(vec![vec![0, 1, 2]]))?,
-                    );
-                }
+                Operation::Constant(t, _) => recursive_class_filler(t, public_class())?,
 
                 Operation::Repeat(n) => {
-                    let mut current_class = vec![];
+                    let mut result_classes = vec![];
                     for _ in 0..n {
-                        current_class.push(Arc::new((*dependencies_class[0]).clone()));
+                        result_classes.push(dependencies_class[0].clone());
                     }
-                    equivalence_classes.insert(
-                        node.get_global_id(),
-                        EquivalenceClasses::Vector(current_class),
-                    );
+                    vector_class(result_classes)
                 }
 
                 Operation::ArrayToVector => {
-                    let mut current_class = vec![];
-
+                    let input_class = dependencies_class[0].clone();
+                    if !input_class.is_atomic() {
+                        panic!("ArrayToVector input class should be Atomic");
+                    }
+                    let mut classes = vec![];
                     let dependency_node = dependencies[0].clone();
                     let shape = dependency_node.get_type()?.get_shape();
                     for _ in 0..shape[0] {
-                        current_class.push(Arc::new((*dependencies_class[0]).clone()));
+                        classes.push(input_class.clone());
                     }
-                    equivalence_classes.insert(
-                        node.get_global_id(),
-                        EquivalenceClasses::Vector(current_class),
-                    );
+                    vector_class(classes)
                 }
 
                 Operation::VectorGet => {
-                    let previous_class = (*dependencies_class[0]).clone();
-                    if let EquivalenceClasses::Vector(v) = previous_class {
-                        let current_class = (*v[0]).clone();
-                        for class in v {
-                            if current_class != *class {
-                                panic!("elements in Vector have different EquivalenceClasses");
-                            }
-                        }
-                        equivalence_classes.insert(node.get_global_id(), current_class);
+                    let input_class = dependencies_class[0].clone();
+                    if !input_class.is_vector() {
+                        panic!("VectorGet input class should be Vector");
                     }
+                    let v = input_class.get_class_vector();
+                    let result_class = (*v[0]).clone();
+                    for class in v {
+                        if result_class != *class {
+                            panic!("VectorGet input class contains different EquivalenceClasses");
+                        }
+                    }
+                    result_class
                 }
-                Operation::RandomPermutation(_)
-                | Operation::CuckooToPermutation
-                | Operation::DecomposeSwitchingMap(_) => {
-                    equivalence_classes.insert(
-                        node.get_global_id(),
-                        EquivalenceClasses::Atomic(vec![vec![0], vec![1], vec![2]]),
-                    );
-                }
+                Operation::RandomPermutation(_) | Operation::CuckooToPermutation => private_class(),
+                Operation::DecomposeSwitchingMap(_) => vector_class(vec![
+                    private_class(),
+                    vector_class(vec![private_class(), private_class()]),
+                    private_class(),
+                ]),
+                Operation::SegmentCumSum => combine_class(
+                    combine_class(dependencies_class[0].clone(), dependencies_class[1].clone())?,
+                    dependencies_class[2].clone(),
+                )?,
                 _ => return Err(runtime_error!("Operation is not supported")),
-            }
+            };
+            equivalence_classes.insert(node.get_global_id(), result_class);
         }
     }
     Ok(equivalence_classes)
@@ -346,14 +433,8 @@ pub(super) fn generate_equivalence_class(
 
 fn get_input_class(t: Type, input_party: &IOStatus) -> Result<EquivalenceClasses> {
     match input_party {
-        IOStatus::Public => Ok(recursive_class_filler(
-            t,
-            EquivalenceClasses::Atomic(vec![vec![0, 1, 2]]),
-        )?),
-        IOStatus::Party(_) => Ok(recursive_class_filler(
-            t,
-            EquivalenceClasses::Atomic(vec![vec![0], vec![1], vec![2]]),
-        )?),
+        IOStatus::Public => Ok(recursive_class_filler(t, public_class())?),
+        IOStatus::Party(_) => Ok(recursive_class_filler(t, private_class())?),
         IOStatus::Shared => Ok(get_input_class_helper_shared(t)?),
     }
 }
@@ -391,11 +472,7 @@ fn get_input_class_helper_shared(t: Type) -> Result<EquivalenceClasses> {
                 panic!("invalid input node");
             }
             let mut current_class = vec![];
-            let sample_class = vec![
-                EquivalenceClasses::Atomic(vec![vec![1], vec![0, 2]]),
-                EquivalenceClasses::Atomic(vec![vec![2], vec![0, 1]]),
-                EquivalenceClasses::Atomic(vec![vec![0], vec![1, 2]]),
-            ];
+            let sample_class = vec![share0_class(), share1_class(), share2_class()];
             for (index, sub_t) in ts.iter().enumerate() {
                 if *sub_t != ts[0] {
                     panic!("invalid input node");
@@ -454,17 +531,19 @@ fn combine_class(
     input1: EquivalenceClasses,
     input2: EquivalenceClasses,
 ) -> Result<EquivalenceClasses> {
+    if !input1.is_atomic() || !input2.is_atomic() {
+        panic!("Only Atomic classes can be combined");
+    }
     if input1 == input2 {
         return Ok(input1);
     }
-    if input1 == EquivalenceClasses::Atomic(vec![vec![0, 1, 2]]) {
+    if input1 == public_class() {
         return Ok(input2);
     }
-    if input2 == EquivalenceClasses::Atomic(vec![vec![0, 1, 2]]) {
-        Ok(input1)
-    } else {
-        Ok(EquivalenceClasses::Atomic(vec![vec![0], vec![1], vec![2]]))
+    if input2 == public_class() {
+        return Ok(input1);
     }
+    Ok(private_class())
 }
 
 //This function checks protocol invariant.
@@ -538,11 +617,13 @@ mod tests {
     use super::*;
     use crate::data_types::{array_type, scalar_type, tuple_type, vector_type, BIT, UINT64};
     use crate::data_values::Value;
-    use crate::graphs::{create_context, create_unchecked_context, SliceElement};
+    use crate::graphs::{create_context, create_unchecked_context, Graph, SliceElement};
     use crate::inline::inline_common::DepthOptimizationLevel;
     use crate::inline::inline_ops::{InlineConfig, InlineMode};
     use crate::mpc::mpc_compiler::{prepare_for_mpc_evaluation, IOStatus};
     use std::collections::HashMap;
+
+    type ClassesMap = HashMap<(u64, u64), EquivalenceClasses>;
 
     #[test]
     fn eq_equivalence_class_test() {
@@ -586,40 +667,243 @@ mod tests {
 
     #[test]
     fn test_combine_class() {
-        let public_class = EquivalenceClasses::Atomic(vec![vec![0, 1, 2]]);
-        let private_class = EquivalenceClasses::Atomic(vec![vec![0], vec![1], vec![2]]);
-        let share0_12 = EquivalenceClasses::Atomic(vec![vec![0], vec![1, 2]]);
-        let share1_02 = EquivalenceClasses::Atomic(vec![vec![1], vec![0, 2]]);
-
-        let a = private_class.clone();
-        let b = private_class.clone();
-        let ab = private_class.clone();
+        let a = private_class();
+        let b = private_class();
+        let ab = private_class();
         assert_eq!(ab, combine_class(a, b).unwrap());
 
-        let a = share0_12.clone();
-        let b = share0_12.clone();
-        let ab = share0_12.clone();
+        let a = share2_class();
+        let b = share2_class();
+        let ab = share2_class();
         assert_eq!(ab, combine_class(a, b).unwrap());
 
-        let a = private_class.clone();
-        let b = share0_12.clone();
-        let ab = private_class.clone();
+        let a = private_class();
+        let b = share2_class();
+        let ab = private_class();
         assert_eq!(ab, combine_class(a, b).unwrap());
 
-        let a = public_class.clone();
-        let b = share0_12.clone();
+        let a = public_class();
+        let b = share2_class();
         let ab = b.clone();
         assert_eq!(ab, combine_class(a, b).unwrap());
 
-        let a = public_class.clone();
-        let b = public_class.clone();
-        let ab = public_class.clone();
+        let a = public_class();
+        let b = public_class();
+        let ab = public_class();
         assert_eq!(ab, combine_class(a, b).unwrap());
 
-        let a = share0_12.clone();
-        let b = share1_02.clone();
-        let ab = private_class.clone();
+        let a = share2_class();
+        let b = share0_class();
+        let ab = private_class();
         assert_eq!(ab, combine_class(a, b).unwrap());
+    }
+
+    fn get_class_from_name(
+        graph: &Graph,
+        classes: &ClassesMap,
+        name: &str,
+    ) -> Result<EquivalenceClasses> {
+        let node = graph.retrieve_node(name)?;
+        Ok((*classes.get(&node.get_global_id()).unwrap()).clone())
+    }
+
+    #[test]
+    fn test_input() {
+        || -> Result<()> {
+            let c = create_unchecked_context()?;
+            let g = c.create_graph()?;
+            let t = array_type(vec![10], BIT);
+            g.input(tuple_type(vec![t.clone(), t.clone(), t.clone()]))?
+                .set_name("i1")?;
+            g.input(t.clone())?.set_name("i2")?;
+            g.input(t.clone())?.set_name("i3")?;
+
+            let result_classes = generate_equivalence_class(
+                c.clone(),
+                vec![vec![IOStatus::Shared, IOStatus::Public, IOStatus::Party(0)]],
+            )?;
+
+            assert_eq!(
+                get_class_from_name(&g, &result_classes, "i1")?,
+                vector_class(vec![share0_class(), share1_class(), share2_class()])
+            );
+            assert_eq!(
+                get_class_from_name(&g, &result_classes, "i2")?,
+                public_class()
+            );
+            assert_eq!(
+                get_class_from_name(&g, &result_classes, "i3")?,
+                private_class()
+            );
+
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    #[test]
+    fn test_stack() {
+        || -> Result<()> {
+            let c = create_unchecked_context()?;
+            let g = c.create_graph()?;
+            let t = array_type(vec![10], BIT);
+            let shared_tuple = g.input(tuple_type(vec![t.clone(), t.clone(), t.clone()]))?;
+            let public_array = g.input(t.clone())?;
+            let private_array = g.input(t.clone())?;
+
+            g.stack(vec![public_array.clone(), private_array.clone()], vec![2])?
+                .set_name("stack1")?;
+            g.stack(vec![public_array.clone(), public_array.clone()], vec![2])?
+                .set_name("stack2")?;
+            g.stack(
+                vec![shared_tuple.tuple_get(0)?, shared_tuple.tuple_get(1)?],
+                vec![2],
+            )?
+            .set_name("stack3")?;
+            g.stack(
+                vec![shared_tuple.tuple_get(0)?, shared_tuple.tuple_get(0)?],
+                vec![2],
+            )?
+            .set_name("stack4")?;
+
+            let result_classes = generate_equivalence_class(
+                c.clone(),
+                vec![vec![IOStatus::Shared, IOStatus::Public, IOStatus::Party(1)]],
+            )?;
+
+            assert_eq!(
+                get_class_from_name(&g, &result_classes, "stack1")?,
+                private_class()
+            );
+            assert_eq!(
+                get_class_from_name(&g, &result_classes, "stack2")?,
+                public_class()
+            );
+            assert_eq!(
+                get_class_from_name(&g, &result_classes, "stack3")?,
+                private_class()
+            );
+            assert_eq!(
+                get_class_from_name(&g, &result_classes, "stack4")?,
+                share0_class()
+            );
+
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    #[test]
+    fn test_vector_to_array() {
+        || -> Result<()> {
+            let c = create_unchecked_context()?;
+            let g = c.create_graph()?;
+            let t = array_type(vec![10], BIT);
+            let shared_tuple = g.input(tuple_type(vec![t.clone(), t.clone(), t.clone()]))?;
+            let public_array = g.input(t.clone())?;
+            let private_array = g.input(t.clone())?;
+
+            let vector1 =
+                g.create_vector(t.clone(), vec![public_array.clone(), private_array.clone()])?;
+            vector1.vector_to_array()?.set_name("vector_to_array1")?;
+
+            let vector2 =
+                g.create_vector(t.clone(), vec![public_array.clone(), public_array.clone()])?;
+            vector2.vector_to_array()?.set_name("vector_to_array2")?;
+
+            let vector3 = g.create_vector(
+                t.clone(),
+                vec![shared_tuple.tuple_get(0)?, shared_tuple.tuple_get(1)?],
+            )?;
+            vector3.vector_to_array()?.set_name("vector_to_array3")?;
+
+            let vector4 = g.create_vector(
+                t.clone(),
+                vec![shared_tuple.tuple_get(1)?, shared_tuple.tuple_get(1)?],
+            )?;
+            vector4.vector_to_array()?.set_name("vector_to_array4")?;
+
+            let result_classes = generate_equivalence_class(
+                c.clone(),
+                vec![vec![IOStatus::Shared, IOStatus::Public, IOStatus::Party(1)]],
+            )?;
+
+            assert_eq!(
+                get_class_from_name(&g, &result_classes, "vector_to_array1")?,
+                private_class()
+            );
+            assert_eq!(
+                get_class_from_name(&g, &result_classes, "vector_to_array2")?,
+                public_class()
+            );
+            assert_eq!(
+                get_class_from_name(&g, &result_classes, "vector_to_array3")?,
+                private_class()
+            );
+            assert_eq!(
+                get_class_from_name(&g, &result_classes, "vector_to_array4")?,
+                share1_class()
+            );
+
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    #[test]
+    fn test_reshape() {
+        || -> Result<()> {
+            let c = create_unchecked_context()?;
+            let g = c.create_graph()?;
+            let t = array_type(vec![10], BIT);
+            let shared_tuple = g.input(tuple_type(vec![t.clone(), t.clone(), t.clone()]))?;
+            let public_array = g.input(t.clone())?;
+            let private_array = g.input(t.clone())?;
+
+            shared_tuple
+                .reshape(vector_type(3, t.clone()))?
+                .set_name("reshape1")?;
+            shared_tuple
+                .reshape(tuple_type(vec![
+                    t.clone(),
+                    tuple_type(vec![t.clone(), t.clone()]),
+                ]))?
+                .set_name("reshape2")?;
+            public_array
+                .reshape(array_type(vec![2, 5], BIT))?
+                .set_name("reshape3")?;
+            private_array
+                .reshape(array_type(vec![5, 2], BIT))?
+                .set_name("reshape4")?;
+
+            let result_classes = generate_equivalence_class(
+                c.clone(),
+                vec![vec![IOStatus::Shared, IOStatus::Public, IOStatus::Party(1)]],
+            )?;
+
+            assert_eq!(
+                get_class_from_name(&g, &result_classes, "reshape1")?,
+                vector_class(vec![share0_class(), share1_class(), share2_class()])
+            );
+            assert_eq!(
+                get_class_from_name(&g, &result_classes, "reshape2")?,
+                vector_class(vec![
+                    share0_class(),
+                    vector_class(vec![share1_class(), share2_class()])
+                ])
+            );
+            assert_eq!(
+                get_class_from_name(&g, &result_classes, "reshape3")?,
+                public_class()
+            );
+            assert_eq!(
+                get_class_from_name(&g, &result_classes, "reshape4")?,
+                private_class()
+            );
+
+            Ok(())
+        }()
+        .unwrap();
     }
 
     #[test]
@@ -701,34 +985,25 @@ mod tests {
             ]],
         )
         .unwrap();
-        let public_class = EquivalenceClasses::Atomic(vec![vec![0, 1, 2]]);
-        let private_class = EquivalenceClasses::Atomic(vec![vec![0], vec![1], vec![2]]);
-        let share0_12 = EquivalenceClasses::Atomic(vec![vec![0], vec![1, 2]]);
-        let share1_02 = EquivalenceClasses::Atomic(vec![vec![1], vec![0, 2]]);
-        let share2_01 = EquivalenceClasses::Atomic(vec![vec![2], vec![0, 1]]);
 
-        let class_i1 = vector_class(vec![
-            share1_02.clone(),
-            share2_01.clone(),
-            share0_12.clone(),
-        ]);
+        let class_i1 = vector_class(vec![share0_class(), share1_class(), share2_class()]);
         let class_i2 = class_i1.clone();
-        let class_i3 = public_class.clone();
-        let class_i4 = vector_class(vec![private_class.clone(); 4]);
+        let class_i3 = public_class();
+        let class_i4 = vector_class(vec![private_class(); 4]);
         let class_i5 = class_i1.clone();
-        let class_add_op1 = share1_02.clone();
-        let class_add_op2 = share2_01.clone();
-        let class_add1 = private_class.clone();
-        let class_subtract = private_class.clone();
-        let class_multiply = private_class.clone();
-        let class_rand1 = private_class.clone();
-        let class_rand2 = vector_class(vec![private_class.clone(); 3]);
+        let class_add_op1 = share0_class();
+        let class_add_op2 = share1_class();
+        let class_add1 = private_class();
+        let class_subtract = private_class();
+        let class_multiply = private_class();
+        let class_rand1 = private_class();
+        let class_rand2 = vector_class(vec![private_class(); 3]);
         let class_nop = class_i3.clone();
-        let class_prf1 = vector_class(vec![public_class.clone(); 4]);
+        let class_prf1 = vector_class(vec![public_class(); 4]);
 
-        let class_tuple_get1 = share2_01.clone();
-        let class_tuple_get2 = private_class.clone();
-        let class_create_tuple = vector_class(vec![share2_01.clone(), private_class.clone()]);
+        let class_tuple_get1 = share1_class();
+        let class_tuple_get2 = private_class();
+        let class_create_tuple = vector_class(vec![share1_class(), private_class()]);
 
         assert_eq!(
             *test_class1
@@ -953,13 +1228,13 @@ mod tests {
             let vector_to_array = g.vector_to_array(repeat.clone())?;
             vector_to_array.set_name("vector_to_array")?;
 
-            let permuteaxe = g.permute_axes(vector_to_array.clone(), vec![0])?;
-            permuteaxe.set_name("permuteaxe")?;
+            let permuteaxes = g.permute_axes(vector_to_array.clone(), vec![0])?;
+            permuteaxes.set_name("permuteaxes")?;
 
-            let reshape = g.reshape(permuteaxe.clone(), array_type(vec![2, 2], UINT64))?;
+            let reshape = g.reshape(permuteaxes.clone(), array_type(vec![2, 2], UINT64))?;
             reshape.set_name("reshape")?;
 
-            let stack = g.stack(vec![reshape.clone()], vec![1])?;
+            let stack = g.stack(vec![reshape.clone(), reshape.clone()], vec![2, 1])?;
             stack.set_name("stack")?;
 
             let constant = g.constant(scalar_type(UINT64), Value::from_scalar(1, UINT64)?)?;
@@ -1021,35 +1296,31 @@ mod tests {
         )
         .unwrap();
 
-        let class2_i1 = vector_class(vec![
-            share1_02.clone(),
-            share2_01.clone(),
-            share0_12.clone(),
-        ]);
+        let class2_i1 = vector_class(vec![share0_class(), share1_class(), share2_class()]);
         let class2_i2 = class_i1.clone();
-        let class2_i3 = public_class.clone();
-        let class2_a2b = public_class.clone();
-        let class2_b2a = public_class.clone();
-        let class2_tuple_get1 = share1_02.clone();
-        let class2_tuple_get2 = share2_01.clone();
-        let class2_repeat = vector_class(vec![share1_02.clone(); 4]);
-        let class2_vector_to_array = share1_02.clone();
-        let class2_permuteaxe = share1_02.clone();
-        let class2_reshape = share1_02.clone();
-        let class2_stack = share1_02.clone();
-        let class2_constant = public_class.clone();
-        let class2_trunc = share1_02.clone();
-        let class2_get_slice = share1_02.clone();
-        let class2_array_to_vector = vector_class(vec![share1_02.clone(); 2]);
+        let class2_i3 = public_class();
+        let class2_a2b = public_class();
+        let class2_b2a = public_class();
+        let class2_tuple_get1 = share0_class();
+        let class2_tuple_get2 = share1_class();
+        let class2_repeat = vector_class(vec![share0_class(); 4]);
+        let class2_vector_to_array = share0_class();
+        let class2_permuteaxes = share0_class();
+        let class2_reshape = share0_class();
+        let class2_stack = share0_class();
+        let class2_constant = public_class();
+        let class2_trunc = share0_class();
+        let class2_get_slice = share0_class();
+        let class2_array_to_vector = vector_class(vec![share0_class(); 2]);
         let class2_zip = vector_class(vec![class2_array_to_vector.clone(); 2]);
-        let class2_vector_get = vector_class(vec![share1_02.clone(); 2]);
-        let class2_sum = share1_02.clone();
-        let class2_matmul = share1_02.clone();
-        let class2_get = share1_02.clone();
-        let class2_dot = share1_02.clone();
-        let class2_create_named_tuple = vector_class(vec![share1_02.clone(); 2]);
-        let class2_named_tuple_get = share1_02.clone();
-        let class2_create_vector = vector_class(vec![public_class.clone(); 2]);
+        let class2_vector_get = vector_class(vec![share0_class(); 2]);
+        let class2_sum = share0_class();
+        let class2_matmul = share0_class();
+        let class2_get = share0_class();
+        let class2_dot = share0_class();
+        let class2_create_named_tuple = vector_class(vec![share0_class(); 2]);
+        let class2_named_tuple_get = share0_class();
+        let class2_create_vector = vector_class(vec![public_class(); 2]);
         assert_eq!(
             *test_class2
                 .get(
@@ -1156,12 +1427,12 @@ mod tests {
             *test_class2
                 .get(
                     &context2
-                        .retrieve_node(context2.retrieve_graph("test_g2").unwrap(), "permuteaxe")
+                        .retrieve_node(context2.retrieve_graph("test_g2").unwrap(), "permuteaxes")
                         .unwrap()
                         .get_global_id()
                 )
                 .unwrap(),
-            class2_permuteaxe
+            class2_permuteaxes
         );
         assert_eq!(
             *test_class2
@@ -1369,31 +1640,22 @@ mod tests {
             )
             .unwrap();
 
-            let public_class = EquivalenceClasses::Atomic(vec![vec![0, 1, 2]]);
-            let private_class = EquivalenceClasses::Atomic(vec![vec![0], vec![1], vec![2]]);
-            let share0_12 = EquivalenceClasses::Atomic(vec![vec![0], vec![1, 2]]);
-            let share1_02 = EquivalenceClasses::Atomic(vec![vec![1], vec![0, 2]]);
-            let share2_01 = EquivalenceClasses::Atomic(vec![vec![2], vec![0, 1]]);
-            let shared = vector_class(vec![
-                share1_02.clone(),
-                share2_01.clone(),
-                share0_12.clone(),
-            ]);
-            assert_eq!(*test_class1.get(&(0, 0)).unwrap(), private_class.clone());
-            assert_eq!(*test_class1.get(&(0, 1)).unwrap(), share1_02.clone());
-            assert_eq!(*test_class1.get(&(0, 2)).unwrap(), private_class.clone());
-            assert_eq!(*test_class1.get(&(0, 3)).unwrap(), share2_01.clone());
-            assert_eq!(*test_class1.get(&(0, 4)).unwrap(), private_class.clone());
-            assert_eq!(*test_class1.get(&(0, 5)).unwrap(), share0_12.clone());
+            let shared = vector_class(vec![share0_class(), share1_class(), share2_class()]);
+            assert_eq!(*test_class1.get(&(0, 0)).unwrap(), private_class());
+            assert_eq!(*test_class1.get(&(0, 1)).unwrap(), share0_class());
+            assert_eq!(*test_class1.get(&(0, 2)).unwrap(), private_class());
+            assert_eq!(*test_class1.get(&(0, 3)).unwrap(), share1_class());
+            assert_eq!(*test_class1.get(&(0, 4)).unwrap(), private_class());
+            assert_eq!(*test_class1.get(&(0, 5)).unwrap(), share2_class());
             assert_eq!(*test_class1.get(&(0, 6)).unwrap(), shared.clone());
             assert_eq!(*test_class1.get(&(0, 7)).unwrap(), shared.clone());
-            assert_eq!(*test_class1.get(&(0, 8)).unwrap(), public_class.clone());
-            assert_eq!(*test_class1.get(&(0, 9)).unwrap(), share1_02.clone());
-            assert_eq!(*test_class1.get(&(0, 10)).unwrap(), share1_02.clone());
-            assert_eq!(*test_class1.get(&(0, 11)).unwrap(), share2_01.clone());
-            assert_eq!(*test_class1.get(&(0, 12)).unwrap(), share2_01.clone());
-            assert_eq!(*test_class1.get(&(0, 13)).unwrap(), share0_12.clone());
-            assert_eq!(*test_class1.get(&(0, 14)).unwrap(), share0_12.clone());
+            assert_eq!(*test_class1.get(&(0, 8)).unwrap(), public_class());
+            assert_eq!(*test_class1.get(&(0, 9)).unwrap(), share0_class());
+            assert_eq!(*test_class1.get(&(0, 10)).unwrap(), share0_class());
+            assert_eq!(*test_class1.get(&(0, 11)).unwrap(), share1_class());
+            assert_eq!(*test_class1.get(&(0, 12)).unwrap(), share1_class());
+            assert_eq!(*test_class1.get(&(0, 13)).unwrap(), share2_class());
+            assert_eq!(*test_class1.get(&(0, 14)).unwrap(), share2_class());
             assert_eq!(*test_class1.get(&(0, 15)).unwrap(), shared.clone());
         }
         {
@@ -1413,54 +1675,45 @@ mod tests {
             )
             .unwrap();
 
-            let public_class = EquivalenceClasses::Atomic(vec![vec![0, 1, 2]]);
-            let private_class = EquivalenceClasses::Atomic(vec![vec![0], vec![1], vec![2]]);
-            let share0_12 = EquivalenceClasses::Atomic(vec![vec![0], vec![1, 2]]);
-            let share1_02 = EquivalenceClasses::Atomic(vec![vec![1], vec![0, 2]]);
-            let share2_01 = EquivalenceClasses::Atomic(vec![vec![2], vec![0, 1]]);
-            let shared = vector_class(vec![
-                share1_02.clone(),
-                share2_01.clone(),
-                share0_12.clone(),
-            ]);
+            let shared = vector_class(vec![share0_class(), share1_class(), share2_class()]);
             // PRF keys
-            assert_eq!(*test_class1.get(&(0, 0)).unwrap(), private_class.clone());
-            assert_eq!(*test_class1.get(&(0, 1)).unwrap(), share1_02.clone());
-            assert_eq!(*test_class1.get(&(0, 2)).unwrap(), private_class.clone());
-            assert_eq!(*test_class1.get(&(0, 3)).unwrap(), share2_01.clone());
-            assert_eq!(*test_class1.get(&(0, 4)).unwrap(), private_class.clone());
-            assert_eq!(*test_class1.get(&(0, 5)).unwrap(), share0_12.clone());
+            assert_eq!(*test_class1.get(&(0, 0)).unwrap(), private_class());
+            assert_eq!(*test_class1.get(&(0, 1)).unwrap(), share0_class());
+            assert_eq!(*test_class1.get(&(0, 2)).unwrap(), private_class());
+            assert_eq!(*test_class1.get(&(0, 3)).unwrap(), share1_class());
+            assert_eq!(*test_class1.get(&(0, 4)).unwrap(), private_class());
+            assert_eq!(*test_class1.get(&(0, 5)).unwrap(), share2_class());
             // Create PRF triple
             assert_eq!(*test_class1.get(&(0, 6)).unwrap(), shared.clone());
             // Shared input
             assert_eq!(*test_class1.get(&(0, 7)).unwrap(), shared.clone());
             // Public input
-            assert_eq!(*test_class1.get(&(0, 8)).unwrap(), public_class.clone());
+            assert_eq!(*test_class1.get(&(0, 8)).unwrap(), public_class());
             // Extract share 0
-            assert_eq!(*test_class1.get(&(0, 9)).unwrap(), share1_02.clone());
+            assert_eq!(*test_class1.get(&(0, 9)).unwrap(), share0_class());
             // Multiply share 0 by the public value
-            assert_eq!(*test_class1.get(&(0, 10)).unwrap(), share1_02.clone());
+            assert_eq!(*test_class1.get(&(0, 10)).unwrap(), share0_class());
             // Extract share 1
-            assert_eq!(*test_class1.get(&(0, 11)).unwrap(), share2_01.clone());
+            assert_eq!(*test_class1.get(&(0, 11)).unwrap(), share1_class());
             // Multiply share 1 by the public value
-            assert_eq!(*test_class1.get(&(0, 12)).unwrap(), share2_01.clone());
+            assert_eq!(*test_class1.get(&(0, 12)).unwrap(), share1_class());
             // Extract share 2
-            assert_eq!(*test_class1.get(&(0, 13)).unwrap(), share0_12.clone());
+            assert_eq!(*test_class1.get(&(0, 13)).unwrap(), share2_class());
             // Multiply share 2 by the public value
-            assert_eq!(*test_class1.get(&(0, 14)).unwrap(), share0_12.clone());
+            assert_eq!(*test_class1.get(&(0, 14)).unwrap(), share2_class());
             // Shared product
             assert_eq!(*test_class1.get(&(0, 15)).unwrap(), shared.clone());
             // Extract shares
-            assert_eq!(*test_class1.get(&(0, 16)).unwrap(), share1_02.clone());
-            assert_eq!(*test_class1.get(&(0, 17)).unwrap(), share2_01.clone());
-            assert_eq!(*test_class1.get(&(0, 18)).unwrap(), share0_12.clone());
+            assert_eq!(*test_class1.get(&(0, 16)).unwrap(), share0_class());
+            assert_eq!(*test_class1.get(&(0, 17)).unwrap(), share1_class());
+            assert_eq!(*test_class1.get(&(0, 18)).unwrap(), share2_class());
             // Revealing
             // Share 2 is sent to party 0, thus becoming public
-            assert_eq!(*test_class1.get(&(0, 19)).unwrap(), public_class.clone());
+            assert_eq!(*test_class1.get(&(0, 19)).unwrap(), public_class());
             // Sum of shares 0 and 1 must be private (party 0 has the correct sum)
-            assert_eq!(*test_class1.get(&(0, 20)).unwrap(), private_class.clone());
+            assert_eq!(*test_class1.get(&(0, 20)).unwrap(), private_class());
             // Sum of shares 0, 1 and 2 must be private (party 0 has the correct sum)
-            assert_eq!(*test_class1.get(&(0, 21)).unwrap(), private_class.clone());
+            assert_eq!(*test_class1.get(&(0, 21)).unwrap(), private_class());
             // There should be no other nodes
             assert!(test_class1.get(&(0, 22)).is_none());
         }
@@ -1481,58 +1734,49 @@ mod tests {
             )
             .unwrap();
 
-            let public_class = EquivalenceClasses::Atomic(vec![vec![0, 1, 2]]);
-            let private_class = EquivalenceClasses::Atomic(vec![vec![0], vec![1], vec![2]]);
-            let share0_12 = EquivalenceClasses::Atomic(vec![vec![0], vec![1, 2]]);
-            let share1_02 = EquivalenceClasses::Atomic(vec![vec![1], vec![0, 2]]);
-            let share2_01 = EquivalenceClasses::Atomic(vec![vec![2], vec![0, 1]]);
-            let shared = vector_class(vec![
-                share1_02.clone(),
-                share2_01.clone(),
-                share0_12.clone(),
-            ]);
+            let shared = vector_class(vec![share0_class(), share1_class(), share2_class()]);
             // PRF keys
-            assert_eq!(*test_class1.get(&(0, 0)).unwrap(), private_class.clone());
-            assert_eq!(*test_class1.get(&(0, 1)).unwrap(), share1_02.clone());
-            assert_eq!(*test_class1.get(&(0, 2)).unwrap(), private_class.clone());
-            assert_eq!(*test_class1.get(&(0, 3)).unwrap(), share2_01.clone());
-            assert_eq!(*test_class1.get(&(0, 4)).unwrap(), private_class.clone());
-            assert_eq!(*test_class1.get(&(0, 5)).unwrap(), share0_12.clone());
+            assert_eq!(*test_class1.get(&(0, 0)).unwrap(), private_class());
+            assert_eq!(*test_class1.get(&(0, 1)).unwrap(), share0_class());
+            assert_eq!(*test_class1.get(&(0, 2)).unwrap(), private_class());
+            assert_eq!(*test_class1.get(&(0, 3)).unwrap(), share1_class());
+            assert_eq!(*test_class1.get(&(0, 4)).unwrap(), private_class());
+            assert_eq!(*test_class1.get(&(0, 5)).unwrap(), share2_class());
             // Create PRF triple
             assert_eq!(*test_class1.get(&(0, 6)).unwrap(), shared.clone());
             // Shared input
             assert_eq!(*test_class1.get(&(0, 7)).unwrap(), shared.clone());
             // Public input
-            assert_eq!(*test_class1.get(&(0, 8)).unwrap(), public_class.clone());
+            assert_eq!(*test_class1.get(&(0, 8)).unwrap(), public_class());
             // Extract share 0
-            assert_eq!(*test_class1.get(&(0, 9)).unwrap(), share1_02.clone());
+            assert_eq!(*test_class1.get(&(0, 9)).unwrap(), share0_class());
             // Multiply share 0 by the public value
-            assert_eq!(*test_class1.get(&(0, 10)).unwrap(), share1_02.clone());
+            assert_eq!(*test_class1.get(&(0, 10)).unwrap(), share0_class());
             // Extract share 1
-            assert_eq!(*test_class1.get(&(0, 11)).unwrap(), share2_01.clone());
+            assert_eq!(*test_class1.get(&(0, 11)).unwrap(), share1_class());
             // Multiply share 1 by the public value
-            assert_eq!(*test_class1.get(&(0, 12)).unwrap(), share2_01.clone());
+            assert_eq!(*test_class1.get(&(0, 12)).unwrap(), share1_class());
             // Extract share 2
-            assert_eq!(*test_class1.get(&(0, 13)).unwrap(), share0_12.clone());
+            assert_eq!(*test_class1.get(&(0, 13)).unwrap(), share2_class());
             // Multiply share 2 by the public value
-            assert_eq!(*test_class1.get(&(0, 14)).unwrap(), share0_12.clone());
+            assert_eq!(*test_class1.get(&(0, 14)).unwrap(), share2_class());
             // Shared product
             assert_eq!(*test_class1.get(&(0, 15)).unwrap(), shared.clone());
             // Extract shares
-            assert_eq!(*test_class1.get(&(0, 16)).unwrap(), share1_02.clone());
-            assert_eq!(*test_class1.get(&(0, 17)).unwrap(), share2_01.clone());
-            assert_eq!(*test_class1.get(&(0, 18)).unwrap(), share0_12.clone());
+            assert_eq!(*test_class1.get(&(0, 16)).unwrap(), share0_class());
+            assert_eq!(*test_class1.get(&(0, 17)).unwrap(), share1_class());
+            assert_eq!(*test_class1.get(&(0, 18)).unwrap(), share2_class());
             // Revealing
             // Share 2 is sent to party 0, thus becoming public
-            assert_eq!(*test_class1.get(&(0, 19)).unwrap(), public_class.clone());
+            assert_eq!(*test_class1.get(&(0, 19)).unwrap(), public_class());
             // Sum of shares 0 and 1 must be private (party 0 has the correct sum)
-            assert_eq!(*test_class1.get(&(0, 20)).unwrap(), private_class.clone());
+            assert_eq!(*test_class1.get(&(0, 20)).unwrap(), private_class());
             // Sum of shares 0, 1 and 2 must be private (party 0 has the correct sum)
-            assert_eq!(*test_class1.get(&(0, 21)).unwrap(), private_class.clone());
+            assert_eq!(*test_class1.get(&(0, 21)).unwrap(), private_class());
             // Send the revealed value to another party
-            assert_eq!(*test_class1.get(&(0, 22)).unwrap(), share1_02.clone());
+            assert_eq!(*test_class1.get(&(0, 22)).unwrap(), share0_class());
             // Output node can't have Send annotation
-            assert_eq!(*test_class1.get(&(0, 23)).unwrap(), share1_02.clone());
+            assert_eq!(*test_class1.get(&(0, 23)).unwrap(), share0_class());
             // There should be no other nodes
             assert!(test_class1.get(&(0, 24)).is_none());
         }

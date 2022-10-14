@@ -245,6 +245,7 @@ fn get_number_of_node_dependencies(operation: Operation) -> Option<u64> {
         | Operation::Gather(_)
         | Operation::Iterate
         | Operation::CuckooHash => Some(2),
+        Operation::SegmentCumSum => Some(3),
         Operation::Stack(_)
         | Operation::CreateTuple
         | Operation::CreateNamedTuple(_)
@@ -1047,6 +1048,39 @@ impl TypeInferenceWorker {
                 let result = array_type(output_shape, UINT64);
                 self.register_result(node, result.clone())?;
                 Ok(result)
+            }
+            Operation::SegmentCumSum => {
+                let input_t = node_dependencies_types[0].clone();
+                let binary_t = node_dependencies_types[1].clone();
+                let first_t = node_dependencies_types[2].clone();
+
+                if !input_t.is_array() {
+                    return Err(runtime_error!("First argument must be an array"));
+                }
+                let input_shape = input_t.get_shape();
+                if Type::Array(vec![input_shape[0]], BIT) != binary_t {
+                    return Err(runtime_error!(
+                        "Second argument must be a one-dimensional binary array of length {}",
+                        input_shape[0]
+                    ));
+                }
+                let input_st = input_t.get_scalar_type();
+                if input_shape.len() == 1 {
+                    if Type::Scalar(input_st) != first_t {
+                        return Err(runtime_error!(
+                            "Input array and first row have different scalar types"
+                        ));
+                    }
+                } else if Type::Array(input_shape[1..].to_vec(), input_st) != first_t {
+                    return Err(runtime_error!("Input array and first row are incompatible"));
+                }
+
+                let mut result_shape = input_shape;
+                result_shape[0] += 1;
+                let result_t = array_type(result_shape, input_t.get_scalar_type());
+
+                self.register_result(node, result_t.clone())?;
+                Ok(result_t)
             }
             // Here we can end up in an infinite loop due
             // to circular dependencies between instantiations.
@@ -2790,6 +2824,76 @@ mod tests {
             test_decompose_switching_map_fail(scalar_type(UINT64), 10)?;
             test_decompose_switching_map_fail(array_type(vec![10], UINT32), 10)?;
             test_decompose_switching_map_fail(array_type(vec![10], UINT64), 9)?;
+
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    fn test_segment_cumsum_worker(shape: ArrayShape, st: ScalarType) -> Result<()> {
+        let context = create_unchecked_context()?;
+        let graph = context.create_graph()?;
+        let mut worker = create_type_inference_worker(context.clone());
+        let t = array_type(shape.clone(), st.clone());
+        let i = graph.input(t.clone())?;
+        let b = graph.input(array_type(vec![shape[0]], BIT))?;
+        let v = if shape.len() > 1 {
+            graph.input(array_type(shape[1..].to_vec(), st.clone()))?
+        } else {
+            graph.input(scalar_type(st.clone()))?
+        };
+        let o = i.segment_cumsum(b, v)?;
+        let res_t = worker.process_node(o)?;
+        let mut expected_shape = shape.clone();
+        expected_shape[0] = shape[0] + 1;
+        let expected_t = array_type(expected_shape, st);
+        assert_eq!(res_t, expected_t);
+        Ok(())
+    }
+
+    fn test_segment_cumsum_fail(input_t: Type, binary_t: Type, first_row_t: Type) -> Result<()> {
+        let context = create_unchecked_context()?;
+        let graph = context.create_graph()?;
+        let mut worker = create_type_inference_worker(context.clone());
+        let i = graph.input(input_t)?;
+        let b = graph.input(binary_t)?;
+        let v = graph.input(first_row_t)?;
+        let o = i.segment_cumsum(b, v)?;
+        let res_t = worker.process_node(o);
+        assert!(res_t.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_segment_cumsum() {
+        || -> Result<()> {
+            test_segment_cumsum_worker(vec![5], BIT)?;
+            test_segment_cumsum_worker(vec![5], UINT64)?;
+            test_segment_cumsum_worker(vec![5, 16], BIT)?;
+            test_segment_cumsum_worker(vec![5, 16], UINT64)?;
+
+            test_segment_cumsum_fail(scalar_type(BIT), scalar_type(BIT), scalar_type(BIT))?;
+            test_segment_cumsum_fail(array_type(vec![4], BIT), scalar_type(BIT), scalar_type(BIT))?;
+            test_segment_cumsum_fail(
+                array_type(vec![4], BIT),
+                array_type(vec![3], BIT),
+                scalar_type(BIT),
+            )?;
+            test_segment_cumsum_fail(
+                array_type(vec![4], INT32),
+                array_type(vec![4], INT32),
+                scalar_type(INT32),
+            )?;
+            test_segment_cumsum_fail(
+                array_type(vec![4], INT32),
+                array_type(vec![4], BIT),
+                scalar_type(BIT),
+            )?;
+            test_segment_cumsum_fail(
+                array_type(vec![4, 4], INT32),
+                array_type(vec![4], BIT),
+                scalar_type(BIT),
+            )?;
 
             Ok(())
         }()

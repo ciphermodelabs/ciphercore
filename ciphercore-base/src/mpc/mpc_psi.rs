@@ -1,12 +1,15 @@
+use std::sync::Arc;
+
 use crate::custom_ops::CustomOperationBody;
 use crate::data_types::{array_type, tuple_type, vector_type, Type, BIT, UINT64};
 use crate::errors::Result;
-use crate::graphs::{Context, Graph, NodeAnnotation};
+use crate::graphs::{Context, Graph, Node, NodeAnnotation, SliceElement};
 use crate::ops::utils::{pull_out_bits, put_in_bits, zeros};
 
 use serde::{Deserialize, Serialize};
 
 use super::mpc_compiler::{KEY_LENGTH, PARTIES};
+use super::utils::select_node;
 
 /// Adds a node returning hash values of an input array of binary strings using provided hash functions.
 ///
@@ -146,6 +149,82 @@ impl CustomOperationBody for SimpleHash {
     }
 }
 
+type ColumnHeaderTypes = Vec<(String, Arc<Type>)>;
+
+// Checks inputs of permutation, duplication and switching network maps and returns the number of entries and a vector of column types.
+fn check_and_extract_map_input_parameters(
+    argument_types: &[Type],
+    sender_id: u64,
+    programmer_id: u64,
+) -> Result<(u64, ColumnHeaderTypes)> {
+    if argument_types.len() != 3 {
+        panic!("This map should have 3 input types");
+    }
+    let shares_t = argument_types[0].clone();
+    let (num_entries, column_header_types) = if let Type::Tuple(shares_type_vector) = shares_t {
+        if shares_type_vector.len() != 2 {
+            panic!("There should be only 2 shares in the input tuple");
+        }
+        let share_t = (*shares_type_vector[0]).clone();
+        if share_t != (*shares_type_vector[1]).clone() {
+            panic!("Input shares must be of the same type");
+        }
+        if let Type::NamedTuple(column_string_type_vector) = share_t {
+            let mut num_column_entries = 0;
+            for v in column_string_type_vector.iter() {
+                let column_type = (*v.1).clone();
+                let column_shape = column_type.get_shape();
+                if !column_type.is_array() {
+                    panic!("Column must be an array");
+                }
+                if num_column_entries == 0 {
+                    num_column_entries = column_shape[0];
+                }
+                if num_column_entries != column_shape[0] {
+                    panic!("Number of entries should be the same in all columns");
+                }
+            }
+            (num_column_entries, column_string_type_vector)
+        } else {
+            panic!("Each share must be a named tuple");
+        }
+    } else {
+        panic!("Input shares must be a tuple of 2 elements");
+    };
+    let prf_t = argument_types[2].clone();
+    let expected_key_type = tuple_type(vec![array_type(vec![KEY_LENGTH], BIT); 3]);
+    if prf_t != expected_key_type {
+        panic!(
+            "PRF key type should be a tuple of 3 binary arrays of length {}",
+            KEY_LENGTH
+        );
+    }
+    if sender_id >= PARTIES as u64 {
+        panic!("Sender ID is incorrect");
+    }
+    if programmer_id >= PARTIES as u64 {
+        panic!("Programmer ID is incorrect");
+    }
+    if sender_id == programmer_id {
+        panic!("Programmer ID should be different from the Sender ID")
+    }
+
+    Ok((num_entries, column_header_types))
+}
+
+fn get_receiver_id(sender_id: u64, programmer_id: u64) -> u64 {
+    // This is correct only if PARTIES = 3.
+    PARTIES as u64 - sender_id - programmer_id
+}
+
+// Get the prf key unknown to a given party.
+// In case of 3 parties, this key is also a common key for the other two parties.
+// Party k knows keys prf_keys[k] and prf_keys[(k+1)%3], but has no clue about prf_keys[(k-1)%3].
+fn get_hidden_prf_key(prf_keys: Node, party_id: u64) -> Result<Node> {
+    let key_index = ((party_id as usize + PARTIES - 1) % PARTIES) as u64;
+    prf_keys.tuple_get(key_index)
+}
+
 /// Adds a node that permutes an array shared between Sender and Programmer using a permutation known to Programmer.
 /// The output shares are returned only to Receiver and Programmer.
 ///
@@ -184,70 +263,26 @@ struct PermutationMPC {
 impl CustomOperationBody for PermutationMPC {
     fn instantiate(&self, context: Context, argument_types: Vec<Type>) -> Result<Graph> {
         // Check permutation and input types
-        if argument_types.len() != 3 {
-            panic!("Permutation protocol should have 3 input types");
-        }
-        let shares_t = argument_types[0].clone();
-        let (num_entries, column_header_types) =
-            if let Type::Tuple(shares_type_vector) = shares_t.clone() {
-                if shares_type_vector.len() != 2 {
-                    panic!("There should be only 2 shares in the input tuple");
-                }
-                let share_t = (*shares_type_vector[0]).clone();
-                if share_t != (*shares_type_vector[1]).clone() {
-                    panic!("Input shares must be of the same type");
-                }
-                if let Type::NamedTuple(column_string_type_vector) = share_t {
-                    let mut num_column_entries = 0;
-                    for v in column_string_type_vector.iter() {
-                        let column_type = (*v.1).clone();
-                        let column_shape = column_type.get_shape();
-                        if !column_type.is_array() {
-                            panic!("Column must be an array");
-                        }
-                        if num_column_entries == 0 {
-                            num_column_entries = column_shape[0];
-                        }
-                        if num_column_entries != column_shape[0] {
-                            panic!("Number of entries should be the same in all columns");
-                        }
-                    }
-                    (num_column_entries, column_string_type_vector)
-                } else {
-                    panic!("Each share must be a named tuple");
-                }
-            } else {
-                panic!("Input shares must be a tuple of 2 elements");
-            };
+        let (num_entries, column_header_types) = check_and_extract_map_input_parameters(
+            &argument_types,
+            self.sender_id,
+            self.programmer_id,
+        )?;
+        // Check that the permutation map is of the correct form
         let permutation_t = argument_types[1].clone();
         if !permutation_t.is_array() {
-            panic!("Permutation must be an array");
+            panic!("Permutation map must be an array");
         }
         if permutation_t.get_shape()[0] > num_entries {
-            panic!("Permutation length must be smaller than the number of entries");
+            panic!("Permutation map length can't be bigger than the number of entries");
         }
+
+        let shares_t = argument_types[0].clone();
         let prf_t = argument_types[2].clone();
-        let expected_key_type = tuple_type(vec![array_type(vec![KEY_LENGTH], BIT); 3]);
-        if prf_t != expected_key_type {
-            panic!(
-                "PRF key type should be a tuple of 3 binary arrays of length {}",
-                KEY_LENGTH
-            );
-        }
-        if self.sender_id >= PARTIES as u64 {
-            panic!("Sender ID is incorrect");
-        }
-        if self.programmer_id >= PARTIES as u64 {
-            panic!("Programmer ID is incorrect");
-        }
-        if self.sender_id == self.programmer_id {
-            panic!("Programmer ID should be different from the Sender ID")
-        }
 
         let sender_id = self.sender_id;
         let programmer_id = self.programmer_id;
-        // This is correct only if PARTIES = 3.
-        let receiver_id = PARTIES as u64 - sender_id - programmer_id;
+        let receiver_id = get_receiver_id(sender_id, programmer_id);
 
         let g = context.create_graph()?;
 
@@ -272,14 +307,11 @@ impl CustomOperationBody for PermutationMPC {
 
         // Choose PRF keys known to Sender and Programmer, Programmer and Receiver.
         // If key is known to parties A and B, then it must be unknown to party C.
-        // If C has ID = k, then it knows keys prf_keys[k] and prf_keys[(k+1)%3], but has no clue about prf_keys[(k-1)%3]
-        let key_s_p_index = ((receiver_id as usize + PARTIES - 1) % PARTIES) as u64;
-        let prf_key_s_p = prf_keys.tuple_get(key_s_p_index)?;
-        let key_p_r_index = ((sender_id as usize + PARTIES - 1) % PARTIES) as u64;
-        let prf_key_p_r = prf_keys.tuple_get(key_p_r_index)?;
+        let prf_key_s_p = get_hidden_prf_key(prf_keys.clone(), receiver_id)?;
+        let prf_key_p_r = get_hidden_prf_key(prf_keys, sender_id)?;
 
-        let sender_share = shares.tuple_get(0)?;
-        let programmer_share = shares.tuple_get(1)?;
+        let sender_share = shares.tuple_get(1)?;
+        let programmer_share = shares.tuple_get(0)?;
         let mut receiver_columns = vec![];
         let mut programmer_columns = vec![];
         for column_header_type in column_header_types {
@@ -329,7 +361,7 @@ impl CustomOperationBody for PermutationMPC {
         let receiver_result_share = g.create_named_tuple(receiver_columns)?;
         let programmer_result_share = g.create_named_tuple(programmer_columns)?;
 
-        g.create_tuple(vec![receiver_result_share, programmer_result_share])?
+        g.create_tuple(vec![programmer_result_share, receiver_result_share])?
             .set_as_output()?;
 
         g.finalize()?;
@@ -339,6 +371,265 @@ impl CustomOperationBody for PermutationMPC {
     fn get_name(&self) -> String {
         format!(
             "Permutation(sender:{},programming:{})",
+            self.sender_id, self.programmer_id
+        )
+    }
+}
+
+/// Adds a node that duplicates some elements of an array shared between Sender and Programmer using a duplication map known to Programmer.
+/// The output shares are returned only to Receiver and Programmer.
+///
+/// A duplication map is a tuple of two one-dimensional arrays of length `n`.
+/// The first array contains indices from `{0,...,n-1}` in the increasing order with possible repetitions.
+/// The second array contains only zeros and ones.
+/// If its i-th element is zero, it means that the duplication map doesn't change the i-th element of an array it acts upon.
+/// If map's i-th element is one, then the map copies the previous element of the result.
+/// This rules can be summarized by the following equation
+///
+/// duplication_indices[i] = duplication_bits[i] * duplication_indices[i-1] + (1 - duplication_bits[i]) * i.
+///
+/// Input shares are assumed to be a tuple of 2-out-of-2 shares.
+/// Each share must be a named tuple containing arrays of binary strings.
+/// So databases converted to such named tuples are handled column-wise.
+///
+/// The protocol follows the Duplicate protocol from <https://eprint.iacr.org/2019/518.pdf>.
+/// For each column header, the following steps are performed.
+/// 1. Sender selects an input column C_s.
+/// 2. Sender and Receiver generate shared randomness B_r[i] for i in {1,...,num_entries-1}, W_0 and W_1 of size of a column without one entry.
+/// 2. Sender selects the first entry and masks it with a random value B0_p also known to Programmer.
+/// This value is assigned to B_r[0].
+/// 3. Sender and programmer generate a random mask phi of the duplication bits.
+/// 4. Sender computes two columns M0 and M1 such that
+///    
+///    M0[i] = C_s[i] - B_r[i] - W_(duplication_bits[i])[i],
+///    M1[i] = B_r[i-1] - B_r[i] - W_(1-duplication_bits[i])[i].
+///    
+///    for i in {1,..., num_entries-1}.
+/// 5. Sender sends M0 and M1 to Programmer.
+/// 6. Programmer and Receiver generate a random value R of size of an input share.
+/// 7. Programmer masks the duplication map by computing rho = phi XOR duplication_bits except for the first bit.
+/// 8. Programmer sends rho to Receiver.
+/// 9. Receiver selects W_(rho[i])[i] for i in {1,..., num_entries-1} and sends them to Programmer.
+/// 10. Programmer computes
+///
+///     B_p[i] = M_(duplication_bits[i])[i] + W_(rho[i])[i] + dup_bits[i] * B_p[i-1]
+///
+///     for i in {1,..., num_entries-1}.
+/// 11. Compute the share of Programmer equal to B_p - R + duplication_map(programmer column share)
+/// 12. Compute the share of Receiver B_r + R
+///
+/// **WARNING**: this function should not be used before MPC compilation.
+///
+/// # Custom operation arguments
+///
+/// - tuple of 2-out-of-2 shares owned by Sender and Programmer
+/// - a tuple of a duplication map array and the corresponding repetition bits known to Programmer
+/// - tuple of 3 PRF keys used for multiplication
+///
+/// # Custom operation returns
+///
+/// Tuple of permuted 2-out-of-2 shares known to Receiver and Programmer
+#[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
+struct DuplicationMPC {
+    pub sender_id: u64,
+    pub programmer_id: u64, // The receiver ID is defined automatically
+}
+
+#[typetag::serde]
+impl CustomOperationBody for DuplicationMPC {
+    fn instantiate(&self, context: Context, argument_types: Vec<Type>) -> Result<Graph> {
+        // Check permutation and input types
+        let (num_entries, column_header_types) = check_and_extract_map_input_parameters(
+            &argument_types,
+            self.sender_id,
+            self.programmer_id,
+        )?;
+        // An additional check that the duplication map is of the correct form
+        let dup_map_t = argument_types[1].clone();
+        if let Type::Tuple(dup_map_types) = dup_map_t.clone() {
+            let dup_indices_t = dup_map_types[0].clone();
+            let dup_bits_t = dup_map_types[1].clone();
+            if !dup_indices_t.is_array() || !dup_bits_t.is_array() {
+                panic!("Duplication map should contain two arrays");
+            }
+            if dup_indices_t.get_scalar_type() != UINT64 {
+                panic!("Duplication map indices should be of the UINT64 type");
+            }
+            if dup_bits_t.get_scalar_type() != BIT {
+                panic!("Duplication map bits should be of the BIT type");
+            }
+            let num_dup_indices = dup_indices_t.get_shape()[0];
+            let num_dup_bits = dup_bits_t.get_shape()[0];
+            if num_dup_indices != num_entries {
+                panic!(
+                    "Duplication map indices should be of length equal to the number of entries"
+                );
+            }
+            if num_dup_bits != num_entries {
+                panic!("Duplication map bits should be of length equal to the number of entries");
+            }
+        } else {
+            panic!("Duplication map should be a tuple");
+        }
+
+        let sender_id = self.sender_id;
+        let programmer_id = self.programmer_id;
+        let receiver_id = get_receiver_id(sender_id, programmer_id);
+
+        let shares_t = argument_types[0].clone();
+        let prf_t = argument_types[2].clone();
+
+        let g = context.create_graph()?;
+
+        let shares = g.input(shares_t)?;
+        let duplication_map = g.input(dup_map_t)?;
+
+        let duplication_indices = duplication_map.tuple_get(0)?;
+        let duplication_bits = duplication_map.tuple_get(1)?;
+
+        // Generate randomness between all possible pairs of parties.
+        let prf_keys = g.input(prf_t)?;
+
+        // If key is known to parties A and B, then it must be unknown to party C.
+        let prf_key_s_p = get_hidden_prf_key(prf_keys.clone(), receiver_id)?;
+        let prf_key_p_r = get_hidden_prf_key(prf_keys.clone(), sender_id)?;
+        let prf_key_s_r = get_hidden_prf_key(prf_keys, programmer_id)?;
+
+        let programmer_share = shares.tuple_get(0)?;
+        let sender_share = shares.tuple_get(1)?;
+
+        let mut receiver_columns = vec![];
+        let mut programmer_columns = vec![];
+        for column_header_type in column_header_types {
+            let column_header = column_header_type.0;
+            // Sender selects an input column
+            let sender_column = sender_share.named_tuple_get(column_header.clone())?;
+            let column_t = sender_column.get_type()?;
+            let column_shape = column_t.get_shape();
+            // Sender and Receiver generate random B_r[i] for i in {1,..., num_entries-1}, W_0 and W_1 of size of an input share.
+            let mut column_wout_entry_shape = column_shape.clone();
+            column_wout_entry_shape[0] = num_entries - 1;
+            let column_wout_entry_t =
+                array_type(column_wout_entry_shape, column_t.get_scalar_type());
+            let bi_r = prf_key_s_r.prf(0, column_wout_entry_t.clone())?;
+            let w0 = prf_key_s_r.prf(0, column_wout_entry_t.clone())?;
+            let w1 = prf_key_s_r.prf(0, column_wout_entry_t.clone())?;
+
+            // Sender selects the first entry share and masks it with a random mask B_p[0] known also to Programmer.
+            // The result is assigned to B_r[0].
+            let entry0 = sender_column.get(vec![0])?;
+            let b0_p = prf_key_s_p.prf(0, entry0.get_type()?)?;
+            let b0_r = entry0.subtract(b0_p.clone())?;
+
+            // Merge B_r[0] and B_r[i] for i in {1,..., num_entries-1}
+            let b_r = g
+                .create_tuple(vec![b0_r.clone(), bi_r.array_to_vector()?])?
+                .reshape(vector_type(num_entries, b0_r.get_type()?))?
+                .vector_to_array()?;
+
+            // Sender and programmer generate a random mask phi of the duplication map
+            let mut phi = prf_key_s_p.prf(0, array_type(vec![num_entries - 1], BIT))?;
+
+            // Sender computes two columns M0 and M1 such that
+            //
+            //    M0[i] = sender_column[i] - B_r[i] - W_(duplication_bits[i])[i],
+            //    M1[i] = B_r[i-1] - B_r[i] - W_(1-duplication_bits[i])[i]
+            //
+            // for i in {1,..., num_entries-1}
+            let b_r_without_first_entry =
+                b_r.get_slice(vec![SliceElement::SubArray(Some(1), None, None)])?;
+            let b_r_without_last_entry = b_r.get_slice(vec![SliceElement::SubArray(
+                None,
+                Some(num_entries as i64 - 1),
+                None,
+            )])?;
+
+            // Reshape duplication bits and phi to enable broadcasting
+            let mut duplication_bits_wout_first_entry =
+                duplication_bits.get_slice(vec![SliceElement::SubArray(Some(1), None, None)])?;
+            if column_shape.len() > 1 {
+                let mut new_shape = vec![1; column_shape.len()];
+                new_shape[0] = num_entries - 1;
+                duplication_bits_wout_first_entry = duplication_bits_wout_first_entry
+                    .reshape(array_type(new_shape.clone(), BIT))?;
+                phi = phi.reshape(array_type(new_shape, BIT))?;
+            }
+
+            let selected_w_for_m0 = select_node(phi.clone(), w1.clone(), w0.clone())?;
+            let selected_w_for_m1 = select_node(phi.clone(), w0.clone(), w1.clone())?;
+            let mut m0 = sender_column
+                .get_slice(vec![SliceElement::SubArray(Some(1), None, None)])?
+                .subtract(b_r_without_first_entry.clone())?
+                .subtract(selected_w_for_m0)?;
+            let mut m1 = b_r_without_last_entry
+                .subtract(b_r_without_first_entry)?
+                .subtract(selected_w_for_m1)?;
+
+            // Sender sends M_0 and M_1 to Programmer
+            m0 = m0
+                .nop()?
+                .add_annotation(NodeAnnotation::Send(sender_id, programmer_id))?;
+            m1 = m1
+                .nop()?
+                .add_annotation(NodeAnnotation::Send(sender_id, programmer_id))?;
+
+            // Programmer and Receiver generate a random value R of size of an input share
+            let r = prf_key_p_r.prf(0, column_t.clone())?;
+
+            // Programmer masks the duplication map by computing rho = phi XOR dup_map except for the first bit.
+            let mut rho = duplication_bits_wout_first_entry.add(phi)?;
+            rho = rho
+                .nop()?
+                .add_annotation(NodeAnnotation::Send(programmer_id, receiver_id))?;
+
+            // Receiver selects W_(rho[i])[i] for i in {1,..., num_entries-1} and sends them to Programmer
+            let selected_w_for_programmer = select_node(rho, w1, w0)?
+                .nop()?
+                .add_annotation(NodeAnnotation::Send(receiver_id, programmer_id))?;
+
+            // Programmer computes
+            //
+            // B_p[i] = M_(duplication_bits[i])[i] + W_(rho[i])[i] + duplication_bits[i] * B_p[i-1]
+            //
+            // for i in {1,..., num_entries-1}.
+            // B_p[0] is computed earlier.
+            let m_plus_w = select_node(duplication_bits_wout_first_entry.clone(), m1, m0)?
+                .add(selected_w_for_programmer)?;
+
+            let b_p = g.segment_cumsum(
+                m_plus_w,
+                duplication_bits_wout_first_entry
+                    .reshape(array_type(vec![num_entries - 1], BIT))?,
+                b0_p.clone(),
+            )?;
+
+            // Compute the share of Programmer which is equal to
+            // B_p - R + duplication_map(programmer column share)
+            let programmer_result_column = b_p.subtract(r.clone())?.add(
+                programmer_share
+                    .named_tuple_get(column_header.clone())?
+                    .gather(duplication_indices.clone(), 0)?,
+            )?;
+
+            let receiver_result_column = b_r.add(r)?;
+
+            receiver_columns.push((column_header.clone(), receiver_result_column));
+            programmer_columns.push((column_header, programmer_result_column));
+        }
+        let receiver_result_share = g.create_named_tuple(receiver_columns)?;
+        let programmer_result_share = g.create_named_tuple(programmer_columns)?;
+
+        g.create_tuple(vec![receiver_result_share, programmer_result_share])?
+            .set_as_output()?
+            .set_name("output")?;
+
+        g.finalize()?;
+        Ok(g)
+    }
+
+    fn get_name(&self) -> String {
+        format!(
+            "Duplication(sender:{},programming:{})",
             self.sender_id, self.programmer_id
         )
     }
@@ -357,9 +648,11 @@ mod tests {
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
     use crate::graphs::create_context;
+    use crate::graphs::Operation;
     use crate::inline::inline_ops::inline_operations;
     use crate::inline::inline_ops::InlineConfig;
     use crate::inline::inline_ops::InlineMode;
+    use crate::mpc::mpc_compiler::generate_prf_key_triple;
     use crate::mpc::mpc_compiler::IOStatus;
     use crate::mpc::mpc_equivalence_class::generate_equivalence_class;
     use crate::mpc::mpc_equivalence_class::vector_class;
@@ -516,22 +809,8 @@ mod tests {
 
                 // Generate PRF keys
                 let key_t = array_type(vec![KEY_LENGTH], BIT);
-                // PRF key known to parties 2 and 0
-                let key_2_0 = g
-                    .random(key_t.clone())?
-                    .nop()?
-                    .add_annotation(NodeAnnotation::Send(2, 0))?;
-                // PRF key known to parties 0 and 1
-                let key_0_1 = g
-                    .random(key_t.clone())?
-                    .nop()?
-                    .add_annotation(NodeAnnotation::Send(0, 1))?;
-                // PRF key known to parties 1 and 2
-                let key_1_2 = g
-                    .random(key_t.clone())?
-                    .nop()?
-                    .add_annotation(NodeAnnotation::Send(1, 2))?;
-                let keys = g.create_tuple(vec![key_2_0, key_0_1, key_1_2])?;
+                let keys_vec = generate_prf_key_triple(g.clone())?;
+                let keys = g.create_tuple(keys_vec)?;
                 // PRF key known only to Sender.
                 let key_s = g.random(key_t.clone())?;
                 // Split input into two shares between Sender and Programmer
@@ -556,7 +835,7 @@ mod tests {
                 ])?;
 
                 // Pack shares together
-                let shares = g.create_tuple(vec![sender_share, programmer_share])?;
+                let shares = g.create_tuple(vec![programmer_share, sender_share])?;
 
                 // Permutation input
                 let permutation =
@@ -572,8 +851,8 @@ mod tests {
                 )?;
 
                 // Sum permuted shares
-                let receiver_permuted_share = permuted_shares.tuple_get(0)?;
-                let programmer_permuted_share = permuted_shares.tuple_get(1)?;
+                let receiver_permuted_share = permuted_shares.tuple_get(1)?;
+                let programmer_permuted_share = permuted_shares.tuple_get(0)?;
 
                 let permuted_column_a = receiver_permuted_share
                     .named_tuple_get("a".to_owned())?
@@ -668,7 +947,7 @@ mod tests {
                     // Sender's share
                     private_pair.clone(),
                     // Tuple of both shares
-                    vector_class(vec![private_pair.clone(), programmers_share_class.clone()]),
+                    vector_class(vec![programmers_share_class.clone(), private_pair.clone()]),
                     // Permutation input
                     private_class.clone(),
                     // Sender's permutation generated by Programmer
@@ -818,6 +1097,268 @@ mod tests {
             &[0, 2, 4, 1],
             &[0, 0, 1, 0, 0, 1, 0, 1],
             &[10, 30, 50, 20],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_duplication() {
+        let data_helper = |a_type: Type,
+                           b_type: Type,
+                           a_values: &[u64],
+                           b_values: &[u64],
+                           duplication_indices: &[u64],
+                           a_expected: &[u64],
+                           b_expected: &[u64]|
+         -> Result<()> {
+            // test correct inputs
+            let roles_helper = |sender_id: u64, programmer_id: u64| -> Result<()> {
+                let c = create_context()?;
+
+                let g = c.create_graph()?;
+
+                let column_a = g.input(a_type.clone())?;
+                let column_b = g.input(b_type.clone())?;
+
+                // Generate PRF keys
+                let key_t = array_type(vec![KEY_LENGTH], BIT);
+                let keys_vec = generate_prf_key_triple(g.clone())?;
+                let keys = g.create_tuple(keys_vec)?;
+                // PRF key known only to Sender.
+                let key_s = g.random(key_t.clone())?;
+                // Split input into two shares between Sender and Programmer
+                // Sender generates Programmer's shares
+                let column_a_programmer_share = g.prf(key_s.clone(), 0, a_type.clone())?;
+                let column_b_programmer_share = g.prf(key_s.clone(), 0, b_type.clone())?;
+                // Sender computes its shares
+                let column_a_sender_share = column_a.subtract(column_a_programmer_share.clone())?;
+                let column_b_sender_share = column_b.subtract(column_b_programmer_share.clone())?;
+
+                // Sender packs shares in named tuples and send one of them to Programmer
+                let programmer_share = g
+                    .create_named_tuple(vec![
+                        ("a".to_owned(), column_a_programmer_share),
+                        ("b".to_owned(), column_b_programmer_share),
+                    ])?
+                    .nop()?
+                    .add_annotation(NodeAnnotation::Send(sender_id, programmer_id))?;
+                let sender_share = g.create_named_tuple(vec![
+                    ("a".to_owned(), column_a_sender_share),
+                    ("b".to_owned(), column_b_sender_share),
+                ])?;
+
+                // Pack shares together
+                let shares = g.create_tuple(vec![programmer_share, sender_share])?;
+
+                // Duplication map input
+                let num_entries = duplication_indices.len();
+                let duplication_map = g.input(tuple_type(vec![
+                    array_type(vec![num_entries as u64], UINT64),
+                    array_type(vec![num_entries as u64], BIT),
+                ]))?;
+
+                // Duplicated shares
+                let duplicated_shares = g
+                    .custom_op(
+                        CustomOperation::new(DuplicationMPC {
+                            sender_id,
+                            programmer_id,
+                        }),
+                        vec![shares, duplication_map, keys],
+                    )?
+                    .set_name("Duplication output")?;
+
+                // Sum duplicated shares
+                let receiver_duplicated_share = duplicated_shares.tuple_get(1)?;
+                let programmer_duplicated_share = duplicated_shares.tuple_get(0)?;
+
+                let duplicated_column_a = receiver_duplicated_share
+                    .named_tuple_get("a".to_owned())?
+                    .add(programmer_duplicated_share.named_tuple_get("a".to_owned())?)?;
+                let duplicated_column_b = receiver_duplicated_share
+                    .named_tuple_get("b".to_owned())?
+                    .add(programmer_duplicated_share.named_tuple_get("b".to_owned())?)?;
+
+                // Combine duplicated columns
+                g.create_tuple(vec![duplicated_column_a, duplicated_column_b])?
+                    .set_as_output()?;
+
+                g.finalize()?;
+                g.set_as_main()?;
+                c.finalize()?;
+
+                let instantiated_c = run_instantiation_pass(c)?.context;
+                let inlined_c = inline_operations(
+                    instantiated_c,
+                    InlineConfig {
+                        default_mode: InlineMode::Simple,
+                        ..Default::default()
+                    },
+                )?;
+
+                let result_hashmap = generate_equivalence_class(
+                    inlined_c.clone(),
+                    vec![vec![
+                        IOStatus::Party(sender_id),
+                        IOStatus::Party(sender_id),
+                        IOStatus::Party(programmer_id),
+                    ]],
+                )?;
+
+                let receiver_id = PARTIES as u64 - sender_id - programmer_id;
+                let private_class = EquivalenceClasses::Atomic(vec![vec![0], vec![1], vec![2]]);
+                // data shared by Sender and Programmer
+                let share_r_sp = EquivalenceClasses::Atomic(vec![
+                    vec![receiver_id],
+                    vec![sender_id, programmer_id],
+                ]);
+                // data shared by the Receiver and Programmer
+                let share_s_rp = EquivalenceClasses::Atomic(vec![
+                    vec![sender_id],
+                    vec![receiver_id, programmer_id],
+                ]);
+                // data shared by parties 0 and 1
+                let share_2_01 = EquivalenceClasses::Atomic(vec![vec![2], vec![0, 1]]);
+                // data shared by parties 1 and 2
+                let share_0_12 = EquivalenceClasses::Atomic(vec![vec![0], vec![1, 2]]);
+                // data shared by parties 2 and 0
+                let share_1_20 = EquivalenceClasses::Atomic(vec![vec![1], vec![2, 0]]);
+
+                let private_pair = vector_class(vec![private_class.clone(); 2]);
+                let programmers_share_class = vector_class(vec![share_r_sp.clone(); 2]);
+
+                // Check ownership of nodes with Send instructions
+                let nodes = inlined_c.get_main_graph()?.get_nodes();
+                let mut sent_nodes_classes = vec![];
+                for node in nodes {
+                    if node.get_operation() == Operation::NOP {
+                        sent_nodes_classes
+                            .push((*result_hashmap.get(&node.get_global_id()).unwrap()).clone());
+                    }
+                }
+
+                let expected_classes = vec![
+                    // First PRF key
+                    share_1_20.clone(),
+                    // Second PRF key
+                    share_2_01.clone(),
+                    // Third PRF key
+                    share_0_12.clone(),
+                    // Programmer's share created by Sender
+                    programmers_share_class.clone(),
+                    // COLUMN 1
+                    // Sender sends M_0 and M_1 to Programmer
+                    share_r_sp.clone(),
+                    share_r_sp.clone(),
+                    // Masked duplication bits (rho) that Programmer sends to Receiver
+                    share_s_rp.clone(),
+                    // Entries of W_0 and W_1 selected by rho
+                    share_s_rp.clone(),
+                    // COLUMN 2
+                    // Sender sends M_0 and M_1 to Programmer
+                    share_r_sp.clone(),
+                    share_r_sp.clone(),
+                    // Masked duplication bits (rho) that Programmer sends to Receiver
+                    share_s_rp.clone(),
+                    // Entries of W_0 and W_1 selected by rho
+                    share_s_rp.clone(),
+                ];
+                assert_eq!(sent_nodes_classes, expected_classes);
+
+                // Check the ownership of the protocol output
+                let output_node_id = inlined_c
+                    .get_main_graph()?
+                    .retrieve_node("Duplication output")?
+                    .get_global_id();
+                assert_eq!(
+                    result_hashmap.get(&output_node_id).unwrap(),
+                    &vector_class(vec![private_pair.clone(); 2])
+                );
+
+                // Check evaluation
+                let mut duplication_bits = vec![0u64; num_entries];
+                for i in 1..num_entries {
+                    if duplication_indices[i] == duplication_indices[i - 1] {
+                        duplication_bits[i] = 1;
+                    }
+                }
+                let result = random_evaluate(
+                    inlined_c.get_main_graph()?,
+                    vec![
+                        Value::from_flattened_array(a_values.clone(), a_type.get_scalar_type())?,
+                        Value::from_flattened_array(b_values.clone(), b_type.get_scalar_type())?,
+                        Value::from_vector(vec![
+                            Value::from_flattened_array(duplication_indices.clone(), UINT64)?,
+                            Value::from_flattened_array(&duplication_bits, BIT)?,
+                        ]),
+                    ],
+                )?;
+                let mut result_a_shape = a_type.get_shape();
+                result_a_shape[0] = num_entries as u64;
+                let result_a_type = array_type(result_a_shape, a_type.get_scalar_type());
+
+                let mut result_b_shape = b_type.get_shape();
+                result_b_shape[0] = num_entries as u64;
+                let result_b_type = array_type(result_b_shape, b_type.get_scalar_type());
+
+                let result_a =
+                    result.to_vector()?[0].to_flattened_array_u64(result_a_type.clone())?;
+                let result_b =
+                    result.to_vector()?[1].to_flattened_array_u64(result_b_type.clone())?;
+                assert_eq!(&result_a, a_expected.clone());
+                assert_eq!(&result_b, b_expected.clone());
+                Ok(())
+            };
+            roles_helper(1, 0)?;
+            roles_helper(0, 1)?;
+            roles_helper(1, 2)?;
+            roles_helper(2, 1)?;
+            roles_helper(0, 2)?;
+            roles_helper(2, 0)?;
+            Ok(())
+        };
+
+        data_helper(
+            array_type(vec![5], INT32),
+            array_type(vec![5], INT16),
+            &[1, 2, 3, 4, 5],
+            &[10, 20, 30, 40, 50],
+            &[0, 1, 2, 3, 4],
+            &[1, 2, 3, 4, 5],
+            &[10, 20, 30, 40, 50],
+        )
+        .unwrap();
+
+        data_helper(
+            array_type(vec![5], INT32),
+            array_type(vec![5], INT16),
+            &[1, 2, 3, 4, 5],
+            &[10, 20, 30, 40, 50],
+            &[0, 1, 1, 3, 4],
+            &[1, 2, 2, 4, 5],
+            &[10, 20, 20, 40, 50],
+        )
+        .unwrap();
+
+        data_helper(
+            array_type(vec![5], INT32),
+            array_type(vec![5], UINT64),
+            &[1, 2, 3, 4, 5],
+            &[10, 20, 30, 40, 50],
+            &[0, 0, 0, 0, 0],
+            &[1, 1, 1, 1, 1],
+            &[10, 10, 10, 10, 10],
+        )
+        .unwrap();
+
+        data_helper(
+            array_type(vec![5, 2], INT32),
+            array_type(vec![5], UINT64),
+            &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            &[10, 20, 30, 40, 50],
+            &[0, 1, 1, 3, 4],
+            &[1, 2, 3, 4, 3, 4, 7, 8, 9, 10],
+            &[10, 20, 20, 40, 50],
         )
         .unwrap();
     }
