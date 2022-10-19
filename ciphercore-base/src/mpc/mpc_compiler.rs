@@ -29,7 +29,7 @@ pub enum IOStatus {
 }
 
 // Bitsize of PRF keys
-pub(super) const KEY_LENGTH: u64 = 128;
+pub const KEY_LENGTH: u64 = 128;
 
 /// Checks whether a private tuple value has the correct number of shares
 pub(super) fn check_private_tuple(v: Vec<TypePointer>) -> Result<()> {
@@ -973,7 +973,7 @@ fn compile_to_mpc(
 
 /// Creates a new copy of an input context with PRF nodes containing globally unique inputs (iv's).
 /// These global inputs are taken from the set {1,2,...,n} where n is the total number of PRF nodes.
-fn uniquify_prf_id(context: Context) -> Result<Context> {
+pub fn uniquify_prf_id(context: Context) -> Result<Context> {
     let new_context = create_context()?;
     let mut context_map = ContextMappings::default();
     let graphs = context.get_graphs();

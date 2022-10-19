@@ -2542,7 +2542,7 @@ impl Graph {
         Ok(self.clone())
     }
 
-    pub(super) fn get_annotations(&self) -> Result<Vec<GraphAnnotation>> {
+    pub fn get_annotations(&self) -> Result<Vec<GraphAnnotation>> {
         self.get_context().get_graph_annotations(self.clone())
     }
 
