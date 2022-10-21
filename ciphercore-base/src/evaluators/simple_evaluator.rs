@@ -809,7 +809,9 @@ impl Evaluator for SimpleEvaluator {
                 // Permutation with deletion map
                 let mut perm1_array = vec![];
                 // Duplication map
-                let mut duplication_array = vec![];
+                let mut duplication_map = vec![];
+                // Duplication bits
+                let mut duplication_bits = vec![];
                 // Permutation without deletion map
                 let mut perm2_array = vec![];
 
@@ -821,7 +823,9 @@ impl Evaluator for SimpleEvaluator {
                     // Permutation used for grouping identical indices of the input switching map
                     let mut perm_from_switch_to_perm1 = vec![];
                     // Duplication map
-                    let mut little_duplication_array = vec![];
+                    let mut little_duplication_map: Vec<u64> = vec![];
+                    // Duplication bits
+                    let mut little_duplication_bits = vec![];
 
                     // true if index isn't present in the map
                     let mut missing_indices_flags = vec![true; n as usize];
@@ -860,10 +864,13 @@ impl Evaluator for SimpleEvaluator {
                         let locations_vec = switch_indexes.get(&input_index).unwrap();
                         let num_copies = locations_vec.len();
                         little_perm1_array.push(input_index);
-                        little_duplication_array.push(0u64);
+                        let current_dup_index = little_perm1_array.len() as u64 - 1;
+                        little_duplication_map.push(current_dup_index);
+                        little_duplication_bits.push(0u64);
                         for _ in 0..num_copies - 1 {
                             little_perm1_array.push(missing_indices[missing_indices_index]);
-                            little_duplication_array.push(1);
+                            little_duplication_map.push(current_dup_index);
+                            little_duplication_bits.push(1);
                             missing_indices_index += 1;
                         }
                         perm_from_switch_to_perm1.extend_from_slice(locations_vec);
@@ -876,16 +883,18 @@ impl Evaluator for SimpleEvaluator {
                     }
 
                     perm1_array.extend_from_slice(&little_perm1_array);
-                    duplication_array.extend_from_slice(&little_duplication_array);
+                    duplication_map.extend_from_slice(&little_duplication_map);
+                    duplication_bits.extend_from_slice(&little_duplication_bits);
                     perm2_array.extend_from_slice(&little_perm2_array);
                 }
 
                 let perm1_val = Value::from_flattened_array(&perm1_array, UINT64)?;
-                let duplication_val = Value::from_flattened_array(&duplication_array, BIT)?;
+                let dup_map_val = Value::from_flattened_array(&duplication_map, UINT64)?;
+                let dup_bits_val = Value::from_flattened_array(&duplication_bits, BIT)?;
                 let perm2_val = Value::from_flattened_array(&perm2_array, UINT64)?;
                 Ok(Value::from_vector(vec![
                     perm1_val,
-                    duplication_val,
+                    Value::from_vector(vec![dup_map_val, dup_bits_val]),
                     perm2_val,
                 ]))
             }
@@ -1685,7 +1694,7 @@ mod tests {
         n: u64,
         input_value: Value,
         seed: Option<[u8; 16]>,
-    ) -> Result<(Vec<u64>, Vec<u64>, Vec<u64>)> {
+    ) -> Result<(Vec<u64>, Vec<u64>, Vec<u64>, Vec<u64>)> {
         let c = create_context()?;
         let g = c.create_graph()?;
         let input_type = array_type(shape.clone(), UINT64);
@@ -1698,25 +1707,33 @@ mod tests {
         let result_vector = evaluate_simple_evaluator(g, vec![input_value], seed)?.to_vector()?;
 
         let perm1 = result_vector[0].to_flattened_array_u64(input_type.clone())?;
-        let dup_map = result_vector[1].to_flattened_array_u64(array_type(shape, BIT))?;
+        let dup_tuple = result_vector[1].to_vector()?;
+        let dup_map = dup_tuple[0].to_flattened_array_u64(array_type(shape.clone(), UINT64))?;
+        let dup_bits = dup_tuple[1].to_flattened_array_u64(array_type(shape, BIT))?;
         let perm2 = result_vector[2].to_flattened_array_u64(input_type.clone())?;
 
-        Ok((perm1, dup_map, perm2))
+        Ok((perm1, dup_map, dup_bits, perm2))
     }
 
-    fn compose_maps(perm1: &[u64], duplication_map: &[u64], perm2: &[u64]) -> Result<Vec<u64>> {
+    fn compose_maps(
+        perm1: &[u64],
+        duplication_map: &[u64],
+        duplication_bits: &[u64],
+        perm2: &[u64],
+    ) -> Result<Vec<u64>> {
         let mut result = vec![0; perm1.len()];
 
         let mut duplication_indices_map = vec![0; duplication_map.len()];
 
-        for i in 1..duplication_map.len() {
-            let bit = duplication_map[i];
+        for i in 1..duplication_bits.len() {
+            let bit = duplication_bits[i];
             duplication_indices_map[i] =
                 bit * duplication_indices_map[i - 1] + (1 - bit) * i as u64;
         }
+        assert_eq!(duplication_map, &duplication_indices_map);
 
         for i in 0..perm2.len() {
-            result[i] = perm1[duplication_indices_map[perm2[i] as usize] as usize];
+            result[i] = perm1[duplication_map[perm2[i] as usize] as usize];
         }
 
         Ok(result)
@@ -1730,23 +1747,44 @@ mod tests {
             let helper = |switching_map: &[u64],
                           n: u64,
                           expected_perm1: &[u64],
-                          expected_dup_map: &[u64],
+                          expected_dup_bits: &[u64],
                           expected_perm2: &[u64]|
              -> Result<()> {
+                let mut expected_dup_map = vec![];
+                for i in 0..expected_perm1.len() {
+                    if expected_dup_bits[i] == 1 {
+                        expected_dup_map.push(expected_dup_map[i - 1]);
+                    } else {
+                        expected_dup_map.push(i as u64);
+                    }
+                }
+
                 let input_value = Value::from_flattened_array(switching_map, UINT64)?;
-                let (res_perm1, res_dup_map, res_perm2) = decompose_switching_map_helper(
-                    vec![switching_map.len() as u64],
-                    n,
-                    input_value,
-                    seed,
-                )?;
+                let (res_perm1, res_dup_map, res_dup_bits, res_perm2) =
+                    decompose_switching_map_helper(
+                        vec![switching_map.len() as u64],
+                        n,
+                        input_value,
+                        seed,
+                    )?;
 
                 assert_eq!(
-                    (&res_perm1[..], &res_dup_map[..], &res_perm2[..]),
-                    (expected_perm1, expected_dup_map, expected_perm2)
+                    (
+                        &res_perm1[..],
+                        &res_dup_map[..],
+                        &res_dup_bits[..],
+                        &res_perm2[..]
+                    ),
+                    (
+                        expected_perm1,
+                        &expected_dup_map[..],
+                        expected_dup_bits,
+                        expected_perm2
+                    )
                 );
 
-                let res_composition = compose_maps(&res_perm1, &res_dup_map, &res_perm2)?;
+                let res_composition =
+                    compose_maps(&res_perm1, &res_dup_map, &res_dup_bits, &res_perm2)?;
                 assert_eq!(&res_composition, switching_map);
 
                 Ok(())
@@ -1814,10 +1852,11 @@ mod tests {
                 let runs = expected_count_per_perm * random_indices_factorial;
                 let n = input_array.len() as u64;
                 for _ in 0..runs {
-                    let (res_perm1, res_dup_map, res_perm2) =
+                    let (res_perm1, res_dup_map, res_dup_bits, res_perm2) =
                         decompose_switching_map_helper(vec![n], n, input_value.clone(), None)?;
 
-                    let res_composition = compose_maps(&res_perm1, &res_dup_map, &res_perm2)?;
+                    let res_composition =
+                        compose_maps(&res_perm1, &res_dup_map, &res_dup_bits, &res_perm2)?;
                     assert_eq!(res_composition, input_array);
 
                     let mut perm_sorted = res_perm1.clone();

@@ -738,7 +738,7 @@ fn share_all_inputs(
     Ok(shared_inputs)
 }
 
-fn recursively_sum_shares(g: Graph, shares: Vec<Node>) -> Result<Node> {
+pub(super) fn recursively_sum_shares(g: Graph, shares: Vec<Node>) -> Result<Node> {
     let t = shares[0].get_type()?;
     match t {
         Type::Scalar(_) | Type::Array(_, _) => {

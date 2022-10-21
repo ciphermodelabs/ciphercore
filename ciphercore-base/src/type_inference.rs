@@ -571,7 +571,10 @@ impl TypeInferenceWorker {
                 if shape[0] > n {
                     return Err(runtime_error!("Switching map is longer than expected"));
                 }
-                let duplication_map_t = array_type(shape, BIT);
+                let duplication_map_t = tuple_type(vec![
+                    array_type(shape.clone(), UINT64),
+                    array_type(shape, BIT),
+                ]);
                 let output_t = tuple_type(vec![t.clone(), duplication_map_t, t]);
                 Ok(output_t)
             }
@@ -2797,7 +2800,10 @@ mod tests {
         let o = i.decompose_switching_map(n)?;
         let res_t = worker.process_node(o)?;
         let shape = t.get_shape();
-        let duplication_map_t = array_type(shape, BIT);
+        let duplication_map_t = tuple_type(vec![
+            array_type(shape.clone(), UINT64),
+            array_type(shape, BIT),
+        ]);
         assert_eq!(res_t, tuple_type(vec![t.clone(), duplication_map_t, t]));
         Ok(())
     }

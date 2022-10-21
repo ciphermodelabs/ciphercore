@@ -1609,7 +1609,7 @@ impl Graph {
 
     /// Adds a node that converts a switching map array into a random tuple of the following components:
     /// - a permutation map array with deletion (some indices of this map are uniformly random, see below),
-    /// - a duplication map array,
+    /// - a tuple of duplication map array and duplication bits,
     /// - a permutation map array without deletion.
     ///
     /// The composition of these maps is equal to the input switching map, which is an array containing non-unique indices of some array.
@@ -1623,16 +1623,19 @@ impl Graph {
     ///
     /// [1, 4, 4, 5, 7, 2] -> [1, 4, 3, 5, 7, 2].
     ///
-    /// A duplication map is a one-dimensional array containing only zeros and ones.
+    ///
+    /// A duplication map is a tuple of two one-dimensional arrays of length `n`.
+    /// The first array contains indices from `[0,n]` in the increasing order with possible repetitions.
+    /// The second array contains only zeros and ones.
     /// If its i-th element is zero, it means that the duplication map doesn't change the i-th element of an array it acts upon.
     /// If map's i-th element is one, then the map copies the previous element of the result.
     /// This rules can be summarized by the following equation
     ///
-    /// output[i] = dup_map[i] * output[i-1] + (1 - dup_map[i]) * input[i].
+    /// duplication_indices[i] = duplication_bits[i] * duplication_indices[i-1] + (1 - duplication_bits[i]) * i.
     ///
     /// A duplication map is created from the above switching map with grouped indices, replacing the first index occurrence with 0 and other copies with 1, e.g.
     ///
-    ///  [1, 4, 4, 5, 7, 2] -> [0, 0, 1, 0, 0, 0].
+    ///  [1, 4, 4, 5, 7, 2] -> ([0, 1, 1, 3, 4, 5], [0, 0, 1, 0, 0, 0]).
     ///
     /// The last permutation is the inverse of the above permutation p, i.e.
     ///
