@@ -11,6 +11,7 @@ use crate::inline::inline_common::DepthOptimizationLevel;
 use crate::inline::inline_ops::{inline_operations, InlineConfig, InlineMode};
 use crate::ops::comparisons::Equal;
 use crate::ops::utils::{pull_out_bits, put_in_bits, zeros};
+use crate::type_inference::NULL_HEADER;
 
 use serde::{Deserialize, Serialize};
 
@@ -367,10 +368,6 @@ fn get_lowmc_graph(context: Context, input_t: Type, key_t: Type) -> Result<Graph
 pub struct SetIntersectionMPC {
     pub headers: Vec<(String, String)>,
 }
-
-/// Name of the "null" column that contains bits indicating whether the corresponding row is void of content.
-/// If the "null" bit is zero, the row is empty.
-pub const NULL_HEADER: &str = "null";
 
 impl SetIntersectionMPC {
     // Convert key columns to binary and merge them for each input database
@@ -1705,7 +1702,7 @@ mod tests {
     use crate::custom_ops::{run_instantiation_pass, CustomOperation};
     use crate::data_types::{scalar_type, ArrayShape, INT16, INT32, INT64};
     use crate::data_values::Value;
-    use crate::evaluators::random_evaluate;
+    use crate::evaluators::{evaluate_simple_evaluator, random_evaluate};
     use crate::graphs::create_context;
     use crate::inline::inline_ops::{inline_operations, InlineConfig, InlineMode};
     use crate::mpc::mpc_compiler::{generate_prf_key_triple, recursively_sum_shares, IOStatus};
@@ -2696,7 +2693,11 @@ mod tests {
             }
 
             let inlined_g = inlined_c.get_main_graph()?;
-            let result = random_evaluate(inlined_g.clone(), input_values)?;
+            let result = evaluate_simple_evaluator(
+                inlined_g.clone(),
+                input_values,
+                Some([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]),
+            )?;
 
             let result_type_vec = get_named_types(inlined_g.get_output_node()?.get_type()?);
 

@@ -104,6 +104,7 @@ pub enum Operation {
     CuckooToPermutation,
     DecomposeSwitchingMap(u64),
     SegmentCumSum,
+    SetIntersection(HashMap<String, String>),
     Custom(CustomOperation),
 }
 
@@ -450,6 +451,50 @@ impl Node {
     /// ```
     pub fn matmul(&self, b: Node) -> Result<Node> {
         self.get_graph().matmul(self.clone(), b)
+    }
+
+    /// Adds a node that computes the intersection of two named tuples along given key headers.
+    ///
+    /// Applies [Graph::set_intersection] to the parent graph, `this` node and the `b` node.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{INT32, INT64, UINT8, BIT, array_type, named_tuple_type};
+    /// # use ciphercore_base::type_inference::NULL_HEADER;
+    /// # use std::collections::HashMap;
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t1n = array_type(vec![100], BIT);
+    /// let t11 = array_type(vec![100], INT32);
+    /// let t12 = array_type(vec![100, 128], BIT);
+    /// let t13 = array_type(vec![100],  INT64);
+    /// let t2n = array_type(vec![50], BIT);
+    /// let t21 = array_type(vec![50], INT32);
+    /// let t22 = array_type(vec![50, 128], BIT);
+    /// let t23 = array_type(vec![50], UINT8);
+    /// let t1 = named_tuple_type(vec![
+    ///     (NULL_HEADER.to_owned(), t1n),
+    ///     ("ID".to_owned(), t11),
+    ///     ("Occupation".to_owned(), t12),
+    ///     ("Revenue".to_owned(), t13),
+    /// ]);
+    /// let t2 = named_tuple_type(vec![
+    ///     (NULL_HEADER.to_owned(), t2n),
+    ///     ("ID".to_owned(), t21),
+    ///     ("Job".to_owned(), t22),
+    ///     ("Age".to_owned(), t23),
+    /// ]);
+    /// let n1 = g.input(t1).unwrap();
+    /// let n2 = g.input(t2).unwrap();
+    /// let n3 = n1.set_intersection(n2, HashMap::from([
+    ///     ("ID".to_owned(), "ID".to_owned()),
+    ///     ("Occupation".to_owned(), "Job".to_owned()),
+    /// ])).unwrap();
+    /// ```
+    pub fn set_intersection(&self, b: Node, headers: HashMap<String, String>) -> Result<Node> {
+        self.get_graph().set_intersection(self.clone(), b, headers)
     }
 
     /// Adds a node to the parent graph that divides a scalar or each entry of the array associated with the node by a positive constant integer `scale`.
@@ -1276,6 +1321,73 @@ impl Graph {
     /// ```
     pub fn matmul(&self, a: Node, b: Node) -> Result<Node> {
         self.add_node(vec![a, b], vec![], Operation::Matmul)
+    }
+
+    /// Adds a node that computes the intersection of two named tuples along given key headers.
+    ///
+    /// Each tuple should consist of arrays having the same number of rows, i.e. the first dimensions of these arrays should be equal.
+    /// The rows consisiting of only columns with given key headers (key columns) should be unique.
+    ///  
+    /// In addition, each named tuple should have a binary array named with NULL_HEADER that contains zeros in rows void of content; otherwise, it contains ones.
+    /// This column is called the null column.
+    ///
+    /// This operation returns a named tuple that contains rows whose content is equal in the key columns named by given key headers.
+    /// The content of non-key columns is merged.
+    /// The order of these rows is the same as in the first named tuple.
+    /// The content of other rows is set to zero including the null column.
+    ///
+    /// # Arguments
+    ///
+    /// * `a` - node containing the first named tuple
+    /// * `b` - node containing the second named tuple
+    ///
+    /// # Returns
+    ///
+    /// New set intersection node
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{INT32, INT64, UINT8, BIT, array_type, named_tuple_type};
+    /// # use ciphercore_base::type_inference::NULL_HEADER;
+    /// # use std::collections::HashMap;
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t1n = array_type(vec![100], BIT);
+    /// let t11 = array_type(vec![100], INT32);
+    /// let t12 = array_type(vec![100, 128], BIT);
+    /// let t13 = array_type(vec![100],  INT64);
+    /// let t2n = array_type(vec![50], BIT);
+    /// let t21 = array_type(vec![50], INT32);
+    /// let t22 = array_type(vec![50, 128], BIT);
+    /// let t23 = array_type(vec![50], UINT8);
+    /// let t1 = named_tuple_type(vec![
+    ///     (NULL_HEADER.to_owned(), t1n),
+    ///     ("ID".to_owned(), t11),
+    ///     ("Occupation".to_owned(), t12),
+    ///     ("Revenue".to_owned(), t13),
+    /// ]);
+    /// let t2 = named_tuple_type(vec![
+    ///     (NULL_HEADER.to_owned(), t2n),
+    ///     ("ID".to_owned(), t21),
+    ///     ("Job".to_owned(), t22),
+    ///     ("Age".to_owned(), t23),
+    /// ]);
+    /// let n1 = g.input(t1).unwrap();
+    /// let n2 = g.input(t2).unwrap();
+    /// let n3 = g.set_intersection(n1, n2, HashMap::from([
+    ///     ("ID".to_owned(), "ID".to_owned()),
+    ///     ("Occupation".to_owned(), "Job".to_owned()),
+    /// ])).unwrap();
+    /// ```
+    pub fn set_intersection(
+        &self,
+        a: Node,
+        b: Node,
+        headers: HashMap<String, String>,
+    ) -> Result<Node> {
+        self.add_node(vec![a, b], vec![], Operation::SetIntersection(headers))
     }
 
     /// Adds a node that divides a scalar or each entry of an array by a positive constant integer `scale`.
