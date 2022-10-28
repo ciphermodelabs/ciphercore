@@ -507,20 +507,23 @@ impl TypeInferenceWorker {
         Ok(())
     }
 
-    pub fn process_node(&mut self, node: Node) -> Result<Type> {
+    pub fn cached_node_type(&self, node: &Node) -> Result<Option<Type>> {
         if self.context.upgrade() != node.get_graph().get_context() {
             return Err(runtime_error!(
                 "Can't process a node from a different context"
             ));
         }
+
         let node_global_id = get_node_global_id(node.clone());
-        if self.cached_results.contains_key(&node_global_id) {
-            return Ok(self
-                .cached_results
-                .get(&node_global_id)
-                .expect("Should not be here")
-                .clone());
+        Ok(self.cached_results.get(&node_global_id).cloned())
+    }
+
+    pub fn process_node(&mut self, node: Node) -> Result<Type> {
+        let cached_result = self.cached_node_type(&node)?;
+        if let Some(result) = cached_result {
+            return Ok(result);
         }
+
         let node_dependencies = node.get_node_dependencies();
         let number_of_node_dependencies = get_number_of_node_dependencies(node.get_operation());
         if let Some(n) = number_of_node_dependencies {
