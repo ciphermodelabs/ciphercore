@@ -17,6 +17,8 @@ use crate::optimizer::optimize::optimize_context;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+use super::mpc_psi::SetIntersectionMPC;
+
 // We implement the ABY3 protocol, which has 3 parties involved
 pub const PARTIES: usize = 3;
 
@@ -224,6 +226,7 @@ fn propagate_private_annotations(
             | Operation::MixedMultiply
             | Operation::Dot
             | Operation::Matmul
+            | Operation::SetIntersection(_)
             | Operation::A2B
             | Operation::B2A(_)
             | Operation::PermuteAxes(_)
@@ -244,6 +247,9 @@ fn propagate_private_annotations(
                 let dependencies = node.get_node_dependencies();
                 if is_one_node_private(&dependencies, &private_nodes) {
                     private_nodes.insert(node.clone());
+                    if matches!(op, Operation::SetIntersection(_)) {
+                        use_prf_for_mul = true;
+                    }
                 }
                 if ([
                     Operation::Multiply,
@@ -453,6 +459,37 @@ pub(super) fn compile_to_mpc_graph(
                     && private_nodes.contains(&input1)
                 {
                     // If both inputs are private, the MPC protocol requires invoking PRFs.
+                    // Thus, PRF keys must be provided.
+                    let keys = match prf_keys_mul {
+                        Some(ref k) => k.clone(),
+                        None => {
+                            panic!("Propagation of annotations failed")
+                        }
+                    };
+                    out_graph.custom_op(
+                        custom_op,
+                        vec![new_input0.clone(), new_input1.clone(), keys],
+                    )?
+                } else {
+                    out_graph.custom_op(custom_op, vec![new_input0.clone(), new_input1.clone()])?
+                }
+            }
+            Operation::SetIntersection(headers) => {
+                let dependencies = node.get_node_dependencies();
+                let input0 = dependencies[0].clone();
+                let input1 = dependencies[1].clone();
+                let new_input0 = out_mapping.get_node(input0.clone());
+                let new_input1 = out_mapping.get_node(input1.clone());
+                let mut headers_vec = vec![];
+                for headers_pair in headers {
+                    headers_vec.push(headers_pair);
+                }
+                let custom_op = CustomOperation::new(SetIntersectionMPC {
+                    headers: headers_vec,
+                });
+
+                if private_nodes.contains(&node) {
+                    // If one input set is private, the MPC protocol requires invoking PRFs.
                     // Thus, PRF keys must be provided.
                     let keys = match prf_keys_mul {
                         Some(ref k) => k.clone(),

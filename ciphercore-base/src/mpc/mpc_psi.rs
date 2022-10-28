@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::custom_ops::{
     run_instantiation_pass, ContextMappings, CustomOperation, CustomOperationBody, Or,
 };
@@ -10,7 +12,7 @@ use crate::graphs::{create_context, Context, Graph, Node, NodeAnnotation, SliceE
 use crate::inline::inline_common::DepthOptimizationLevel;
 use crate::inline::inline_ops::{inline_operations, InlineConfig, InlineMode};
 use crate::ops::comparisons::Equal;
-use crate::ops::utils::{pull_out_bits, put_in_bits, zeros};
+use crate::ops::utils::{pull_out_bits, put_in_bits, zeros, zeros_like};
 use crate::type_inference::NULL_HEADER;
 
 use serde::{Deserialize, Serialize};
@@ -42,32 +44,52 @@ fn generate_shared_random_array(t: Type, prf_keys: &[Node]) -> Result<Node> {
     prf_keys[0].get_graph().create_tuple(shares)
 }
 
-fn get_column_shares(named_tuple_shares: &[Node], header: String) -> Result<Node> {
-    let mut shares = vec![];
-    for share in named_tuple_shares {
-        shares.push(share.named_tuple_get(header.clone())?);
+fn get_column(named_tuple_shares: &[Node], header: String) -> Result<Node> {
+    if named_tuple_shares.len() == PARTIES {
+        let mut shares = vec![];
+        for share in named_tuple_shares {
+            shares.push(share.named_tuple_get(header.clone())?);
+        }
+        named_tuple_shares[0].get_graph().create_tuple(shares)
+    } else if named_tuple_shares.len() == 1 {
+        named_tuple_shares[0].named_tuple_get(header)
+    } else {
+        panic!("Shouldn't be here");
     }
-    named_tuple_shares[0].get_graph().create_tuple(shares)
 }
 
 fn reshape_shared_array(a: Node, new_t: Type) -> Result<Node> {
-    let mut shares = vec![];
-    for share_id in 0..PARTIES as u64 {
-        shares.push(a.tuple_get(share_id)?.reshape(new_t.clone())?);
+    if a.get_type()?.is_tuple() {
+        let mut shares = vec![];
+        for share_id in 0..PARTIES as u64 {
+            shares.push(a.tuple_get(share_id)?.reshape(new_t.clone())?);
+        }
+        a.get_graph().create_tuple(shares)
+    } else {
+        a.reshape(new_t)
     }
-    a.get_graph().create_tuple(shares)
 }
 
 fn multiply_mpc(a: Node, b: Node, prf_keys: Node) -> Result<Node> {
-    a.get_graph()
-        .custom_op(CustomOperation::new(MultiplyMPC {}), vec![a, b, prf_keys])
+    let args = if a.get_type()?.is_tuple() && b.get_type()?.is_tuple() {
+        vec![a, b, prf_keys]
+    } else {
+        vec![a, b]
+    };
+    args[0]
+        .get_graph()
+        .custom_op(CustomOperation::new(MultiplyMPC {}), args)
 }
 
 fn mixed_multiply_mpc(a: Node, b: Node, prf_keys: Node) -> Result<Node> {
-    a.get_graph().custom_op(
-        CustomOperation::new(MixedMultiplyMPC {}),
-        vec![a, b, prf_keys],
-    )
+    let args = if b.get_type()?.is_tuple() {
+        vec![a, b, prf_keys]
+    } else {
+        vec![a, b]
+    };
+    args[0]
+        .get_graph()
+        .custom_op(CustomOperation::new(MixedMultiplyMPC {}), args)
 }
 
 fn add_mpc(a: Node, b: Node) -> Result<Node> {
@@ -194,6 +216,8 @@ fn get_equality_graph(
     type1: Type,
     type2: Type,
     key_header: String,
+    is_input1_private: bool,
+    is_input2_private: bool,
 ) -> Result<Graph> {
     let eq_context = create_context()?;
     let g = eq_context.create_graph()?;
@@ -221,7 +245,11 @@ fn get_equality_graph(
     eq_context.set_main_graph(g)?;
     eq_context.finalize()?;
 
-    convert_main_graph_to_mpc(eq_context, context, vec![true, true])
+    convert_main_graph_to_mpc(
+        eq_context,
+        context,
+        vec![is_input1_private, is_input2_private],
+    )
 }
 
 fn get_or_graph(context: Context, num_entries: u64) -> Result<Graph> {
@@ -319,6 +347,62 @@ fn get_lowmc_graph(context: Context, input_t: Type, key_t: Type) -> Result<Graph
     convert_main_graph_to_mpc(lowmc_context, context, vec![true, true])
 }
 
+// Convert key columns to binary and merge them for each input database
+fn get_merging_graph(
+    context: Context,
+    header_types: Vec<(String, Type)>,
+    key_headers: &[String],
+    is_private: bool,
+) -> Result<Graph> {
+    let mut headers_map = HashMap::new();
+    for (h, t) in &header_types {
+        headers_map.insert((*h).clone(), (*t).clone());
+    }
+
+    let merging_context = create_context()?;
+    let g = merging_context.create_graph()?;
+
+    let data = g.input(named_tuple_type(header_types.clone()))?;
+
+    let num_entries = header_types[0].1.get_shape()[0];
+    let mut key_entry_bitlength = 0;
+
+    let mut bit_columns = vec![];
+    for header in key_headers {
+        let t = headers_map.get(header).unwrap();
+
+        let column = data.named_tuple_get((*header).clone())?;
+        let mut bit_column = if t.get_scalar_type() != BIT {
+            column.a2b()?
+        } else {
+            column
+        };
+        // Flatten all the bits per entry
+        let flattened_shape = vec![num_entries, get_size_in_bits((*t).clone())? / num_entries];
+        key_entry_bitlength += flattened_shape[1];
+        bit_column = bit_column.reshape(array_type(flattened_shape, BIT))?;
+        // Pull out bits to simplify merging of columns
+        bit_columns.push(pull_out_bits(bit_column)?.array_to_vector()?);
+    }
+    // Merge key columns
+    let merged_columns = g
+        .create_tuple(bit_columns)?
+        .reshape(vector_type(
+            key_entry_bitlength,
+            array_type(vec![num_entries], BIT),
+        ))?
+        .vector_to_array()?;
+
+    put_in_bits(merged_columns)?.set_as_output()?;
+
+    g.finalize()?;
+
+    merging_context.set_main_graph(g)?;
+    merging_context.finalize()?;
+
+    convert_main_graph_to_mpc(merging_context, context, vec![is_private])
+}
+
 /// Adds a node returning the intersection of given databases along given column keys.
 ///
 /// Databases are represented as named tuples of integer arrays.
@@ -366,102 +450,69 @@ fn get_lowmc_graph(context: Context, input_t: Type, key_t: Type) -> Result<Graph
 /// Node containing a named tuple containing the inner join of both databases
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub struct SetIntersectionMPC {
+    // Instead of HashMap, Vector is used to support the Hash trait
     pub headers: Vec<(String, String)>,
 }
 
-impl SetIntersectionMPC {
-    // Convert key columns to binary and merge them for each input database
-    fn get_merging_graph(
-        &self,
-        context: Context,
-        header_types: Vec<(String, Type)>,
-        key_headers: &[String],
-    ) -> Result<Graph> {
-        let merging_context = create_context()?;
-        let g = merging_context.create_graph()?;
-
-        let data = g.input(named_tuple_type(header_types.clone()))?;
-
-        let num_entries = header_types[0].1.get_shape()[0];
-        let mut key_entry_bitlength = 0;
-
-        let mut bit_columns = vec![];
-        for (header, t) in &header_types {
-            if key_headers.contains(header) {
-                let column = data.named_tuple_get((*header).clone())?;
-                let mut bit_column = if t.get_scalar_type() != BIT {
-                    column.a2b()?
-                } else {
-                    column
-                };
-                // Flatten all the bits per entry
-                let flattened_shape =
-                    vec![num_entries, get_size_in_bits((*t).clone())? / num_entries];
-                key_entry_bitlength += flattened_shape[1];
-                bit_column = bit_column.reshape(array_type(flattened_shape, BIT))?;
-                // Pull out bits to simplify merging of columns
-                bit_columns.push(pull_out_bits(bit_column)?.array_to_vector()?);
-            }
+fn check_and_extract_dataset_parameters(
+    t: Type,
+    is_private: bool,
+) -> Result<(u64, ColumnHeaderTypes)> {
+    let column_header_types = if is_private {
+        if !t.is_tuple() {
+            panic!("Private database must be a tuple of shares");
         }
-        // Merge key columns
-        let merged_columns = g
-            .create_tuple(bit_columns)?
-            .reshape(vector_type(
-                key_entry_bitlength,
-                array_type(vec![num_entries], BIT),
-            ))?
-            .vector_to_array()?;
 
-        put_in_bits(merged_columns)?.set_as_output()?;
+        let t_vec = get_types_vector(t)?;
 
-        g.finalize()?;
-
-        merging_context.set_main_graph(g)?;
-        merging_context.finalize()?;
-
-        convert_main_graph_to_mpc(merging_context, context, vec![true])
-    }
-}
-
-fn check_and_extract_dataset_parameters(t: Type) -> Result<(u64, ColumnHeaderTypes)> {
-    if !t.is_tuple() {
-        panic!("Private database must be a tuple of shares");
-    }
-
-    let t_vec = get_types_vector(t)?;
-
-    check_private_tuple(t_vec.clone())?;
-
-    let column_header_types = get_named_types((*t_vec[0]).clone());
+        check_private_tuple(t_vec.clone())?;
+        get_named_types((*t_vec[0]).clone())
+    } else {
+        get_named_types(t)
+    };
     let num_entries = column_header_types[0].1.get_shape()[0];
-    let mut is_null_present = false;
-    for (header, t) in &column_header_types {
-        if num_entries != t.get_shape()[0] {
-            panic!("All columns should have the same number of entries")
-        }
-        is_null_present = ((*header).clone() == *NULL_HEADER) || is_null_present;
-    }
-    if !is_null_present {
-        panic!("Set has no null column ");
-    }
+
     Ok((num_entries, column_header_types))
 }
 
 #[typetag::serde]
 impl CustomOperationBody for SetIntersectionMPC {
     fn instantiate(&self, context: Context, argument_types: Vec<Type>) -> Result<Graph> {
-        // TODO: add cases when X and Y are public, or when either is public.
+        if argument_types.len() == 2 {
+            if argument_types[0].is_named_tuple() && argument_types[1].is_named_tuple() {
+                let g = context.create_graph()?;
+                let set0 = g.input(argument_types[0].clone())?;
+                let set1 = g.input(argument_types[1].clone())?;
+                let mut headers = HashMap::new();
+                for (h0, h1) in &self.headers {
+                    headers.insert((*h0).clone(), (*h1).clone());
+                }
+                set0.set_intersection(set1, headers)?.set_as_output()?;
+                g.finalize()?;
+                return Ok(g);
+            } else {
+                // Panics since:
+                // - the user has no direct access to this function.
+                // - the MPC compiler should pass the correct number of arguments
+                // and this panic should never happen.
+                panic!("Inconsistency with type checker");
+            }
+        }
         if argument_types.len() != 3 {
             panic!("PSI protocol should have 3 inputs");
         }
-        let data_x_triple_t = argument_types[0].clone();
-        let data_y_triple_t = argument_types[1].clone();
+
+        let data_x_t = argument_types[0].clone();
+        let data_y_t = argument_types[1].clone();
         let prf_t = argument_types[2].clone();
 
+        let is_x_private = data_x_t.is_tuple();
+        let is_y_private = data_y_t.is_tuple();
+
         let (num_entries_x, column_header_types_x) =
-            check_and_extract_dataset_parameters(data_x_triple_t.clone())?;
+            check_and_extract_dataset_parameters(data_x_t.clone(), is_x_private)?;
         let (num_entries_y, column_header_types_y) =
-            check_and_extract_dataset_parameters(data_y_triple_t.clone())?;
+            check_and_extract_dataset_parameters(data_y_t.clone(), is_y_private)?;
 
         // Name of the "key" column containing bits of compared columns
         // To avoid a collision with input headers, the key header is the join of all input headers
@@ -486,29 +537,33 @@ impl CustomOperationBody for SetIntersectionMPC {
         // Compute the bit length of one entry containing only key columns.
         // This value is the same for both input sets.
         // In addition, checks whether non-binary key columns are present.
-        // This defines the number of inputs of merging graphs below.
+        // This defines the merging graphs below need PRF keys.
         let mut key_columns_entry_bitlength = 0;
-        let mut prf_needed_to_merge = false;
+        let mut is_a2b_needed = false;
         for (header, t) in &column_header_types_x {
             if key_headers_x.contains(header) {
                 let column_entry_bitlength = get_size_in_bits((*t).clone())? / num_entries_x;
                 key_columns_entry_bitlength += column_entry_bitlength;
                 if t.get_scalar_type() != BIT {
-                    prf_needed_to_merge = true;
+                    is_a2b_needed = true;
                 }
             }
         }
+        let prf_needed_to_merge_x = is_x_private && is_a2b_needed;
+        let prf_needed_to_merge_y = is_y_private && is_a2b_needed;
         // Graph that merges the key columns of the dataset X
-        let merging_g_x = self.get_merging_graph(
+        let merging_g_x = get_merging_graph(
             context.clone(),
             column_header_types_x.clone(),
             &key_headers_x,
+            is_x_private,
         )?;
         // Graph that merges the key columns of the dataset Y
-        let merging_g_y = self.get_merging_graph(
+        let merging_g_y = get_merging_graph(
             context.clone(),
             column_header_types_y.clone(),
             &key_headers_y,
+            is_y_private,
         )?;
         // Graph that computes LowMC on the dataset X
         let lowmc_g_x = get_lowmc_graph(
@@ -548,6 +603,8 @@ impl CustomOperationBody for SetIntersectionMPC {
             y_h_type,
             merged_key_columns_x_type,
             key_header.clone(),
+            true,
+            is_x_private,
         )?;
         // Graph that computes OR of bit columns
         let or_g = get_or_graph(context.clone(), num_entries_x)?;
@@ -562,16 +619,26 @@ impl CustomOperationBody for SetIntersectionMPC {
         // Main graph computing PSI
         let g = context.create_graph()?;
 
-        let data_x_triple = g.input(data_x_triple_t)?;
-        let data_y_triple = g.input(data_y_triple_t)?;
+        let data_x = g.input(data_x_t)?;
+        let data_y = g.input(data_y_t)?;
         let prf_keys = g.input(prf_t)?;
 
         // Extract input shares
         let mut data_x_shares = vec![];
         let mut data_y_shares = vec![];
-        for share_id in 0..PARTIES as u64 {
-            data_x_shares.push(data_x_triple.tuple_get(share_id)?);
-            data_y_shares.push(data_y_triple.tuple_get(share_id)?);
+        if is_x_private {
+            for share_id in 0..PARTIES as u64 {
+                data_x_shares.push(data_x.tuple_get(share_id)?);
+            }
+        } else {
+            data_x_shares.push(data_x.clone());
+        }
+        if is_y_private {
+            for share_id in 0..PARTIES as u64 {
+                data_y_shares.push(data_y.tuple_get(share_id)?);
+            }
+        } else {
+            data_y_shares.push(data_y.clone());
         }
 
         // Extract PRF keys
@@ -583,18 +650,18 @@ impl CustomOperationBody for SetIntersectionMPC {
         // 1. Key columns of both sets are converted to binary and merged row-wise.
         let merged_columns_x = g.call(
             merging_g_x,
-            if prf_needed_to_merge {
-                vec![prf_keys.clone(), data_x_triple]
+            if prf_needed_to_merge_x {
+                vec![prf_keys.clone(), data_x]
             } else {
-                vec![data_x_triple]
+                vec![data_x]
             },
         )?;
         let merged_columns_y = g.call(
             merging_g_y,
-            if prf_needed_to_merge {
-                vec![prf_keys.clone(), data_y_triple]
+            if prf_needed_to_merge_y {
+                vec![prf_keys.clone(), data_y.clone()]
             } else {
-                vec![data_y_triple]
+                vec![data_y.clone()]
             },
         )?;
 
@@ -617,11 +684,17 @@ impl CustomOperationBody for SetIntersectionMPC {
                             lowmc_graph: Graph,
                             num_entries: u64|
          -> Result<Node> {
+            // Define MatmulMPC inputs
+            // If merged columns are private, then PRF keys are needed.
+            // Random hash matrix is always private.
+            let matmul_args = if merged_columns.get_type()?.is_tuple() {
+                vec![merged_columns, random_hash_matrix.clone(), prf_keys.clone()]
+            } else {
+                vec![merged_columns, random_hash_matrix.clone()]
+            };
             // Compute MatMulMPC on shares
-            let hashed_columns = g.custom_op(
-                CustomOperation::new(MatmulMPC {}),
-                vec![merged_columns, random_hash_matrix.clone(), prf_keys.clone()],
-            )?;
+            let hashed_columns = g.custom_op(CustomOperation::new(MatmulMPC {}), matmul_args)?;
+
             let oprf_set = g.call(
                 lowmc_graph,
                 vec![prf_keys.clone(), hashed_columns, oprf_key.clone()],
@@ -641,7 +714,7 @@ impl CustomOperationBody for SetIntersectionMPC {
         };
 
         // Compute OPRF(X) = (PRF(key columns of X) - R_X) * X_null_column XOR R_X where R_X is a random matrix generated by all parties
-        let null_x = get_column_shares(&data_x_shares, NULL_HEADER.to_owned())?;
+        let null_x = get_column(&data_x_shares, NULL_HEADER.to_owned())?;
         let oprf_set_x = compute_oprf(
             merged_columns_x.clone(),
             null_x.clone(),
@@ -650,7 +723,7 @@ impl CustomOperationBody for SetIntersectionMPC {
         )?;
 
         // Compute OPRF(Y) = PRF(key columns of Y) * Y_null_column XOR R_Y * ~Y_null_column where R_Y is a random matrix generated by all parties
-        let null_y = get_column_shares(&data_y_shares, NULL_HEADER.to_owned())?;
+        let null_y = get_column(&data_y_shares, NULL_HEADER.to_owned())?;
         let oprf_set_y = compute_oprf(merged_columns_y.clone(), null_y, lowmc_g_y, num_entries_y)?;
 
         // 4. Reveal OPRF(X) to party 2
@@ -680,7 +753,8 @@ impl CustomOperationBody for SetIntersectionMPC {
         let cuckoo_permutation = cuckoo_map.cuckoo_to_permutation()?;
 
         // 8. Attach the merged key columns to Y
-        let extended_shares_y = {
+        // HACK: If Y is public, we create fake shares containing zeros such that the next operation generating random padding can accept it
+        let extended_shares_y = if is_y_private {
             let mut res = vec![];
             for (share_id, share) in data_y_shares.iter().enumerate() {
                 let mut columns_vec = vec![(
@@ -695,6 +769,15 @@ impl CustomOperationBody for SetIntersectionMPC {
                 res.push(share);
             }
             g.create_tuple(res)?
+        } else {
+            let mut columns_vec = vec![(key_header.clone(), merged_columns_y)];
+            for (header, _) in &column_header_types_y {
+                let column = data_y.named_tuple_get((*header).clone())?;
+                columns_vec.push(((*header).clone(), column));
+            }
+            let first_share = g.create_named_tuple(columns_vec)?;
+            let zero_share = zeros_like(first_share.clone())?;
+            g.create_tuple(vec![first_share, zero_share.clone(), zero_share])?
         };
 
         // 9. Pad columns of Y with random data such that the number of entries is equal to the cuckoo table size
@@ -782,7 +865,7 @@ impl CustomOperationBody for SetIntersectionMPC {
         // The resulting null column has 1 entry if there is at least one Y_h, whose corresponding entry is equal to X in key columns.
 
         // Attach the null column to the merged key columns of X.
-        let null_merged_columns_x_shares = {
+        let null_merged_columns_x_shares = if is_x_private {
             let mut res = vec![];
             for share_id in 0..PARTIES as u64 {
                 let share = g.create_named_tuple(vec![
@@ -792,6 +875,11 @@ impl CustomOperationBody for SetIntersectionMPC {
                 res.push(share);
             }
             g.create_tuple(res)?
+        } else {
+            g.create_named_tuple(vec![
+                (NULL_HEADER.to_owned(), null_x),
+                (key_header.clone(), merged_columns_x),
+            ])?
         };
 
         let mut res_null_column = g.call(
@@ -866,12 +954,7 @@ impl CustomOperationBody for SetIntersectionMPC {
             if header == NULL_HEADER || header == &key_header {
                 continue;
             }
-            let mut column_shares = vec![];
-            for share in &data_x_shares {
-                let column_share = share.named_tuple_get(header.clone())?;
-                column_shares.push(column_share);
-            }
-            let mut column = g.create_tuple(column_shares)?;
+            let mut column = get_column(&data_x_shares, header.clone())?;
 
             let column_shape = t.get_shape();
             // Reshape the mask to multiply row-wise
@@ -1695,6 +1778,8 @@ impl CustomOperationBody for SwitchingMPC {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use ndarray::array;
 
     use super::*;
@@ -1705,11 +1790,12 @@ mod tests {
     use crate::evaluators::{evaluate_simple_evaluator, random_evaluate};
     use crate::graphs::create_context;
     use crate::inline::inline_ops::{inline_operations, InlineConfig, InlineMode};
-    use crate::mpc::mpc_compiler::{generate_prf_key_triple, recursively_sum_shares, IOStatus};
+    use crate::mpc::mpc_compiler::{generate_prf_key_triple, prepare_for_mpc_evaluation, IOStatus};
     use crate::mpc::mpc_equivalence_class::{
         generate_equivalence_class, private_class, share0_class, share1_class, share2_class,
         vector_class, EquivalenceClasses,
     };
+    use crate::random::SEED_SIZE;
 
     fn simple_hash_helper(
         input_shape: ArrayShape,
@@ -2589,8 +2675,101 @@ mod tests {
         .unwrap();
     }
 
+    fn psi_helper(
+        types_x: Vec<(String, Type)>,
+        types_y: Vec<(String, Type)>,
+        headers: Vec<(String, String)>,
+        values_x: Vec<Vec<u64>>,
+        values_y: Vec<Vec<u64>>,
+        expected: Vec<(String, Vec<u64>)>,
+        is_x_private: bool,
+        is_y_private: bool,
+    ) -> Result<()> {
+        // test correct inputs
+        let c = create_context()?;
+
+        let g = c.create_graph()?;
+
+        let compose_set_shares = |types: &[(String, Type)]| -> Result<Node> {
+            let mut columns = vec![];
+            for (header, t) in types {
+                let input_column = g.input((*t).clone())?;
+
+                columns.push(((*header).clone(), input_column));
+            }
+            g.create_named_tuple(columns)
+        };
+
+        let data_x = compose_set_shares(&types_x)?;
+        let data_y = compose_set_shares(&types_y)?;
+
+        let mut headers_map = HashMap::new();
+        for (h0, h1) in headers {
+            headers_map.insert(h0, h1);
+        }
+        let psi = data_x.set_intersection(data_y, headers_map)?;
+
+        psi.set_as_output()?;
+        g.finalize()?;
+        g.set_as_main()?;
+        c.finalize()?;
+
+        let mut input_parties = vec![];
+        if is_x_private {
+            input_parties.extend(vec![IOStatus::Party(0); types_x.len()]);
+        } else {
+            input_parties.extend(vec![IOStatus::Public; types_x.len()]);
+        }
+        if is_y_private {
+            input_parties.extend(vec![IOStatus::Party(0); types_y.len()]);
+        } else {
+            input_parties.extend(vec![IOStatus::Public; types_y.len()]);
+        }
+
+        let inlined_c = prepare_for_mpc_evaluation(
+            c,
+            vec![input_parties],
+            vec![vec![IOStatus::Party(0)]],
+            InlineConfig {
+                default_mode: InlineMode::DepthOptimized(DepthOptimizationLevel::Default),
+                ..Default::default()
+            },
+        )?;
+
+        // Generate input columns
+        let mut input_values = vec![];
+        for (i, column_value) in values_x.iter().enumerate() {
+            input_values.push(Value::from_flattened_array(
+                column_value,
+                types_x[i].1.get_scalar_type(),
+            )?);
+        }
+        for (i, column_value) in values_y.iter().enumerate() {
+            input_values.push(Value::from_flattened_array(
+                column_value,
+                types_y[i].1.get_scalar_type(),
+            )?);
+        }
+
+        let inlined_g = inlined_c.get_main_graph()?;
+        let prng_seed: [u8; SEED_SIZE] = core::array::from_fn(|i| i as u8);
+        let result = evaluate_simple_evaluator(inlined_g.clone(), input_values, Some(prng_seed))?;
+
+        let result_type_vec = get_named_types(inlined_g.get_output_node()?.get_type()?);
+
+        let result_columns = result.to_vector()?;
+        for i in 0..result_type_vec.len() {
+            let result_array =
+                result_columns[i].to_flattened_array_u64(result_type_vec[i].1.clone())?;
+            assert_eq!(result_type_vec[i].0, expected[i].0);
+            assert_eq!(result_array, expected[i].1);
+        }
+
+        Ok(())
+    }
+
     #[test]
-    fn test_psi() {
+    fn test_private_psi() {
         let data_helper = |types_x: Vec<(String, Type)>,
                            types_y: Vec<(String, Type)>,
                            headers: Vec<(String, String)>,
@@ -2598,142 +2777,10 @@ mod tests {
                            values_y: Vec<Vec<u64>>,
                            expected: Vec<(String, Vec<u64>)>|
          -> Result<()> {
-            // test correct inputs
-            let c = create_context()?;
-
-            let g = c.create_graph()?;
-
-            // Generate PRF keys
-            let keys_vec = generate_prf_key_triple(g.clone())?;
-            let keys = g.create_tuple(keys_vec.clone())?;
-
-            let compose_set_shares = |types: &[(String, Type)]| -> Result<Node> {
-                let mut column_shares = vec![vec![]; PARTIES];
-                // Add other columns
-                for (header, t) in types {
-                    let input_column = g.input((*t).clone())?;
-
-                    // Party 0 and party 1 generate share 1
-                    let column_share1 = g.prf(keys_vec[1].clone(), 0, (*t).clone())?;
-                    // Party 1 and party 2 generate share 2
-                    let column_share2 = g.prf(keys_vec[2].clone(), 0, (*t).clone())?;
-                    // Party 0 computes share 0
-                    let column_share0 = input_column
-                        .subtract(column_share1.clone())?
-                        .subtract(column_share2.clone())?;
-
-                    column_shares[0].push((header.clone(), column_share0));
-                    column_shares[1].push((header.clone(), column_share1));
-                    column_shares[2].push((header.clone(), column_share2));
-                }
-
-                let mut shares_vec = vec![];
-                for share_id in 0..PARTIES {
-                    let mut share = g.create_named_tuple(column_shares[share_id].clone())?;
-                    // Party 0 packs first column shares in a named tuple and sends it to party 2
-                    share = if share_id == 0 {
-                        share.nop()?.add_annotation(NodeAnnotation::Send(0, 2))?
-                    } else {
-                        share
-                    };
-                    shares_vec.push(share);
-                }
-
-                // Pack shares together
-                g.create_tuple(shares_vec)
-            };
-
-            let shares_x = compose_set_shares(&types_x)?;
-            let shares_y = compose_set_shares(&types_y)?;
-
-            // PSI shares
-            let psi_shares = g
-                .custom_op(
-                    CustomOperation::new(SetIntersectionMPC { headers }),
-                    vec![shares_x, shares_y, keys],
-                )?
-                .set_name("PSI output")?;
-
-            // Sum PSI shares
-            let mut psi_shares_vec = vec![];
-            for share_id in 0..PARTIES as u64 {
-                psi_shares_vec.push(psi_shares.tuple_get(share_id)?);
-            }
-
-            let revealed_psi = recursively_sum_shares(g.clone(), psi_shares_vec)?;
-
-            revealed_psi.set_as_output()?;
-
-            g.finalize()?;
-            g.set_as_main()?;
-            c.finalize()?;
-
-            let instantiated_c = run_instantiation_pass(c)?.context;
-            let inlined_c = inline_operations(
-                instantiated_c,
-                InlineConfig {
-                    default_mode: InlineMode::Simple,
-                    ..Default::default()
-                },
-            )?;
-
-            // Generate input columns
-            let mut input_values = vec![];
-            for (i, column_value) in values_x.iter().enumerate() {
-                input_values.push(Value::from_flattened_array(
-                    column_value,
-                    types_x[i].1.get_scalar_type(),
-                )?);
-            }
-            for (i, column_value) in values_y.iter().enumerate() {
-                input_values.push(Value::from_flattened_array(
-                    column_value,
-                    types_y[i].1.get_scalar_type(),
-                )?);
-            }
-
-            let inlined_g = inlined_c.get_main_graph()?;
-            let result = evaluate_simple_evaluator(
-                inlined_g.clone(),
-                input_values,
-                Some([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]),
-            )?;
-
-            let result_type_vec = get_named_types(inlined_g.get_output_node()?.get_type()?);
-
-            let result_columns = result.to_vector()?;
-            for i in 0..result_type_vec.len() {
-                let result_array =
-                    result_columns[i].to_flattened_array_u64(result_type_vec[i].1.clone())?;
-                assert_eq!(result_type_vec[i].0, expected[i].0);
-                assert_eq!(result_array, expected[i].1);
-            }
-
-            // Check ownership of PSI output
-
-            // data shared by parties 0 and 1
-            let share_2_01 = EquivalenceClasses::Atomic(vec![vec![2], vec![0, 1]]);
-            // data shared by parties 1 and 2
-            let share_0_12 = EquivalenceClasses::Atomic(vec![vec![0], vec![1, 2]]);
-            // data shared by parties 2 and 0
-            let share_1_20 = EquivalenceClasses::Atomic(vec![vec![1], vec![2, 0]]);
-
-            let shared_output = vector_class(vec![
-                vector_class(vec![share_1_20; result_type_vec.len()]),
-                vector_class(vec![share_2_01; result_type_vec.len()]),
-                vector_class(vec![share_0_12; result_type_vec.len()]),
-            ]);
-
-            let result_hashmap = generate_equivalence_class(
-                inlined_c.clone(),
-                vec![vec![IOStatus::Party(0); types_x.len() + types_y.len()]],
-            )?;
-            let psi_output_id = inlined_g.retrieve_node("PSI output")?.get_global_id();
-            assert_eq!(result_hashmap.get(&psi_output_id).unwrap(), &shared_output);
-
-            Ok(())
+            psi_helper(
+                types_x, types_y, headers, values_x, values_y, expected, true, true,
+            )
         };
-
         data_helper(
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
@@ -3004,7 +3051,6 @@ mod tests {
             ],
         )
         .unwrap();
-
         data_helper(
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
@@ -3022,6 +3068,125 @@ mod tests {
                 ("a".to_owned(), vec![10]),
             ],
         )
+        .unwrap();
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("a".to_owned(), array_type(vec![1], INT64)),
+                ("b".to_owned(), array_type(vec![1], INT64)),
+                ("c".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("b".to_owned(), array_type(vec![1], INT64)),
+                ("a".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![
+                ("a".to_owned(), "a".to_owned()),
+                ("b".to_owned(), "b".to_owned()),
+            ],
+            vec![vec![1], vec![2], vec![3], vec![4]],
+            vec![vec![1], vec![3], vec![2]],
+            vec![
+                (NULL_HEADER.to_owned(), vec![1]),
+                ("a".to_owned(), vec![2]),
+                ("b".to_owned(), vec![3]),
+                ("c".to_owned(), vec![4]),
+            ],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_semi_private_psi() {
+        || -> Result<()> {
+            let types_x = vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5, 4], BIT)),
+                ("c".to_owned(), array_type(vec![5], INT16)),
+            ];
+            let types_y = vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("d".to_owned(), array_type(vec![6, 4], BIT)),
+                ("e".to_owned(), array_type(vec![6], INT16)),
+                ("f".to_owned(), array_type(vec![6, 2], BIT)),
+            ];
+            let headers = vec![
+                ("b".to_owned(), "d".to_owned()),
+                ("c".to_owned(), "e".to_owned()),
+            ];
+            let values_x = vec![
+                vec![1, 1, 1, 1, 1],
+                vec![1, 2, 3, 4, 5],
+                array!([
+                    [0, 0, 0, 1],
+                    [0, 0, 1, 0],
+                    [0, 0, 1, 1],
+                    [0, 1, 0, 0],
+                    [0, 1, 0, 1]
+                ])
+                .into_raw_vec(),
+                vec![100, 200, 300, 400, 500],
+            ];
+            let values_y = vec![
+                vec![1, 1, 1, 1, 1, 1],
+                array!([
+                    [0, 0, 1, 1],
+                    [0, 0, 0, 0],
+                    [0, 1, 0, 0],
+                    [0, 1, 1, 0],
+                    [0, 1, 1, 1],
+                    [1, 0, 0, 0]
+                ])
+                .into_raw_vec(),
+                vec![300, 210, 400, 410, 510, 610],
+                vec![0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0],
+            ];
+            let expected = vec![
+                (NULL_HEADER.to_owned(), vec![0, 0, 1, 1, 0]),
+                ("a".to_owned(), vec![0, 0, 3, 4, 0]),
+                (
+                    "b".to_owned(),
+                    array!([
+                        [0, 0, 0, 0],
+                        [0, 0, 0, 0],
+                        [0, 0, 1, 1],
+                        [0, 1, 0, 0],
+                        [0, 0, 0, 0]
+                    ])
+                    .into_raw_vec(),
+                ),
+                ("c".to_owned(), vec![0, 0, 300, 400, 0]),
+                ("f".to_owned(), vec![0, 0, 0, 0, 0, 0, 1, 1, 0, 0]),
+            ];
+            psi_helper(
+                types_x.clone(),
+                types_y.clone(),
+                headers.clone(),
+                values_x.clone(),
+                values_y.clone(),
+                expected.clone(),
+                true,
+                false,
+            )?;
+            psi_helper(
+                types_x.clone(),
+                types_y.clone(),
+                headers.clone(),
+                values_x.clone(),
+                values_y.clone(),
+                expected.clone(),
+                false,
+                true,
+            )?;
+            psi_helper(
+                types_x, types_y, headers, values_x, values_y, expected, false, false,
+            )?;
+
+            Ok(())
+        }()
         .unwrap();
     }
 }
