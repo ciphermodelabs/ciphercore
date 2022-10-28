@@ -104,6 +104,7 @@ pub enum Operation {
     CuckooToPermutation,
     DecomposeSwitchingMap(u64),
     SegmentCumSum,
+    SetIntersection(HashMap<String, String>),
     Custom(CustomOperation),
 }
 
@@ -450,6 +451,50 @@ impl Node {
     /// ```
     pub fn matmul(&self, b: Node) -> Result<Node> {
         self.get_graph().matmul(self.clone(), b)
+    }
+
+    /// Adds a node that computes the intersection of two named tuples along given key headers.
+    ///
+    /// Applies [Graph::set_intersection] to the parent graph, `this` node and the `b` node.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{INT32, INT64, UINT8, BIT, array_type, named_tuple_type};
+    /// # use ciphercore_base::type_inference::NULL_HEADER;
+    /// # use std::collections::HashMap;
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t1n = array_type(vec![100], BIT);
+    /// let t11 = array_type(vec![100], INT32);
+    /// let t12 = array_type(vec![100, 128], BIT);
+    /// let t13 = array_type(vec![100],  INT64);
+    /// let t2n = array_type(vec![50], BIT);
+    /// let t21 = array_type(vec![50], INT32);
+    /// let t22 = array_type(vec![50, 128], BIT);
+    /// let t23 = array_type(vec![50], UINT8);
+    /// let t1 = named_tuple_type(vec![
+    ///     (NULL_HEADER.to_owned(), t1n),
+    ///     ("ID".to_owned(), t11),
+    ///     ("Occupation".to_owned(), t12),
+    ///     ("Revenue".to_owned(), t13),
+    /// ]);
+    /// let t2 = named_tuple_type(vec![
+    ///     (NULL_HEADER.to_owned(), t2n),
+    ///     ("ID".to_owned(), t21),
+    ///     ("Job".to_owned(), t22),
+    ///     ("Age".to_owned(), t23),
+    /// ]);
+    /// let n1 = g.input(t1).unwrap();
+    /// let n2 = g.input(t2).unwrap();
+    /// let n3 = n1.set_intersection(n2, HashMap::from([
+    ///     ("ID".to_owned(), "ID".to_owned()),
+    ///     ("Occupation".to_owned(), "Job".to_owned()),
+    /// ])).unwrap();
+    /// ```
+    pub fn set_intersection(&self, b: Node, headers: HashMap<String, String>) -> Result<Node> {
+        self.get_graph().set_intersection(self.clone(), b, headers)
     }
 
     /// Adds a node to the parent graph that divides a scalar or each entry of the array associated with the node by a positive constant integer `scale`.
@@ -1278,6 +1323,73 @@ impl Graph {
         self.add_node(vec![a, b], vec![], Operation::Matmul)
     }
 
+    /// Adds a node that computes the intersection of two named tuples along given key headers.
+    ///
+    /// Each tuple should consist of arrays having the same number of rows, i.e. the first dimensions of these arrays should be equal.
+    /// The rows consisiting of only columns with given key headers (key columns) should be unique.
+    ///  
+    /// In addition, each named tuple should have a binary array named with NULL_HEADER that contains zeros in rows void of content; otherwise, it contains ones.
+    /// This column is called the null column.
+    ///
+    /// This operation returns a named tuple that contains rows whose content is equal in the key columns named by given key headers.
+    /// The content of non-key columns is merged.
+    /// The order of these rows is the same as in the first named tuple.
+    /// The content of other rows is set to zero including the null column.
+    ///
+    /// # Arguments
+    ///
+    /// * `a` - node containing the first named tuple
+    /// * `b` - node containing the second named tuple
+    ///
+    /// # Returns
+    ///
+    /// New set intersection node
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{INT32, INT64, UINT8, BIT, array_type, named_tuple_type};
+    /// # use ciphercore_base::type_inference::NULL_HEADER;
+    /// # use std::collections::HashMap;
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t1n = array_type(vec![100], BIT);
+    /// let t11 = array_type(vec![100], INT32);
+    /// let t12 = array_type(vec![100, 128], BIT);
+    /// let t13 = array_type(vec![100],  INT64);
+    /// let t2n = array_type(vec![50], BIT);
+    /// let t21 = array_type(vec![50], INT32);
+    /// let t22 = array_type(vec![50, 128], BIT);
+    /// let t23 = array_type(vec![50], UINT8);
+    /// let t1 = named_tuple_type(vec![
+    ///     (NULL_HEADER.to_owned(), t1n),
+    ///     ("ID".to_owned(), t11),
+    ///     ("Occupation".to_owned(), t12),
+    ///     ("Revenue".to_owned(), t13),
+    /// ]);
+    /// let t2 = named_tuple_type(vec![
+    ///     (NULL_HEADER.to_owned(), t2n),
+    ///     ("ID".to_owned(), t21),
+    ///     ("Job".to_owned(), t22),
+    ///     ("Age".to_owned(), t23),
+    /// ]);
+    /// let n1 = g.input(t1).unwrap();
+    /// let n2 = g.input(t2).unwrap();
+    /// let n3 = g.set_intersection(n1, n2, HashMap::from([
+    ///     ("ID".to_owned(), "ID".to_owned()),
+    ///     ("Occupation".to_owned(), "Job".to_owned()),
+    /// ])).unwrap();
+    /// ```
+    pub fn set_intersection(
+        &self,
+        a: Node,
+        b: Node,
+        headers: HashMap<String, String>,
+    ) -> Result<Node> {
+        self.add_node(vec![a, b], vec![], Operation::SetIntersection(headers))
+    }
+
     /// Adds a node that divides a scalar or each entry of an array by a positive constant integer `scale`.
     ///
     /// # Arguments
@@ -1609,7 +1721,7 @@ impl Graph {
 
     /// Adds a node that converts a switching map array into a random tuple of the following components:
     /// - a permutation map array with deletion (some indices of this map are uniformly random, see below),
-    /// - a duplication map array,
+    /// - a tuple of duplication map array and duplication bits,
     /// - a permutation map array without deletion.
     ///
     /// The composition of these maps is equal to the input switching map, which is an array containing non-unique indices of some array.
@@ -1623,16 +1735,19 @@ impl Graph {
     ///
     /// [1, 4, 4, 5, 7, 2] -> [1, 4, 3, 5, 7, 2].
     ///
-    /// A duplication map is a one-dimensional array containing only zeros and ones.
+    ///
+    /// A duplication map is a tuple of two one-dimensional arrays of length `n`.
+    /// The first array contains indices from `[0,n]` in the increasing order with possible repetitions.
+    /// The second array contains only zeros and ones.
     /// If its i-th element is zero, it means that the duplication map doesn't change the i-th element of an array it acts upon.
     /// If map's i-th element is one, then the map copies the previous element of the result.
     /// This rules can be summarized by the following equation
     ///
-    /// output[i] = dup_map[i] * output[i-1] + (1 - dup_map[i]) * input[i].
+    /// duplication_indices[i] = duplication_bits[i] * duplication_indices[i-1] + (1 - duplication_bits[i]) * i.
     ///
     /// A duplication map is created from the above switching map with grouped indices, replacing the first index occurrence with 0 and other copies with 1, e.g.
     ///
-    ///  [1, 4, 4, 5, 7, 2] -> [0, 0, 1, 0, 0, 0].
+    ///  [1, 4, 4, 5, 7, 2] -> ([0, 1, 1, 3, 4, 5], [0, 0, 1, 0, 0, 0]).
     ///
     /// The last permutation is the inverse of the above permutation p, i.e.
     ///
@@ -2542,7 +2657,7 @@ impl Graph {
         Ok(self.clone())
     }
 
-    pub(super) fn get_annotations(&self) -> Result<Vec<GraphAnnotation>> {
+    pub fn get_annotations(&self) -> Result<Vec<GraphAnnotation>> {
         self.get_context().get_graph_annotations(self.clone())
     }
 

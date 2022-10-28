@@ -210,7 +210,12 @@ pub fn share_vector<T: TryInto<u64> + Not<Output = T> + TryInto<u8> + Copy>(
 ///
 /// Node containing an array with selected elements of `a0` or `a1`
 pub fn select_node(b: Node, a1: Node, a0: Node) -> Result<Node> {
-    a1.subtract(a0.clone())?.mixed_multiply(b)?.add(a0)
+    let dif = a1.subtract(a0.clone())?;
+    if dif.get_type()?.get_scalar_type() == BIT {
+        dif.multiply(b)?.add(a0)
+    } else {
+        dif.mixed_multiply(b)?.add(a0)
+    }
 }
 
 #[cfg(test)]
