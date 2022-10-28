@@ -215,7 +215,7 @@ pub(super) fn generate_equivalence_class(
                 let op = dependence_node.get_operation();
                 dependencies_class.push(
                     equivalence_classes
-                        .get(&dependence_node.get_global_id())
+                        .get(&node_id)
                         .unwrap_or_else(|| {
                             panic!(
                                 "{} node {:?} wasn't added to equivalence classes",

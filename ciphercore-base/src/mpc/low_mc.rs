@@ -7,6 +7,8 @@ use crate::ops::utils::{pull_out_bits, put_in_bits, zeros};
 
 use serde::{Deserialize, Serialize};
 
+pub(super) const LOW_MC_BLOCK_SIZE: u64 = 128;
+
 /// Implements LowMC block cipher encryption according to [the original LowMC publication (Section 3)](https://eprint.iacr.org/2016/687.pdf).
 ///
 /// At least two inputs should be provided:
@@ -53,9 +55,9 @@ pub struct LowMC {
 impl CustomOperationBody for LowMC {
     fn instantiate(&self, context: Context, argument_types: Vec<Type>) -> Result<Graph> {
         // Size of a single LowMC block (typically)
-        let block_size = 128;
+        let block_size = LOW_MC_BLOCK_SIZE;
         // Length of an encryption key
-        let key_size = 128;
+        let key_size = LOW_MC_BLOCK_SIZE;
 
         // Check that the number of triples affected by a single substitution round doesn't exceed the number of bits in the block
         if self.s_boxes_per_round > block_size / 3 {
