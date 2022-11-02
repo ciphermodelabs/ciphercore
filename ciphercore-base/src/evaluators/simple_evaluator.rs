@@ -3,7 +3,7 @@ use crate::bytes::{
     add_u64, add_vectors_u64, multiply_u64, multiply_vectors_u64, subtract_vectors_u64,
 };
 use crate::bytes::{vec_from_bytes, vec_to_bytes};
-use crate::data_types::{array_type, Type, BIT, UINT64};
+use crate::data_types::{array_type, get_size_in_bits, ArrayShape, Type, BIT, UINT64};
 use crate::data_values::Value;
 use crate::errors::Result;
 use crate::evaluators::Evaluator;
@@ -415,6 +415,145 @@ fn shuffle_array(array: &mut Vec<u64>, prng: &mut PRNG) -> Result<()> {
     Ok(())
 }
 
+fn evaluate_sum(node: Node, input_value: Value, axes: ArrayShape) -> Result<Value> {
+    let dependency = node.get_node_dependencies()[0].clone();
+    let inp_t = dependency.get_type()?;
+    let values = input_value.to_flattened_array_u64(inp_t.clone())?;
+    let res_t = node.get_type()?;
+    match res_t {
+        Type::Scalar(st) => {
+            let mut result = 0u64;
+            for v in values {
+                result = add_u64(result, v, st.get_modulus());
+            }
+            Value::from_scalar(result, st)
+        }
+        Type::Array(res_shape, st) => {
+            if axes.is_empty() {
+                Ok(input_value)
+            } else {
+                let inp_shape = inp_t.get_shape();
+                let res_len: u64 = res_shape.iter().product();
+                let mut result = vec![0; res_len as usize];
+                let mut res_axes = vec![];
+                for j in 0..inp_shape.len() {
+                    if !axes.contains(&(j as u64)) {
+                        res_axes.push(j);
+                    }
+                }
+
+                for (i, value) in values.iter().enumerate() {
+                    let inp_index = number_to_index(i as u64, &inp_shape);
+                    let mut new_index = vec![];
+                    for ax in &res_axes {
+                        new_index.push(inp_index[*ax]);
+                    }
+                    let new_i = index_to_number(&new_index, &res_shape) as usize;
+                    result[new_i] = add_u64(result[new_i], *value, st.get_modulus());
+                }
+                Value::from_flattened_array(&result, st)
+            }
+        }
+        _ => {
+            panic!("Inconsistency between process_node() and evaluate()");
+        }
+    }
+}
+
+fn sum_bits_along_last_dimension(input_t: Type, input_value: Value) -> Result<Value> {
+    let input_shape = input_t.get_shape();
+    let res_bytes = input_value.access_bytes(|bytes| {
+        let mut res_vec = vec![];
+        let mut bit_counter = 0;
+        let mut current_byte = 0;
+        let row_bitsize = input_shape[input_shape.len() - 1] as usize;
+
+        let num_rows = get_size_in_bits(input_t.clone())? as usize / row_bitsize;
+        let mut current_bit = 0;
+        for _row_i in 0..num_rows {
+            let mut num_bits_to_read = row_bitsize;
+            let row_end = current_bit + row_bitsize;
+            let mut sum_byte = 0;
+            while num_bits_to_read != 0 {
+                // Try to read by words first
+                if current_bit % 8 == 0 {
+                    // 64-bit words
+                    {
+                        let words_to_read = num_bits_to_read / 64;
+                        let start = current_bit / 8;
+                        let mut word = 0;
+                        for word_i in 0..words_to_read {
+                            let ptr = &bytes[start + word_i * 8] as *const u8 as *const u64;
+                            word ^= unsafe { *ptr };
+                        }
+                        num_bits_to_read -= 64 * words_to_read;
+                        current_bit += 64 * words_to_read;
+                        sum_byte ^= (word.count_ones() % 2) as u8;
+                    }
+                    // 32-bit words
+                    if current_bit + 32 <= row_end {
+                        let start = current_bit / 8;
+                        let ptr = &bytes[start] as *const u8 as *const u32;
+                        sum_byte ^= unsafe { ((*ptr).count_ones() % 2) as u8 };
+                        num_bits_to_read -= 32;
+                        current_bit += 32;
+                    }
+                    // 16-bit words
+                    if current_bit + 16 <= row_end {
+                        let start = current_bit / 8;
+                        let ptr = &bytes[start] as *const u8 as *const u16;
+                        sum_byte ^= unsafe { ((*ptr).count_ones() % 2) as u8 };
+                        num_bits_to_read -= 16;
+                        current_bit += 16;
+                    }
+                    // bytes
+                    if current_bit + 8 <= row_end {
+                        sum_byte ^= bytes[current_bit / 8];
+                        num_bits_to_read -= 8;
+                        current_bit += 8;
+                    }
+                    // Read a part of a byte
+                    if num_bits_to_read != 0 {
+                        sum_byte ^= bytes[current_bit / 8] & ((1 << num_bits_to_read) - 1);
+                        current_bit += num_bits_to_read;
+                        num_bits_to_read = 0;
+                    }
+                } else {
+                    // If the current bit is somewhere in the middle of a byte,
+                    // try to finish reading this byte
+                    let num_bits_read_in_byte = current_bit % 8;
+                    let num_bits_to_read_in_byte = 8 - num_bits_read_in_byte;
+                    if num_bits_to_read >= num_bits_to_read_in_byte {
+                        // Read all the remaining bits of the byte
+                        sum_byte ^= (bytes[current_bit / 8] >> num_bits_read_in_byte)
+                            & ((1 << num_bits_to_read_in_byte) - 1);
+                        current_bit += num_bits_to_read_in_byte;
+                        num_bits_to_read -= num_bits_to_read_in_byte;
+                    } else {
+                        // Read only bits of the current row
+                        sum_byte ^= (bytes[current_bit / 8] >> num_bits_read_in_byte)
+                            & ((1 << num_bits_to_read) - 1);
+                        current_bit += num_bits_to_read;
+                        num_bits_to_read = 0;
+                    }
+                }
+            }
+            let row_sum = (sum_byte.count_ones() % 2) as u8;
+            current_byte += row_sum << bit_counter;
+            if bit_counter == 7 {
+                res_vec.push(current_byte);
+                current_byte = 0;
+            }
+            bit_counter = (bit_counter + 1) % 8;
+        }
+        if bit_counter > 0 {
+            res_vec.push(current_byte);
+        }
+        Ok(res_vec)
+    })?;
+    Ok(Value::from_bytes(res_bytes))
+}
+
 fn get_named_types(t: Type) -> Vec<(String, Arc<Type>)> {
     if let Type::NamedTuple(v) = t {
         v
@@ -802,45 +941,14 @@ impl Evaluator for SimpleEvaluator {
             }
             Operation::Sum(axes) => {
                 let dependency = node.get_node_dependencies()[0].clone();
-                let inp_t = dependency.get_type()?;
-                let values = dependencies_values[0].to_flattened_array_u64(inp_t.clone())?;
-                let res_t = node.get_type()?;
-                match res_t {
-                    Type::Scalar(st) => {
-                        let mut result = 0u64;
-                        for v in values {
-                            result = add_u64(result, v, st.get_modulus());
-                        }
-                        Value::from_scalar(result, st)
-                    }
-                    Type::Array(res_shape, st) => {
-                        if axes.is_empty() {
-                            Ok(dependencies_values[0].clone())
-                        } else {
-                            let inp_shape = inp_t.get_shape();
-                            let res_len: u64 = res_shape.iter().product();
-                            let mut result = vec![0u64; res_len as usize];
-                            let mut res_axes = vec![];
-                            for j in 0..inp_shape.len() {
-                                if !axes.contains(&(j as u64)) {
-                                    res_axes.push(j);
-                                }
-                            }
-                            for (i, value) in values.iter().enumerate() {
-                                let inp_index = number_to_index(i as u64, &inp_shape);
-                                let mut new_index = vec![];
-                                for ax in &res_axes {
-                                    new_index.push(inp_index[*ax]);
-                                }
-                                let new_i = index_to_number(&new_index, &res_shape) as usize;
-                                result[new_i] = add_u64(result[new_i], *value, st.get_modulus());
-                            }
-                            Value::from_flattened_array(&result, st)
-                        }
-                    }
-                    _ => {
-                        panic!("Inconsistency between process_node() and evaluate()");
-                    }
+                let input_t = dependency.get_type()?;
+                let input_shape = input_t.get_shape();
+
+                // Special case for PSI
+                if axes == vec![input_shape.len() as u64 - 1] && input_t.get_scalar_type() == BIT {
+                    sum_bits_along_last_dimension(input_t, dependencies_values[0].clone())
+                } else {
+                    evaluate_sum(node, dependencies_values[0].clone(), axes)
                 }
             }
             Operation::Reshape(new_type) => {

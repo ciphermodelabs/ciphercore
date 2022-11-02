@@ -40,7 +40,9 @@ pub(super) const LOW_MC_BLOCK_SIZE: u64 = 128;
 /// | 20               |13      |
 /// | 21               |13      |
 /// | 22               |12      |
-/// | 30               |11      |
+/// | 25               |11      |
+/// ...
+/// | 42               |11      |
 /// See [the Picnic specification (Section 4)](https://github.com/microsoft/Picnic/blob/master/spec/spec-v3.0.pdf) for more details.
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub struct LowMC {
