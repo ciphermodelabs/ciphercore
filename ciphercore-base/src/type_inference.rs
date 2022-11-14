@@ -2,7 +2,7 @@ use crate::broadcast::{broadcast_arrays, broadcast_shapes};
 use crate::custom_ops::Instantiation;
 use crate::data_types::{
     array_type, is_valid_shape, named_tuple_type, scalar_size_in_bits, scalar_type, tuple_type,
-    vector_type, ScalarType, Type, BIT, UINT32, UINT64,
+    vector_type, ArrayShape, ScalarType, Type, BIT, UINT32, UINT64,
 };
 use crate::errors::Result;
 use crate::graphs::{create_context, Context, Node, Operation, WeakContext};
@@ -162,6 +162,52 @@ fn matmul_type_inference(t0: Type, t1: Type) -> Result<Type> {
     } else {
         Ok(array_type(result_dims, st))
     }
+}
+
+pub(crate) fn transpose_shape(shape: ArrayShape, transpose_flag: bool) -> ArrayShape {
+    let num_dims = shape.len();
+    if transpose_flag && num_dims > 1 {
+        let mut res = shape;
+        res.swap(num_dims - 2, num_dims - 1);
+        res
+    } else {
+        shape
+    }
+}
+
+fn gemm_type_inference(t0: Type, t1: Type, transpose0: bool, transpose1: bool) -> Result<Type> {
+    if !t0.is_array() {
+        return Err(runtime_error!("The first argument of gemm is not an array"));
+    }
+    if !t1.is_array() {
+        return Err(runtime_error!(
+            "The second argument of gemm is not an array"
+        ));
+    }
+    if t0.get_scalar_type() != t1.get_scalar_type() {
+        return Err(runtime_error!("Incompatible scalar types"));
+    }
+    let input_shape0 = t0.get_shape();
+    let input_shape1 = t1.get_shape();
+    if input_shape0.len() == 1 || input_shape1.len() == 1 {
+        return Err(runtime_error!(
+            "To multiply vectors, use matmul or dot operations instead of gemm"
+        ));
+    }
+
+    let st = t0.get_scalar_type();
+    let s0 = transpose_shape(input_shape0, transpose0);
+    let s1 = transpose_shape(input_shape1, transpose1);
+
+    if s0[s0.len() - 1] != s1[s1.len() - 2] {
+        return Err(runtime_error!("Gemm with incompatible dimensions"));
+    }
+    let mut result_dims =
+        broadcast_shapes(s0[0..s0.len() - 2].to_vec(), s1[0..s1.len() - 2].to_vec())?;
+    result_dims.push(s0[s0.len() - 2]);
+    result_dims.push(s1[s1.len() - 1]);
+
+    Ok(array_type(result_dims, st))
 }
 
 pub(super) fn a2b_type_inference(original_type: Type) -> Result<Type> {
@@ -372,7 +418,8 @@ fn get_number_of_node_dependencies(operation: Operation) -> Option<u64> {
         | Operation::Gather(_)
         | Operation::Iterate
         | Operation::CuckooHash
-        | Operation::SetIntersection(_) => Some(2),
+        | Operation::SetIntersection(_)
+        | Operation::Gemm(_, _) => Some(2),
         Operation::SegmentCumSum => Some(3),
         Operation::Stack(_)
         | Operation::CreateTuple
@@ -582,6 +629,16 @@ impl TypeInferenceWorker {
                 let result = matmul_type_inference(
                     node_dependencies_types[0].clone(),
                     node_dependencies_types[1].clone(),
+                )?;
+                self.register_result(node, result.clone())?;
+                Ok(result)
+            }
+            Operation::Gemm(transpose0, transpose1) => {
+                let result = gemm_type_inference(
+                    node_dependencies_types[0].clone(),
+                    node_dependencies_types[1].clone(),
+                    transpose0,
+                    transpose1,
                 )?;
                 self.register_result(node, result.clone())?;
                 Ok(result)
@@ -3324,6 +3381,260 @@ mod tests {
                 ]),
                 HashMap::from([(NULL_HEADER.to_owned(), NULL_HEADER.to_owned())]),
             )?;
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    fn test_gemm_worker(
+        t0: Type,
+        t1: Type,
+        transpose0: bool,
+        transpose1: bool,
+        t2: Type,
+    ) -> Result<()> {
+        let context = create_unchecked_context()?;
+        let mut worker = create_type_inference_worker(context.clone());
+        let graph = context.create_graph()?;
+        let i0 = graph.input(t0)?;
+        let i1 = graph.input(t1)?;
+        let out = graph.gemm(i0, i1, transpose0, transpose1)?;
+        let t2_result = worker.process_node(out)?;
+        assert_eq!(t2_result, t2);
+        Ok(())
+    }
+
+    fn test_gemm_worker_fail(t0: Type, t1: Type, transpose0: bool, transpose1: bool) -> Result<()> {
+        let context = create_unchecked_context().unwrap();
+        let mut worker = create_type_inference_worker(context.clone());
+        let graph = context.create_graph().unwrap();
+        let i0 = graph.input(t0).unwrap();
+        let i1 = graph.input(t1).unwrap();
+        let out = graph.gemm(i0, i1, transpose0, transpose1).unwrap();
+        let e = worker.process_node(out);
+        assert!(e.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_gemm() {
+        || -> Result<()> {
+            test_gemm_worker(
+                array_type(vec![10, 20], INT32),
+                array_type(vec![20, 30], INT32),
+                false,
+                false,
+                array_type(vec![10, 30], INT32),
+            )?;
+            test_gemm_worker(
+                array_type(vec![20, 10], INT32),
+                array_type(vec![20, 30], INT32),
+                true,
+                false,
+                array_type(vec![10, 30], INT32),
+            )?;
+            test_gemm_worker(
+                array_type(vec![20, 10], INT32),
+                array_type(vec![30, 20], INT32),
+                true,
+                true,
+                array_type(vec![10, 30], INT32),
+            )?;
+            test_gemm_worker(
+                array_type(vec![10, 20], INT32),
+                array_type(vec![30, 20], INT32),
+                false,
+                true,
+                array_type(vec![10, 30], INT32),
+            )?;
+            test_gemm_worker(
+                array_type(vec![10, 20, 50], INT32),
+                array_type(vec![10, 50, 70], INT32),
+                false,
+                false,
+                array_type(vec![10, 20, 70], INT32),
+            )?;
+            test_gemm_worker(
+                array_type(vec![10, 50, 20], INT32),
+                array_type(vec![10, 50, 70], INT32),
+                true,
+                false,
+                array_type(vec![10, 20, 70], INT32),
+            )?;
+            test_gemm_worker(
+                array_type(vec![10, 20, 50], INT32),
+                array_type(vec![10, 70, 50], INT32),
+                false,
+                true,
+                array_type(vec![10, 20, 70], INT32),
+            )?;
+            test_gemm_worker(
+                array_type(vec![10, 50, 20], INT32),
+                array_type(vec![10, 70, 50], INT32),
+                true,
+                true,
+                array_type(vec![10, 20, 70], INT32),
+            )?;
+            test_gemm_worker(
+                array_type(vec![10, 20, 30], INT32),
+                array_type(vec![30, 70], INT32),
+                false,
+                false,
+                array_type(vec![10, 20, 70], INT32),
+            )?;
+            test_gemm_worker(
+                array_type(vec![10, 30, 20], INT32),
+                array_type(vec![30, 70], INT32),
+                true,
+                false,
+                array_type(vec![10, 20, 70], INT32),
+            )?;
+            test_gemm_worker(
+                array_type(vec![10, 20, 30], INT32),
+                array_type(vec![70, 30], INT32),
+                false,
+                true,
+                array_type(vec![10, 20, 70], INT32),
+            )?;
+            test_gemm_worker(
+                array_type(vec![10, 30, 20], INT32),
+                array_type(vec![70, 30], INT32),
+                true,
+                true,
+                array_type(vec![10, 20, 70], INT32),
+            )?;
+            test_gemm_worker(
+                array_type(vec![20, 30], INT32),
+                array_type(vec![10, 30, 70], INT32),
+                false,
+                false,
+                array_type(vec![10, 20, 70], INT32),
+            )?;
+            test_gemm_worker(
+                array_type(vec![30, 20], INT32),
+                array_type(vec![10, 30, 70], INT32),
+                true,
+                false,
+                array_type(vec![10, 20, 70], INT32),
+            )?;
+            test_gemm_worker(
+                array_type(vec![20, 30], INT32),
+                array_type(vec![10, 70, 30], INT32),
+                false,
+                true,
+                array_type(vec![10, 20, 70], INT32),
+            )?;
+            test_gemm_worker(
+                array_type(vec![30, 20], INT32),
+                array_type(vec![10, 70, 30], INT32),
+                true,
+                true,
+                array_type(vec![10, 20, 70], INT32),
+            )?;
+            test_gemm_worker(
+                array_type(vec![1, 3, 4, 20, 30], INT32),
+                array_type(vec![5, 3, 1, 30, 70], INT32),
+                false,
+                false,
+                array_type(vec![5, 3, 4, 20, 70], INT32),
+            )?;
+            test_gemm_worker(
+                array_type(vec![1, 3, 4, 30, 20], INT32),
+                array_type(vec![5, 3, 1, 30, 70], INT32),
+                true,
+                false,
+                array_type(vec![5, 3, 4, 20, 70], INT32),
+            )?;
+            test_gemm_worker(
+                array_type(vec![1, 3, 4, 20, 30], INT32),
+                array_type(vec![5, 3, 1, 70, 30], INT32),
+                false,
+                true,
+                array_type(vec![5, 3, 4, 20, 70], INT32),
+            )?;
+            test_gemm_worker(
+                array_type(vec![1, 3, 4, 30, 20], INT32),
+                array_type(vec![5, 3, 1, 70, 30], INT32),
+                true,
+                true,
+                array_type(vec![5, 3, 4, 20, 70], INT32),
+            )?;
+
+            test_gemm_worker_fail(
+                array_type(vec![10], INT32),
+                array_type(vec![10], INT32),
+                true,
+                true,
+            )?;
+            test_gemm_worker_fail(
+                array_type(vec![10, 20, 50], INT32),
+                array_type(vec![50], INT32),
+                false,
+                false,
+            )?;
+            test_gemm_worker_fail(scalar_type(INT32), scalar_type(BIT), false, false)?;
+            test_gemm_worker_fail(
+                array_type(vec![50], INT32),
+                array_type(vec![100], INT32),
+                false,
+                false,
+            )?;
+            test_gemm_worker_fail(
+                array_type(vec![10, 50], INT32),
+                array_type(vec![100, 3], INT32),
+                false,
+                false,
+            )?;
+            test_gemm_worker_fail(
+                array_type(vec![10, 50], INT32),
+                array_type(vec![100], INT32),
+                false,
+                false,
+            )?;
+            test_gemm_worker_fail(
+                array_type(vec![10, 20], INT32),
+                scalar_type(INT32),
+                false,
+                false,
+            )?;
+            test_gemm_worker_fail(
+                scalar_type(INT32),
+                array_type(vec![10, 20], INT32),
+                false,
+                false,
+            )?;
+            test_gemm_worker_fail(scalar_type(INT32), scalar_type(INT32), false, false)?;
+            test_gemm_worker_fail(
+                array_type(vec![10, 50, 100], INT32),
+                array_type(vec![100, 30, 50], INT32),
+                false,
+                false,
+            )?;
+            test_gemm_worker_fail(
+                array_type(vec![10, 20, 50], INT32),
+                array_type(vec![30, 50, 70], INT32),
+                false,
+                false,
+            )?;
+            test_gemm_worker_fail(
+                array_type(vec![10, 20, 50], INT32),
+                array_type(vec![10, 50, 70], INT32),
+                true,
+                false,
+            )?;
+            test_gemm_worker_fail(
+                array_type(vec![10, 20, 50], INT32),
+                array_type(vec![10, 50, 70], INT32),
+                true,
+                true,
+            )?;
+            test_gemm_worker_fail(
+                array_type(vec![10, 20, 50], INT32),
+                array_type(vec![10, 50, 70], INT32),
+                false,
+                true,
+            )?;
+
             Ok(())
         }()
         .unwrap();

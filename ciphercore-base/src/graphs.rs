@@ -105,6 +105,7 @@ pub enum Operation {
     DecomposeSwitchingMap(u64),
     SegmentCumSum,
     SetIntersection(HashMap<String, String>),
+    Gemm(bool, bool),
     Custom(CustomOperation),
 }
 
@@ -461,6 +462,29 @@ impl Node {
     /// ```
     pub fn matmul(&self, b: Node) -> Result<Node> {
         self.get_graph().matmul(self.clone(), b)
+    }
+
+    /// Adds a node to the parent graph that computes the generatl matrix product of two arrays associated with the node and another node.
+    ///
+    /// Applies [Graph::gemm] to the parent graph, `this` node and the `b` node.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{INT32, array_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t1 = array_type(vec![2, 3], INT32);
+    /// let t2 = array_type(vec![2, 3], INT32);
+    /// let n1 = g.input(t1).unwrap();
+    /// let n2 = g.input(t2).unwrap();
+    /// let n3 = n1.gemm(n2, false, true).unwrap();
+    /// ```
+    #[doc(hidden)]
+    pub fn gemm(&self, b: Node, transpose_a: bool, transpose_b: bool) -> Result<Node> {
+        self.get_graph()
+            .gemm(self.clone(), b, transpose_a, transpose_b)
     }
 
     /// Adds a node that computes the intersection of two named tuples along given key headers.
@@ -1331,6 +1355,45 @@ impl Graph {
     /// ```
     pub fn matmul(&self, a: Node, b: Node) -> Result<Node> {
         self.add_node(vec![a, b], vec![], Operation::Matmul)
+    }
+
+    /// Adds a node that computes the general matrix product of two arrays according to [the ONNX rules](https://github.com/onnx/onnx/blob/main/docs/Operators.md#Gemm) with `alpha = 1`, `beta = 0` and `C = 0`.
+    ///
+    /// Each array is represented as an array of 2-dimensional matrix elements and this node returns the elementwise product of such matrix arrays.
+    /// Each matrix should have at least 2 dimensions.
+    /// To multiply by 1-dimensional matrices (i.e., vectors), please resort to `matmul` or `dot`.
+    ///
+    /// # Arguments
+    ///
+    /// * `a` - node containing the first array
+    /// * `b` - node containing the second array
+    /// * `transpose_a` - if true, the first array will be transposed
+    /// * `transpose_b` - if true, the second array will be transposed
+    ///
+    /// # Returns
+    ///
+    /// New Gemm node
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{INT32, array_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t1 = array_type(vec![2, 3], INT32);
+    /// let t2 = array_type(vec![2, 3], INT32);
+    /// let n1 = g.input(t1).unwrap();
+    /// let n2 = g.input(t2).unwrap();
+    /// let n3 = g.gemm(n1, n2, false, true).unwrap();
+    /// ```
+    #[doc(hidden)]
+    pub fn gemm(&self, a: Node, b: Node, transpose_a: bool, transpose_b: bool) -> Result<Node> {
+        self.add_node(
+            vec![a, b],
+            vec![],
+            Operation::Gemm(transpose_a, transpose_b),
+        )
     }
 
     /// Adds a node that computes the intersection of two named tuples along given key headers.

@@ -172,6 +172,7 @@ fn bilinear_product(l: Node, r: Node, op: Operation) -> Result<Node> {
         Operation::Dot => l.dot(r),
         Operation::Matmul => l.matmul(r),
         Operation::MixedMultiply => l.mixed_multiply(r),
+        Operation::Gemm(transpose_l, transpose_r) => l.gemm(r, transpose_l, transpose_r),
         _ => Err(runtime_error!("Not a bilinear product")),
     }
 }
@@ -257,6 +258,7 @@ fn instantiate_bilinear_product(
         Operation::Multiply => "MultiplyMPC".to_owned(),
         Operation::Dot => "DotMPC".to_owned(),
         Operation::Matmul => "MatmulMPC".to_owned(),
+        Operation::Gemm(_, _) => "GemmMPC".to_owned(),
         _ => return Err(runtime_error!("Not a bilinear product")),
     };
     // Panics since:
@@ -353,6 +355,27 @@ impl CustomOperationBody for MatmulMPC {
 
     fn get_name(&self) -> String {
         "MatmulMPC".to_owned()
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
+pub(super) struct GemmMPC {
+    pub transpose_a: bool,
+    pub transpose_b: bool,
+}
+
+#[typetag::serde]
+impl CustomOperationBody for GemmMPC {
+    fn instantiate(&self, context: Context, argument_types: Vec<Type>) -> Result<Graph> {
+        instantiate_bilinear_product(
+            context,
+            argument_types,
+            Operation::Gemm(self.transpose_a, self.transpose_b),
+        )
+    }
+
+    fn get_name(&self) -> String {
+        format! {"GemmMPC-{}-{}", self.transpose_a, self.transpose_b}
     }
 }
 
@@ -583,7 +606,11 @@ mod tests {
                 let a1 = i1.subtract(i2)?;
                 a1.subtract(g.input(types[2].clone())?)?
             }
-            Operation::Multiply | Operation::Dot | Operation::Matmul | Operation::MixedMultiply => {
+            Operation::Multiply
+            | Operation::Dot
+            | Operation::Matmul
+            | Operation::MixedMultiply
+            | Operation::Gemm(_, _) => {
                 let a1 = bilinear_product(i1, i2, op.clone())?;
                 bilinear_product(a1, g.input(types[2].clone())?, op)?
             }
@@ -894,7 +921,7 @@ mod tests {
             let expected = match op.clone() {
                 Operation::Multiply => vec![48, 105],
                 Operation::Dot => vec![138, 161],
-                Operation::Matmul => vec![404, 461, 716, 817],
+                Operation::Matmul | Operation::Gemm(_, _) => vec![404, 461, 716, 817],
                 _ => panic!("Not a bilinear operation"),
             };
 
@@ -957,6 +984,11 @@ mod tests {
     #[test]
     fn test_matmul() {
         bilinear_product_helper(Operation::Matmul, vec![2, 2]).unwrap();
+    }
+
+    #[test]
+    fn test_gemm() {
+        bilinear_product_helper(Operation::Gemm(false, false), vec![2, 2]).unwrap();
     }
 
     #[test]

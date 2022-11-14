@@ -201,15 +201,18 @@ impl CustomOperationBody for LowMC {
         let key_matrices = g.constant(key_matrices_type, key_matrices_value)?;
 
         // Round keys generated from the master key
-        let key_schedule = key_matrices.multiply(key)?.sum(vec![2])?;
+        let key_schedule = key_matrices
+            .gemm(
+                key.reshape(array_type(vec![1, key_size], BIT))?,
+                false,
+                true,
+            )?
+            .reshape(array_type(vec![self.rounds + 1, block_size], BIT))?;
 
         // XOR hashed input with the whitened key (1st element of the key schedule)
         let mut state = padded_input.add(key_schedule.get(vec![0])?)?;
         let state_type = state.get_type()?;
         let state_shape = state_type.get_shape();
-        let mut extended_state_shape = state_shape.clone();
-        extended_state_shape.insert(extended_state_shape.len() - 1, 1);
-        let extended_state_type = array_type(extended_state_shape.clone(), BIT);
         let state_element_shape = state_shape[0..state_shape.len() - 1].to_vec();
         let state_element_type =
             array_type(state_element_shape, state.get_type()?.get_scalar_type());
@@ -266,15 +269,8 @@ impl CustomOperationBody for LowMC {
                 .vector_to_array()?;
             state = put_in_bits(state)?;
 
-            // Make state of the shape [..., 1, block_size] to multiply it by the linear layer matrix
-            state = state.reshape(extended_state_type.clone())?;
             // Linear layer: multiply by pre-generated random matrices
-            state = linear_matrices
-                .get(vec![round])?
-                .multiply(state.clone())?
-                .sum(vec![extended_state_shape.len() as u64 - 1])?; // TODO: this sum is a bottleneck. We can potentially optimize it.
-                                                                    // Return the state shape to [..., block_size]
-            state = state.reshape(state_type.clone())?;
+            state = state.gemm(linear_matrices.get(vec![round])?, false, true)?;
 
             // Add the round constant
             state = state.add(round_constants.get(vec![round])?)?;

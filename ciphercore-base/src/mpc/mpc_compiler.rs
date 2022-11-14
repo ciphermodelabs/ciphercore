@@ -17,6 +17,7 @@ use crate::optimizer::optimize::optimize_context;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+use super::mpc_arithmetic::GemmMPC;
 use super::mpc_psi::SetIntersectionMPC;
 
 // We implement the ABY3 protocol, which has 3 parties involved
@@ -226,6 +227,7 @@ fn propagate_private_annotations(
             | Operation::MixedMultiply
             | Operation::Dot
             | Operation::Matmul
+            | Operation::Gemm(_, _)
             | Operation::SetIntersection(_)
             | Operation::A2B
             | Operation::B2A(_)
@@ -257,7 +259,8 @@ fn propagate_private_annotations(
                     Operation::Matmul,
                     Operation::A2B,
                 ]
-                .contains(&op))
+                .contains(&op)
+                    || matches!(op, Operation::Gemm(_, _)))
                     && are_all_nodes_private(&dependencies, &private_nodes)
                 {
                     use_prf_for_mul = true;
@@ -454,6 +457,36 @@ pub(super) fn compile_to_mpc_graph(
                     Operation::Matmul => CustomOperation::new(MatmulMPC {}),
                     _ => panic!("Should not be here"),
                 };
+
+                if (private_nodes.contains(&input0) || op == Operation::MixedMultiply)
+                    && private_nodes.contains(&input1)
+                {
+                    // If both inputs are private, the MPC protocol requires invoking PRFs.
+                    // Thus, PRF keys must be provided.
+                    let keys = match prf_keys_mul {
+                        Some(ref k) => k.clone(),
+                        None => {
+                            panic!("Propagation of annotations failed")
+                        }
+                    };
+                    out_graph.custom_op(
+                        custom_op,
+                        vec![new_input0.clone(), new_input1.clone(), keys],
+                    )?
+                } else {
+                    out_graph.custom_op(custom_op, vec![new_input0.clone(), new_input1.clone()])?
+                }
+            }
+            Operation::Gemm(transpose_a, transpose_b) => {
+                let dependencies = node.get_node_dependencies();
+                let input0 = dependencies[0].clone();
+                let input1 = dependencies[1].clone();
+                let new_input0 = out_mapping.get_node(input0.clone());
+                let new_input1 = out_mapping.get_node(input1.clone());
+                let custom_op = CustomOperation::new(GemmMPC {
+                    transpose_a,
+                    transpose_b,
+                });
 
                 if (private_nodes.contains(&input0) || op == Operation::MixedMultiply)
                     && private_nodes.contains(&input1)

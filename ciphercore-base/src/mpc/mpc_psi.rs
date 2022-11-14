@@ -18,7 +18,7 @@ use crate::type_inference::NULL_HEADER;
 use serde::{Deserialize, Serialize};
 
 use super::low_mc::{LowMC, LowMCBlockSize, LOW_MC_KEY_SIZE};
-use super::mpc_arithmetic::{AddMPC, MixedMultiplyMPC, MultiplyMPC, SubtractMPC};
+use super::mpc_arithmetic::{AddMPC, GemmMPC, MixedMultiplyMPC, MultiplyMPC, SubtractMPC};
 use super::mpc_compiler::{check_private_tuple, compile_to_mpc_graph, KEY_LENGTH, PARTIES};
 use super::utils::select_node;
 
@@ -81,6 +81,21 @@ fn multiply_mpc(a: Node, b: Node, prf_keys: Node) -> Result<Node> {
     args[0]
         .get_graph()
         .custom_op(CustomOperation::new(MultiplyMPC {}), args)
+}
+
+fn gemm_mpc(a: Node, b: Node, prf_keys: Node) -> Result<Node> {
+    let args = if a.get_type()?.is_tuple() && b.get_type()?.is_tuple() {
+        vec![a, b, prf_keys]
+    } else {
+        vec![a, b]
+    };
+    args[0].get_graph().custom_op(
+        CustomOperation::new(GemmMPC {
+            transpose_a: false,
+            transpose_b: true,
+        }),
+        args,
+    )
 }
 
 fn mixed_multiply_mpc(a: Node, b: Node, prf_keys: Node) -> Result<Node> {
@@ -695,23 +710,8 @@ impl CustomOperationBody for SetIntersectionMPC {
                             lowmc_graph: Graph,
                             num_entries: u64|
          -> Result<Node> {
-            let reshaped_columns = reshape_shared_array(
-                merged_columns,
-                array_type(vec![num_entries, 1, key_columns_entry_bitlength], BIT),
-            )?;
-            let raw_product = multiply_mpc(
-                reshaped_columns,
-                random_hash_matrix.clone(),
-                prf_keys.clone(),
-            )?;
-            let hashed_columns = {
-                let mut res_shares = vec![];
-                for share_id in 0..PARTIES as u64 {
-                    let share = raw_product.tuple_get(share_id)?.sum(vec![2])?;
-                    res_shares.push(share);
-                }
-                g.create_tuple(res_shares)?
-            };
+            let hashed_columns =
+                gemm_mpc(merged_columns, random_hash_matrix.clone(), prf_keys.clone())?;
 
             let oprf_set = g.call(
                 lowmc_graph,
@@ -1112,18 +1112,13 @@ impl CustomOperationBody for SimpleHash {
         let mut extended_shape = input_type.get_shape();
         extended_shape.insert(extended_shape.len() - 1, 1);
 
-        // Change the shape of hash_matrices from [..., n, b] to [..., n, 1, b]
-        let reshaped_input = input_array.reshape(array_type(extended_shape.clone(), BIT))?;
-
         // Change the shape of hash_matrices from [h, m, b] to [h*m, b]
         let hash_matrices_for_sum = hash_matrices.reshape(array_type(
             vec![hash_shape[0] * hash_shape[1], hash_shape[2]],
             BIT,
         ))?;
         // The result shape is [..., n, h*m]
-        let mut hash_tables = reshaped_input
-            .multiply(hash_matrices_for_sum)?
-            .sum(vec![extended_shape.len() as u64 - 1])?;
+        let mut hash_tables = input_array.gemm(hash_matrices_for_sum, false, true)?;
 
         // Reshape to [..., n, h, m]
         let mut split_by_hash_shape = input_shape[0..input_shape.len() - 1].to_vec();
