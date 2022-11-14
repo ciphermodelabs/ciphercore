@@ -7,7 +7,13 @@ use crate::ops::utils::{pull_out_bits, put_in_bits, zeros};
 
 use serde::{Deserialize, Serialize};
 
-pub(super) const LOW_MC_BLOCK_SIZE: u64 = 128;
+pub(super) const LOW_MC_KEY_SIZE: u64 = 128;
+
+#[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
+pub enum LowMCBlockSize {
+    SIZE80,
+    SIZE128,
+}
 
 /// Implements LowMC block cipher encryption according to [the original LowMC publication (Section 3)](https://eprint.iacr.org/2016/687.pdf).
 ///
@@ -40,24 +46,30 @@ pub(super) const LOW_MC_BLOCK_SIZE: u64 = 128;
 /// | 20               |13      |
 /// | 21               |13      |
 /// | 22               |12      |
-/// | 30               |11      |
+/// | 25               |11      |
+/// ...
+/// | 42               |11      |
 /// See [the Picnic specification (Section 4)](https://github.com/microsoft/Picnic/blob/master/spec/spec-v3.0.pdf) for more details.
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub struct LowMC {
     // Number of bit triples affected by a single substitution round
-    // It should not exceed 42 (< 128/3).
+    // It should not exceed LOW_MC_BLOCK_SIZE/3.
     pub s_boxes_per_round: u64,
     // Number of encryption rounds (max 20).
     pub rounds: u64,
+    pub block_size: LowMCBlockSize,
 }
 
 #[typetag::serde]
 impl CustomOperationBody for LowMC {
     fn instantiate(&self, context: Context, argument_types: Vec<Type>) -> Result<Graph> {
         // Size of a single LowMC block (typically)
-        let block_size = LOW_MC_BLOCK_SIZE;
+        let block_size = match self.block_size {
+            LowMCBlockSize::SIZE128 => 128,
+            LowMCBlockSize::SIZE80 => 80,
+        };
         // Length of an encryption key
-        let key_size = LOW_MC_BLOCK_SIZE;
+        let key_size = LOW_MC_KEY_SIZE;
 
         // Check that the number of triples affected by a single substitution round doesn't exceed the number of bits in the block
         if self.s_boxes_per_round > block_size / 3 {
@@ -126,41 +138,81 @@ impl CustomOperationBody for LowMC {
         // - the block and key sizes are both 128
         // - the number of rounds is 20
 
-        // - a (block_size x block_size) invertible binary matrix for the linear layer,
-        let linear_matrices_bytes = include_bytes!("low_mc_constants/linear_layer_matrices.dat");
-        let linear_matrices_value = Value::from_bytes(
-            linear_matrices_bytes[0..(self.rounds * block_size * block_size / 8) as usize].to_vec(),
-        );
+        let (linear_matrices_value, round_constants_value, key_matrices_value) = match self
+            .block_size
+        {
+            LowMCBlockSize::SIZE128 => {
+                // - a (block_size x block_size) invertible binary matrix for the linear layer,
+                let linear_matrices_bytes =
+                    include_bytes!("low_mc_constants/linear_layer_matrices128.dat");
+                let l_value = Value::from_bytes(
+                    linear_matrices_bytes[0..(self.rounds * block_size * block_size / 8) as usize]
+                        .to_vec(),
+                );
+
+                // - a binary vector of length block_size for the constant addition layer,
+                let round_constants_bytes =
+                    include_bytes!("low_mc_constants/round_constants128.dat");
+                let r_value = Value::from_bytes(
+                    round_constants_bytes[0..(self.rounds * block_size / 8) as usize].to_vec(),
+                );
+
+                // - a (block_size x key_size) binary matrix of rank min(key_size, block_size) for the key addition layer plus one more matrix of this size to whiten the key.
+                let key_matrices_bytes = include_bytes!("low_mc_constants/key_matrices128.dat");
+                let k_value = Value::from_bytes(
+                    key_matrices_bytes[0..((self.rounds + 1) * block_size * key_size / 8) as usize]
+                        .to_vec(),
+                );
+
+                (l_value, r_value, k_value)
+            }
+            LowMCBlockSize::SIZE80 => {
+                // - a (block_size x block_size) invertible binary matrix for the linear layer,
+                let linear_matrices_bytes =
+                    include_bytes!("low_mc_constants/linear_layer_matrices80.dat");
+                let l_value = Value::from_bytes(
+                    linear_matrices_bytes[0..(self.rounds * block_size * block_size / 8) as usize]
+                        .to_vec(),
+                );
+
+                // - a binary vector of length block_size for the constant addition layer,
+                let round_constants_bytes =
+                    include_bytes!("low_mc_constants/round_constants80.dat");
+                let r_value = Value::from_bytes(
+                    round_constants_bytes[0..(self.rounds * block_size / 8) as usize].to_vec(),
+                );
+
+                // - a (block_size x key_size) binary matrix of rank min(key_size, block_size) for the key addition layer plus one more matrix of this size to whiten the key.
+                let key_matrices_bytes = include_bytes!("low_mc_constants/key_matrices80.dat");
+                let k_value = Value::from_bytes(
+                    key_matrices_bytes[0..((self.rounds + 1) * block_size * key_size / 8) as usize]
+                        .to_vec(),
+                );
+
+                (l_value, r_value, k_value)
+            }
+        };
         let linear_matrices_type = array_type(vec![self.rounds, block_size, block_size], BIT);
-        let linear_matrices = g.constant(linear_matrices_type, linear_matrices_value)?;
-
-        // - a binary vector of length block_size for the constant addition layer,
-        let round_constants_bytes = include_bytes!("low_mc_constants/round_constants.dat");
-        let round_constants_value = Value::from_bytes(
-            round_constants_bytes[0..(self.rounds * block_size / 8) as usize].to_vec(),
-        );
         let round_constants_type = array_type(vec![self.rounds, block_size], BIT);
-        let round_constants = g.constant(round_constants_type, round_constants_value)?;
-
-        // - a (block_size x key_size) binary matrix of rank min(key_size, block_size) for the key addition layer plus one more matrix of this size to whiten the key.
-        let key_matrices_bytes = include_bytes!("low_mc_constants/key_matrices.dat");
-        let key_matrices_value = Value::from_bytes(
-            key_matrices_bytes[0..((self.rounds + 1) * block_size * key_size / 8) as usize]
-                .to_vec(),
-        );
         let key_matrices_type = array_type(vec![self.rounds + 1, block_size, key_size], BIT);
+
+        let linear_matrices = g.constant(linear_matrices_type, linear_matrices_value)?;
+        let round_constants = g.constant(round_constants_type, round_constants_value)?;
         let key_matrices = g.constant(key_matrices_type, key_matrices_value)?;
 
         // Round keys generated from the master key
-        let key_schedule = key_matrices.multiply(key)?.sum(vec![2])?;
+        let key_schedule = key_matrices
+            .gemm(
+                key.reshape(array_type(vec![1, key_size], BIT))?,
+                false,
+                true,
+            )?
+            .reshape(array_type(vec![self.rounds + 1, block_size], BIT))?;
 
         // XOR hashed input with the whitened key (1st element of the key schedule)
         let mut state = padded_input.add(key_schedule.get(vec![0])?)?;
         let state_type = state.get_type()?;
         let state_shape = state_type.get_shape();
-        let mut extended_state_shape = state_shape.clone();
-        extended_state_shape.insert(extended_state_shape.len() - 1, 1);
-        let extended_state_type = array_type(extended_state_shape.clone(), BIT);
         let state_element_shape = state_shape[0..state_shape.len() - 1].to_vec();
         let state_element_type =
             array_type(state_element_shape, state.get_type()?.get_scalar_type());
@@ -217,15 +269,8 @@ impl CustomOperationBody for LowMC {
                 .vector_to_array()?;
             state = put_in_bits(state)?;
 
-            // Make state of the shape [..., 1, block_size] to multiply it by the linear layer matrix
-            state = state.reshape(extended_state_type.clone())?;
             // Linear layer: multiply by pre-generated random matrices
-            state = linear_matrices
-                .get(vec![round])?
-                .multiply(state.clone())?
-                .sum(vec![extended_state_shape.len() as u64 - 1])?; // TODO: this sum is a bottleneck. We can potentially optimize it.
-                                                                    // Return the state shape to [..., block_size]
-            state = state.reshape(state_type.clone())?;
+            state = state.gemm(linear_matrices.get(vec![round])?, false, true)?;
 
             // Add the round constant
             state = state.add(round_constants.get(vec![round])?)?;
@@ -270,6 +315,7 @@ mod tests {
             CustomOperation::new(LowMC {
                 s_boxes_per_round: 10,
                 rounds: 20,
+                block_size: LowMCBlockSize::SIZE128,
             }),
             vec![i, key],
         )?;
@@ -320,7 +366,7 @@ mod tests {
     fn test_low_mc_randomness() {
         || -> Result<()> {
             let key_size = 128;
-            let input_size = 96;
+            let input_size = 76;
 
             let input_shape = vec![16, 16, input_size];
             let input_bytes_len = input_shape.iter().product::<u64>() >> 3;
@@ -331,8 +377,9 @@ mod tests {
             let key = g.input(array_type(vec![key_size], BIT))?;
             let o = g.custom_op(
                 CustomOperation::new(LowMC {
-                    s_boxes_per_round: 42,
+                    s_boxes_per_round: 26,
                     rounds: 4,
+                    block_size: LowMCBlockSize::SIZE80,
                 }),
                 vec![i, key],
             )?;
