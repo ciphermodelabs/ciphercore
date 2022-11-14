@@ -36,6 +36,28 @@ pub fn add_vectors_u64(vec1: &[u64], vec2: &[u64], modulus: Option<u64>) -> Resu
     }
     Ok(res)
 }
+
+pub fn sum_vector_u64(vec: &[u64], modulus: Option<u64>) -> u64 {
+    let mut res = 0;
+    for a in vec {
+        res = add_u64(res, *a, modulus);
+    }
+    res
+}
+
+pub fn dot_vectors_u64(vec1: &[u64], vec2: &[u64], modulus: Option<u64>) -> Result<u64> {
+    if vec1.len() != vec2.len() {
+        return Err(runtime_error!(
+            "Vectors of different lengths can't be summed"
+        ));
+    }
+    let mut res = 0;
+    for i in 0..vec1.len() {
+        res = add_u64(res, multiply_u64(vec1[i], vec2[i], modulus), modulus);
+    }
+    Ok(res)
+}
+
 pub fn subtract_vectors_u64(vec1: &[u64], vec2: &[u64], modulus: Option<u64>) -> Result<Vec<u64>> {
     if vec1.len() != vec2.len() {
         return Err(runtime_error!(

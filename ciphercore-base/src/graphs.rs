@@ -105,6 +105,7 @@ pub enum Operation {
     DecomposeSwitchingMap(u64),
     SegmentCumSum,
     SetIntersection(HashMap<String, String>),
+    Gemm(bool, bool),
     Custom(CustomOperation),
 }
 
@@ -286,6 +287,16 @@ impl Node {
     /// Output type of the node operation
     pub fn get_type(&self) -> Result<Type> {
         let context = self.get_graph().get_context();
+
+        {
+            let context_body = context.body.borrow();
+            if let Some(tc) = &context_body.type_checker {
+                if let Some(cached_type) = tc.cached_node_type(self)? {
+                    return Ok(cached_type);
+                }
+            }
+        }
+
         let mut context_body = context.body.borrow_mut();
         if let Some(tc) = &mut context_body.type_checker {
             tc.process_node(self.clone())
@@ -451,6 +462,29 @@ impl Node {
     /// ```
     pub fn matmul(&self, b: Node) -> Result<Node> {
         self.get_graph().matmul(self.clone(), b)
+    }
+
+    /// Adds a node to the parent graph that computes the generatl matrix product of two arrays associated with the node and another node.
+    ///
+    /// Applies [Graph::gemm] to the parent graph, `this` node and the `b` node.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{INT32, array_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t1 = array_type(vec![2, 3], INT32);
+    /// let t2 = array_type(vec![2, 3], INT32);
+    /// let n1 = g.input(t1).unwrap();
+    /// let n2 = g.input(t2).unwrap();
+    /// let n3 = n1.gemm(n2, false, true).unwrap();
+    /// ```
+    #[doc(hidden)]
+    pub fn gemm(&self, b: Node, transpose_a: bool, transpose_b: bool) -> Result<Node> {
+        self.get_graph()
+            .gemm(self.clone(), b, transpose_a, transpose_b)
     }
 
     /// Adds a node that computes the intersection of two named tuples along given key headers.
@@ -1321,6 +1355,45 @@ impl Graph {
     /// ```
     pub fn matmul(&self, a: Node, b: Node) -> Result<Node> {
         self.add_node(vec![a, b], vec![], Operation::Matmul)
+    }
+
+    /// Adds a node that computes the general matrix product of two arrays according to [the ONNX rules](https://github.com/onnx/onnx/blob/main/docs/Operators.md#Gemm) with `alpha = 1`, `beta = 0` and `C = 0`.
+    ///
+    /// Each array is represented as an array of 2-dimensional matrix elements and this node returns the elementwise product of such matrix arrays.
+    /// Each matrix should have at least 2 dimensions.
+    /// To multiply by 1-dimensional matrices (i.e., vectors), please resort to `matmul` or `dot`.
+    ///
+    /// # Arguments
+    ///
+    /// * `a` - node containing the first array
+    /// * `b` - node containing the second array
+    /// * `transpose_a` - if true, the first array will be transposed
+    /// * `transpose_b` - if true, the second array will be transposed
+    ///
+    /// # Returns
+    ///
+    /// New Gemm node
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{INT32, array_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t1 = array_type(vec![2, 3], INT32);
+    /// let t2 = array_type(vec![2, 3], INT32);
+    /// let n1 = g.input(t1).unwrap();
+    /// let n2 = g.input(t2).unwrap();
+    /// let n3 = g.gemm(n1, n2, false, true).unwrap();
+    /// ```
+    #[doc(hidden)]
+    pub fn gemm(&self, a: Node, b: Node, transpose_a: bool, transpose_b: bool) -> Result<Node> {
+        self.add_node(
+            vec![a, b],
+            vec![],
+            Operation::Gemm(transpose_a, transpose_b),
+        )
     }
 
     /// Adds a node that computes the intersection of two named tuples along given key headers.
@@ -3401,7 +3474,7 @@ impl Context {
         }
         let node_id = node.get_id();
         let graph_id = node.get_graph().get_id();
-        let cell = self.body.borrow_mut();
+        let cell = self.body.borrow();
         Ok(cell
             .nodes_names
             .get(&(graph_id, node_id))
@@ -3642,7 +3715,7 @@ impl Context {
         }
         let node_id = node.get_id();
         let graph_id = node.get_graph().get_id();
-        let cell = self.body.borrow_mut();
+        let cell = self.body.borrow();
         Ok(cell
             .nodes_annotations
             .get(&(graph_id, node_id))
@@ -3919,6 +3992,8 @@ mod tests {
     use crate::data_types::{
         array_type, scalar_type, tuple_type, vector_type, BIT, UINT16, UINT64,
     };
+    use crate::inline::inline_ops::InlineConfig;
+    use crate::mpc::mpc_compiler::{prepare_for_mpc_evaluation, IOStatus};
     use crate::version::DATA_VERSION;
     use std::rc::Rc;
 
@@ -4815,5 +4890,81 @@ mod tests {
             Ok(())
         };
         test_annotations_helper().unwrap();
+    }
+
+    async fn parallel_get_type(output: Node) -> Result<Type> {
+        output.get_type()
+    }
+
+    async fn parallel_random_evaluate(graph: Graph, context: Context) -> Result<Value> {
+        random_evaluate(
+            graph.clone(),
+            context.prepare_input_values(
+                graph,
+                HashMap::from_iter([
+                    ("one", Value::from_scalar(123, INT32)?),
+                    ("two", Value::from_scalar(456, INT32)?),
+                ]),
+            )?,
+        )
+    }
+
+    async fn parallel_prepare_for_mpc_evaluation(
+        context: Context,
+        input_party_map: Vec<Vec<IOStatus>>,
+        output_parties: Vec<Vec<IOStatus>>,
+        inline_config: InlineConfig,
+    ) -> Result<Context> {
+        prepare_for_mpc_evaluation(context, input_party_map, output_parties, inline_config)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 50)]
+    async fn test_parallel_after_finalize() -> Result<()> {
+        let context = create_context()?;
+        let graph = context.create_graph()?;
+        let input1 = graph.input(scalar_type(INT32))?;
+        let input2 = graph.input(scalar_type(INT32))?;
+        let output = graph.add(input1.clone(), input2.clone())?;
+        graph.set_output_node(output.clone())?;
+        graph.finalize()?;
+        context.set_main_graph(graph.clone())?;
+
+        context.set_node_name(input1.clone(), "one")?;
+        context.set_node_name(input2.clone(), "two")?;
+
+        context.finalize()?;
+
+        assert!(output.clone().get_type().is_ok());
+
+        const PAR_ITERS: usize = 2001;
+
+        let mut get_type_futures = vec![];
+        for _ in 0..PAR_ITERS {
+            get_type_futures.push(parallel_get_type(output.clone()));
+        }
+        futures::future::try_join_all(get_type_futures).await?;
+
+        let mut get_random_evaluate_futures = vec![];
+        for _ in 0..PAR_ITERS {
+            get_random_evaluate_futures
+                .push(parallel_random_evaluate(graph.clone(), context.clone()))
+        }
+        futures::future::try_join_all(get_random_evaluate_futures).await?;
+
+        let input_parties = vec![IOStatus::Party(0), IOStatus::Party(1)];
+        let output_parties = vec![IOStatus::Party(0)];
+
+        let mut get_mpc_eval_futures = vec![];
+        for _ in 0..PAR_ITERS {
+            get_mpc_eval_futures.push(parallel_prepare_for_mpc_evaluation(
+                context.clone(),
+                vec![input_parties.clone()],
+                vec![output_parties.clone()],
+                InlineConfig::default(),
+            ));
+        }
+        futures::future::try_join_all(get_mpc_eval_futures).await?;
+
+        Ok(())
     }
 }
