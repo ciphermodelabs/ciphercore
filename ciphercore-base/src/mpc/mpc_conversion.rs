@@ -332,7 +332,7 @@ fn get_left_shift_graph(context: Context, bits_t: Type) -> Result<Graph> {
             let mut rows_vec = vec![zero.clone()];
             for i in 0..shape[shape.len() - 1] - 1 {
                 let slice = if shape.len() == 1 {
-                    share.get(vec![i as u64])?
+                    share.get(vec![i])?
                 } else {
                     share.get_slice(vec![Ellipsis, SingleIndex(i as i64)])?
                 };

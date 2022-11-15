@@ -452,7 +452,7 @@ fn read_binary_row(destination: &mut [u8], source: &[u8], row_size: usize, start
     let offset_mask = (1 << offset_size) - 1;
 
     // bits remaining in the current byte
-    let mut offset_bits = (source[(start / 8) as usize] >> bits_read_in_byte) & offset_mask;
+    let mut offset_bits = (source[start / 8] >> bits_read_in_byte) & offset_mask;
     let mut reading_point = start + offset_size;
     let mut writing_point = 0;
     // read 64-bit words
@@ -721,7 +721,7 @@ fn evaluate_cuckoo(
     let hash_functions = hash_matrices_shape[0] as usize;
     let hash_matrix_rows = hash_matrices_shape[1] as usize;
     let hash_matrix_columns = hash_matrices_shape[2] as usize;
-    let hash_matrix_size = (hash_matrix_rows * hash_matrix_columns) as usize;
+    let hash_matrix_size = hash_matrix_rows * hash_matrix_columns;
 
     let num_input_sets = input_shape
         .iter()

@@ -541,14 +541,9 @@ impl CustomOperationBody for SetIntersectionMPC {
 
         // Name of the "key" column containing bits of compared columns
         // To avoid a collision with input headers, the key header is the join of all input headers
-        let mut all_headers: Vec<String> = column_header_types_x
-            .iter()
-            .map(|v| ((*v).0).clone())
-            .collect();
-        let headers_y: Vec<String> = column_header_types_y
-            .iter()
-            .map(|v| ((*v).0).clone())
-            .collect();
+        let mut all_headers: Vec<String> =
+            column_header_types_x.iter().map(|v| v.0.clone()).collect();
+        let headers_y: Vec<String> = column_header_types_y.iter().map(|v| v.0.clone()).collect();
         all_headers.extend(headers_y);
         let key_header = all_headers.join("-");
 

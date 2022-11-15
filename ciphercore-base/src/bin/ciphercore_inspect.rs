@@ -88,7 +88,7 @@ fn calculate_network_rounds(graph: Graph) -> Result<u32> {
     let nodes = graph.get_nodes();
     let mut nops = HashMap::<Node, u32>::new();
     for node in nodes {
-        let node_is_network = if is_network_node(node.clone())? { 1 } else { 0 };
+        let node_is_network = u32::from(is_network_node(node.clone())?);
         let dependee_nops_max = node
             .get_node_dependencies()
             .iter()

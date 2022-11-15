@@ -462,7 +462,7 @@ impl CustomOperationBody for Sort {
                 // Reshape/Merge it back into 2-D from the 3-D we created for performing
                 // the Min/Max compare and switches
                 global_chunks_a = g.reshape(
-                    intermediate_chunks_a[(intermediate_chunks_a.len() - 1) as usize].clone(),
+                    intermediate_chunks_a[intermediate_chunks_a.len() - 1].clone(),
                     array_type(vec![num_classes, num_class_reps, self.b], BIT),
                 )?;
                 // For it==1, i==0, reshape latest intermediate_chunk_a from [2, 1, 8, x] -> [2, 8, x] for next global_chunks_a

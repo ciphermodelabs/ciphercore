@@ -225,7 +225,7 @@ fn main() {
     // Execute CipherCore code such that all the internal errors are properly formatted and logged.
     execute_main(|| -> Result<()> {
         let args = Args::parse();
-        let serialized_context = fs::read_to_string(&args.context_path)?;
+        let serialized_context = fs::read_to_string(args.context_path)?;
         let context: Context = serde_json::from_str::<Context>(&serialized_context)?;
         let mut viz_code = String::from("");
         generate_graphviz_context_code(context, &mut viz_code)?;
