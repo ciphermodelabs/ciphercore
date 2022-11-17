@@ -82,6 +82,7 @@ pub enum Operation {
     Random(Type),
     PRF(u64, Type),
     Stack(ArrayShape),
+    Concatenate(u64),
     Constant(Type, Value),
     A2B,
     B2A(ScalarType),
@@ -1898,6 +1899,38 @@ impl Graph {
     /// ```
     pub fn stack(&self, nodes: Vec<Node>, outer_shape: ArrayShape) -> Result<Node> {
         self.add_node(nodes, vec![], Operation::Stack(outer_shape))
+    }
+
+    /// Adds a node that joins a sequence of arrays along a given axis.
+    /// This operation is similar to [the NumPy concatenate](https://numpy.org/doc/stable/reference/generated/numpy.concatenate.html).
+    ///
+    /// The input arrays should have the same shape except in the given axis.
+    ///
+    /// # Arguments
+    ///
+    /// * `nodes` - vector of nodes containing arrays
+    /// * `axis` - axis along which the above arrays are joined
+    ///
+    /// # Returns
+    ///
+    /// New Concatenate node
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{INT32, array_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t1 = array_type(vec![3, 2, 3], INT32);
+    /// let t2 = array_type(vec![3, 2, 10], INT32);
+    /// let shape = vec![2];
+    /// let n1 = g.input(t1).unwrap();
+    /// let n2 = g.input(t2).unwrap();
+    /// let n3 = g.concatenate(vec![n1,n2], 2).unwrap();
+    /// ```
+    pub fn concatenate(&self, nodes: Vec<Node>, axis: u64) -> Result<Node> {
+        self.add_node(nodes, vec![], Operation::Concatenate(axis))
     }
 
     /// Adds a node creating a constant of a given type and value.

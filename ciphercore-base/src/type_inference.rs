@@ -422,6 +422,7 @@ fn get_number_of_node_dependencies(operation: Operation) -> Option<u64> {
         | Operation::Gemm(_, _) => Some(2),
         Operation::SegmentCumSum => Some(3),
         Operation::Stack(_)
+        | Operation::Concatenate(_)
         | Operation::CreateTuple
         | Operation::CreateNamedTuple(_)
         | Operation::CreateVector(_)
@@ -888,6 +889,42 @@ impl TypeInferenceWorker {
                     array_type(rs, st)
                 };
                 self.register_result(node, result.clone())?;
+                Ok(result)
+            }
+            Operation::Concatenate(axis) => {
+                if node_dependencies.len() < 2 {
+                    return Err(runtime_error!(
+                        "Concatenate should have at least two input arrays"
+                    ));
+                }
+                for t in &node_dependencies_types {
+                    if !t.is_array() {
+                        return Err(runtime_error!("All inputs of Concatenate must be arrays"));
+                    }
+                }
+                let first_type = &node_dependencies_types[0];
+                let st = first_type.get_scalar_type();
+
+                let mut result_shape = first_type.get_shape();
+                if axis >= result_shape.len() as u64 {
+                    return Err(runtime_error!("Wrong concatenation axis"));
+                }
+                for t in node_dependencies_types.iter().skip(1) {
+                    if t.get_scalar_type() != st {
+                        return Err(runtime_error!("Inputs have different scalar types"));
+                    }
+                    let shape = t.get_shape();
+                    if result_shape.len() != shape.len() {
+                        return Err(runtime_error!("Inputs have shapes of different length"));
+                    }
+                    for (i, d) in shape.iter().enumerate() {
+                        if result_shape[i] != *d && axis != i as u64 {
+                            return Err(runtime_error!("Inputs have incompatible shapes"));
+                        }
+                    }
+                    result_shape[axis as usize] += shape[axis as usize];
+                }
+                let result = array_type(result_shape, st);
                 Ok(result)
             }
             Operation::Constant(t, ref value) => {
@@ -3381,6 +3418,120 @@ mod tests {
                 ]),
                 HashMap::from([(NULL_HEADER.to_owned(), NULL_HEADER.to_owned())]),
             )?;
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    fn test_concatenate_worker(ts: Vec<Type>, axis: u64, expected_t: Type) -> Result<()> {
+        let context = create_unchecked_context()?;
+        let mut worker = create_type_inference_worker(context.clone());
+        let graph = context.create_graph()?;
+        let mut nodes = vec![];
+        for t in ts {
+            nodes.push(graph.input(t)?);
+        }
+        let out = graph.concatenate(nodes, axis)?;
+        let result = worker.process_node(out)?;
+        assert_eq!(result, expected_t);
+        Ok(())
+    }
+
+    fn test_concatenate_worker_fail(ts: Vec<Type>, axis: u64) -> Result<()> {
+        let context = create_unchecked_context()?;
+        let mut worker = create_type_inference_worker(context.clone());
+        let graph = context.create_graph()?;
+        let mut nodes = vec![];
+        for t in ts {
+            nodes.push(graph.input(t)?);
+        }
+        let out = graph.concatenate(nodes, axis)?;
+        let e = worker.process_node(out);
+        assert!(e.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_concatenate() {
+        || -> Result<()> {
+            test_concatenate_worker(
+                vec![array_type(vec![1], BIT), array_type(vec![1], BIT)],
+                0,
+                array_type(vec![2], BIT),
+            )?;
+            test_concatenate_worker(
+                vec![array_type(vec![5, 10], BIT), array_type(vec![1, 10], BIT)],
+                0,
+                array_type(vec![6, 10], BIT),
+            )?;
+            test_concatenate_worker(
+                vec![
+                    array_type(vec![3, 5, 10], INT32),
+                    array_type(vec![3, 1, 10], INT32),
+                ],
+                1,
+                array_type(vec![3, 6, 10], INT32),
+            )?;
+            test_concatenate_worker(
+                vec![
+                    array_type(vec![3, 10, 1], INT32),
+                    array_type(vec![3, 10, 2], INT32),
+                    array_type(vec![3, 10, 3], INT32),
+                    array_type(vec![3, 10, 5], INT32),
+                ],
+                2,
+                array_type(vec![3, 10, 11], INT32),
+            )?;
+
+            test_concatenate_worker_fail(
+                vec![array_type(vec![1], BIT), array_type(vec![1], INT32)],
+                0,
+            )?;
+            test_concatenate_worker_fail(
+                vec![array_type(vec![1], BIT), array_type(vec![1], BIT)],
+                1,
+            )?;
+            test_concatenate_worker_fail(vec![array_type(vec![1], BIT)], 0)?;
+            test_concatenate_worker_fail(
+                vec![
+                    array_type(vec![10, 5, 4], INT32),
+                    array_type(vec![10, 4, 3], INT32),
+                ],
+                1,
+            )?;
+            test_concatenate_worker_fail(
+                vec![
+                    array_type(vec![10, 5, 4], INT32),
+                    array_type(vec![10, 4, 4], INT32),
+                ],
+                0,
+            )?;
+            test_concatenate_worker_fail(
+                vec![array_type(vec![10, 5, 4], INT32), scalar_type(INT32)],
+                0,
+            )?;
+            test_concatenate_worker_fail(
+                vec![
+                    array_type(vec![10, 5, 4], INT32),
+                    array_type(vec![10, 5, 4], INT32),
+                ],
+                4,
+            )?;
+            test_concatenate_worker_fail(
+                vec![
+                    array_type(vec![10, 5, 4], INT32),
+                    array_type(vec![5, 4], INT32),
+                ],
+                1,
+            )?;
+            test_concatenate_worker_fail(
+                vec![
+                    array_type(vec![10, 5, 4], INT32),
+                    array_type(vec![5, 4], INT32),
+                ],
+                2,
+            )?;
+
             Ok(())
         }()
         .unwrap();

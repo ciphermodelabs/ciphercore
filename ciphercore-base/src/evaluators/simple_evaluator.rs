@@ -1717,6 +1717,38 @@ impl Evaluator for SimpleEvaluator {
                 let result_type = node.get_type()?;
                 Value::from_flattened_array(&output_entries, result_type.get_scalar_type())
             }
+            Operation::Concatenate(axis) => {
+                let dependencies = node.get_node_dependencies();
+                let result_t = node.get_type()?;
+                let result_shape = result_t.get_shape();
+
+                // number of arrays within which sub-arrays are concatenated
+                let num_arrays = result_shape.iter().take(axis as usize).product::<u64>();
+                // element size of concatenated arrays
+                let item_length = result_shape.iter().skip(axis as usize + 1).product::<u64>();
+
+                let mut dependencies_arrays = vec![];
+                // number of elements to concatenate of every dependency
+                let mut dependencies_num_items = vec![];
+                for (i, value) in dependencies_values.iter().enumerate() {
+                    let t = dependencies[i].get_type()?;
+                    dependencies_arrays.push(value.to_flattened_array_u64(t.clone())?);
+                    dependencies_num_items.push(t.get_shape()[axis as usize]);
+                }
+
+                let mut result_array: Vec<u64> = vec![];
+                for array_i in 0..num_arrays {
+                    for (dep_i, dep_array) in dependencies_arrays.iter().enumerate() {
+                        let num_items = dependencies_num_items[dep_i];
+                        let start = array_i * num_items * item_length;
+                        result_array.extend(
+                            &dep_array[start as usize..(start + num_items * item_length) as usize],
+                        );
+                    }
+                }
+
+                Value::from_flattened_array(&result_array, result_t.get_scalar_type())
+            }
             _ => Err(runtime_error!("Not implemented")),
         }
     }
@@ -1730,8 +1762,8 @@ mod tests {
 
     use crate::{
         data_types::{
-            named_tuple_type, scalar_type, tuple_type, vector_type, ArrayShape, ScalarType, INT32,
-            UINT32, UINT64, UINT8,
+            named_tuple_type, scalar_type, tuple_type, vector_type, ArrayShape, ScalarType, INT16,
+            INT32, UINT32, UINT64, UINT8,
         },
         evaluators::{evaluate_simple_evaluator, random_evaluate},
         graphs::create_context,
@@ -2956,6 +2988,112 @@ mod tests {
             gemm_helper_random(
                 array_type(vec![15, 7, 191], BIT),
                 array_type(vec![15, 15, 191], BIT),
+            )?;
+
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    fn concatenate_helper(
+        input_types: Vec<Type>,
+        axis: u64,
+        result_type: Type,
+        input_arrays: Vec<Vec<u64>>,
+        expected: Vec<u64>,
+    ) -> Result<()> {
+        let c = create_context()?;
+        let g = c.create_graph()?;
+        let mut inputs = vec![];
+        for t in input_types.iter() {
+            inputs.push(g.input((*t).clone())?);
+        }
+        let o = g.concatenate(inputs, axis)?;
+        g.set_output_node(o)?;
+        g.finalize()?;
+        c.set_main_graph(g.clone())?;
+        c.finalize()?;
+
+        let mut input_values = vec![];
+        for (i, t) in input_types.iter().enumerate() {
+            input_values.push(Value::from_flattened_array(
+                &input_arrays[i],
+                t.get_scalar_type(),
+            )?);
+        }
+
+        let result_value = evaluate_simple_evaluator(g, input_values, None)?;
+        assert_eq!(result_value.to_flattened_array_u64(result_type)?, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn test_concatenate() {
+        || -> Result<()> {
+            concatenate_helper(
+                vec![
+                    array_type(vec![1], INT32),
+                    array_type(vec![1], INT32),
+                    array_type(vec![1], INT32),
+                ],
+                0,
+                array_type(vec![3], INT32),
+                vec![vec![1], vec![2], vec![3]],
+                vec![1, 2, 3],
+            )?;
+            concatenate_helper(
+                vec![
+                    array_type(vec![2, 1], UINT8),
+                    array_type(vec![2, 2], UINT8),
+                    array_type(vec![2, 3], UINT8),
+                ],
+                1,
+                array_type(vec![2, 6], UINT8),
+                vec![vec![1, 7], vec![2, 3, 8, 9], vec![4, 5, 6, 10, 11, 12]],
+                (1..13).collect(),
+            )?;
+            concatenate_helper(
+                vec![
+                    array_type(vec![1, 2], UINT8),
+                    array_type(vec![2, 2], UINT8),
+                    array_type(vec![3, 2], UINT8),
+                ],
+                0,
+                array_type(vec![6, 2], UINT8),
+                vec![(1..3).collect(), (3..7).collect(), (7..13).collect()],
+                (1..13).collect(),
+            )?;
+            concatenate_helper(
+                vec![
+                    array_type(vec![2, 1, 2], INT16),
+                    array_type(vec![2, 2, 2], INT16),
+                    array_type(vec![2, 3, 2], INT16),
+                ],
+                1,
+                array_type(vec![2, 6, 2], INT16),
+                vec![
+                    vec![1, 2, 13, 14],
+                    vec![3, 4, 5, 6, 15, 16, 17, 18],
+                    vec![7, 8, 9, 10, 11, 12, 19, 20, 21, 22, 23, 24],
+                ],
+                (1..25).collect(),
+            )?;
+            concatenate_helper(
+                vec![
+                    array_type(vec![2, 1, 2], BIT),
+                    array_type(vec![2, 2, 2], BIT),
+                    array_type(vec![2, 3, 2], BIT),
+                ],
+                1,
+                array_type(vec![2, 6, 2], BIT),
+                vec![
+                    vec![1, 0, 1, 1],
+                    vec![0, 0, 0, 1, 1, 0, 0, 1],
+                    vec![1, 1, 0, 0, 0, 1, 0, 1, 0, 1, 1, 0],
+                ],
+                vec![
+                    1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 0, 1, 0, 1, 1, 0,
+                ],
             )?;
 
             Ok(())
