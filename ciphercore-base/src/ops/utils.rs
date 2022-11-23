@@ -75,6 +75,21 @@ pub fn zeros_like(x: Node) -> Result<Node> {
     zeros(&x.get_graph(), x.get_type()?)
 }
 
+// Adds several zero rows to the end or beginning of the array
+pub fn extend_with_zeros(g: &Graph, x: Node, num_zero_rows: u64, in_front: bool) -> Result<Node> {
+    let t = x.get_type()?;
+    let st = t.get_scalar_type();
+    let shape = t.get_shape();
+    let last_axis = shape.len() - 1;
+    let mut zeros_shape = shape[0..last_axis].to_vec();
+    zeros_shape.push(num_zero_rows);
+    let zero_rows = zeros(g, array_type(zeros_shape, st))?;
+    if in_front {
+        return g.concatenate(vec![zero_rows, x], last_axis as u64);
+    }
+    g.concatenate(vec![x, zero_rows], last_axis as u64)
+}
+
 pub fn constant(g: &Graph, v: TypedValue) -> Result<Node> {
     g.constant(v.t, v.value)
 }

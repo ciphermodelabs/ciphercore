@@ -1,9 +1,9 @@
 use crate::custom_ops::CustomOperationBody;
-use crate::data_types::{array_type, vector_type, Type, BIT};
+use crate::data_types::{array_type, Type, BIT};
 use crate::data_values::Value;
 use crate::errors::Result;
 use crate::graphs::{Context, Graph, SliceElement};
-use crate::ops::utils::{pull_out_bits, put_in_bits, zeros};
+use crate::ops::utils::{extend_with_zeros, zeros};
 
 use serde::{Deserialize, Serialize};
 
@@ -117,14 +117,7 @@ impl CustomOperationBody for LowMC {
         // Pad input with zeros
         let padded_input = if input_element_len < block_size {
             let length_to_pad = block_size - input_element_len;
-            let bits = pull_out_bits(input)?.array_to_vector()?;
-            let zeros_shape = input_shape[0..input_shape.len() - 1].to_vec();
-            let zeros_type = vector_type(length_to_pad, array_type(zeros_shape.clone(), BIT));
-            put_in_bits(
-                g.create_tuple(vec![bits, zeros(&g, zeros_type)?])?
-                    .reshape(vector_type(block_size, array_type(zeros_shape, BIT)))?
-                    .vector_to_array()?,
-            )?
+            extend_with_zeros(&g, input, length_to_pad, false)?
         } else {
             input
         };
@@ -193,7 +186,7 @@ impl CustomOperationBody for LowMC {
             }
         };
         let linear_matrices_type = array_type(vec![self.rounds, block_size, block_size], BIT);
-        let round_constants_type = array_type(vec![self.rounds, block_size], BIT);
+        let round_constants_type = array_type(vec![self.rounds, block_size, 1], BIT);
         let key_matrices_type = array_type(vec![self.rounds + 1, block_size, key_size], BIT);
 
         let linear_matrices = g.constant(linear_matrices_type, linear_matrices_value)?;
@@ -207,48 +200,94 @@ impl CustomOperationBody for LowMC {
                 false,
                 true,
             )?
-            .reshape(array_type(vec![self.rounds + 1, block_size], BIT))?;
+            .reshape(array_type(vec![self.rounds + 1, block_size, 1], BIT))?;
 
         // XOR hashed input with the whitened key (1st element of the key schedule)
-        let mut state = padded_input.add(key_schedule.get(vec![0])?)?;
+        let mut state = padded_input.add(
+            key_schedule
+                .get(vec![0])?
+                .reshape(array_type(vec![block_size], BIT))?,
+        )?;
         let state_type = state.get_type()?;
         let state_shape = state_type.get_shape();
-        let state_element_shape = state_shape[0..state_shape.len() - 1].to_vec();
-        let state_element_type =
-            array_type(state_element_shape, state.get_type()?.get_scalar_type());
+        let last_state_axis = state_shape.len() - 1;
+        let num_state_blocks = state_shape[..last_state_axis].iter().product::<u64>();
+        let flattened_state_shape = vec![num_state_blocks, block_size];
+        let flattened_state_t = array_type(flattened_state_shape, BIT);
+
+        // Create a mask for bit extraction
+        let one = g.constant(array_type(vec![1, 1], BIT), Value::from_scalar(1, BIT)?)?;
+        let two_zeros = zeros(&g, array_type(vec![2, 1], BIT))?;
+
+        // mask that extracts every third bit s_boxes_per_round times
+        let mut bits_mask_vec = vec![];
+        let bit_mask = g.concatenate(vec![one, two_zeros], 0)?;
+        for _ in 0..self.s_boxes_per_round {
+            bits_mask_vec.push(bit_mask.clone());
+        }
+        let bits_mask = g.concatenate(bits_mask_vec, 0)?;
+
+        // Create zero rows for shifting bits
+        let mut bit_row_shape = vec![1, num_state_blocks];
+        let zero_row = zeros(&g, array_type(bit_row_shape.clone(), BIT))?;
+        bit_row_shape[0] = 2;
+        let two_zero_rows = zeros(&g, array_type(bit_row_shape, BIT))?;
+
+        state = state.reshape(flattened_state_t)?;
+        state = state.permute_axes(vec![1, 0])?;
 
         // Compute all the rounds
         for round in 0..self.rounds {
-            state = pull_out_bits(state)?;
-
             // Substitution layer
             // Take s_boxes_per_round triples of bits and map each triple (a,b,c) to (a+bc, a+b+ac, a+b+c+ab)
-            let a_bits = state.get_slice(vec![SliceElement::SubArray(
-                Some(2),
-                Some(3 * self.s_boxes_per_round as i64),
-                Some(3),
-            )])?;
-            let b_bits = state.get_slice(vec![SliceElement::SubArray(
-                Some(1),
-                Some(3 * self.s_boxes_per_round as i64),
-                Some(3),
-            )])?;
-            let c_bits = state.get_slice(vec![SliceElement::SubArray(
-                Some(0),
-                Some(3 * self.s_boxes_per_round as i64),
-                Some(3),
-            )])?;
+            // First bits in every triple of concesutive bits
+            let c_bits = {
+                state
+                    .get_slice(vec![SliceElement::SubArray(
+                        None,
+                        Some(3 * self.s_boxes_per_round as i64),
+                        None,
+                    )])?
+                    .multiply(bits_mask.clone())?
+            };
+            // Second bits
+            let b_bits = {
+                let mut res = state.get_slice(vec![SliceElement::SubArray(
+                    Some(1),
+                    Some(3 * self.s_boxes_per_round as i64),
+                    None,
+                )])?;
+                res = g.concatenate(vec![res, zero_row.clone()], 0)?;
+                res.multiply(bits_mask.clone())?
+            };
+            // Third bits
+            let a_bits = {
+                let mut res = state.get_slice(vec![SliceElement::SubArray(
+                    Some(2),
+                    Some(3 * self.s_boxes_per_round as i64),
+                    None,
+                )])?;
+                res = g.concatenate(vec![res, two_zero_rows.clone()], 0)?;
+                res.multiply(bits_mask.clone())?
+            };
 
-            let new_a_bits = a_bits.add(b_bits.multiply(c_bits.clone())?)?;
-            let new_b_bits = a_bits
-                .add(b_bits.clone())?
-                .add(a_bits.multiply(c_bits.clone())?)?;
-            let new_c_bits = a_bits
-                .add(b_bits.clone())?
-                .add(c_bits)?
-                .add(a_bits.multiply(b_bits)?)?;
+            // Third bits in permuted triples of bits
+            let new_a_bits = {
+                let mut res = a_bits.add(b_bits.multiply(c_bits.clone())?)?;
+                res = res.get_slice(vec![SliceElement::SubArray(None, Some(-2), None)])?;
+                g.concatenate(vec![two_zero_rows.clone(), res], 0)?
+            };
+            // Second bits in permuted triples of bits
+            let a_plus_b = a_bits.add(b_bits.clone())?;
+            let new_b_bits = {
+                let mut res = a_plus_b.add(a_bits.multiply(c_bits.clone())?)?;
+                res = res.get_slice(vec![SliceElement::SubArray(None, Some(-1), None)])?;
+                g.concatenate(vec![zero_row.clone(), res], 0)?
+            };
+            // First bits in permuted triples of bits
+            let new_c_bits = a_plus_b.add(c_bits)?.add(a_bits.multiply(b_bits)?)?;
 
-            // Take the rest of state elements
+            // Take the rest of state elements not affected by substitution
             let fixed_bits = state.get_slice(vec![SliceElement::SubArray(
                 Some(3 * self.s_boxes_per_round as i64),
                 None,
@@ -256,21 +295,14 @@ impl CustomOperationBody for LowMC {
             )])?;
 
             // Merge substituted bits and fixed bits
-            state = g
-                .create_tuple(vec![
-                    g.zip(vec![
-                        new_c_bits.array_to_vector()?,
-                        new_b_bits.array_to_vector()?,
-                        new_a_bits.array_to_vector()?,
-                    ])?,
-                    fixed_bits.array_to_vector()?,
-                ])?
-                .reshape(vector_type(block_size, state_element_type.clone()))?
-                .vector_to_array()?;
-            state = put_in_bits(state)?;
+            state = g.concatenate(
+                vec![new_c_bits.add(new_b_bits)?.add(new_a_bits)?, fixed_bits],
+                0,
+            )?;
 
             // Linear layer: multiply by pre-generated random matrices
-            state = state.gemm(linear_matrices.get(vec![round])?, false, true)?;
+            state = state.permute_axes(vec![1, 0])?;
+            state = linear_matrices.get(vec![round])?.gemm(state, false, true)?;
 
             // Add the round constant
             state = state.add(round_constants.get(vec![round])?)?;
@@ -278,6 +310,8 @@ impl CustomOperationBody for LowMC {
             // Add the round key
             state = state.add(key_schedule.get(vec![round + 1])?)?;
         }
+
+        state = state.permute_axes(vec![1, 0])?.reshape(state_type)?;
 
         state.set_as_output()?;
 

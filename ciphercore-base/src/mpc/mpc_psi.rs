@@ -12,7 +12,7 @@ use crate::graphs::{create_context, Context, Graph, Node, NodeAnnotation, SliceE
 use crate::inline::inline_common::DepthOptimizationLevel;
 use crate::inline::inline_ops::{inline_operations, InlineConfig, InlineMode};
 use crate::ops::comparisons::Equal;
-use crate::ops::utils::{pull_out_bits, put_in_bits, zeros, zeros_like};
+use crate::ops::utils::{extend_with_zeros, zeros_like};
 use crate::type_inference::NULL_HEADER;
 
 use serde::{Deserialize, Serialize};
@@ -390,7 +390,6 @@ fn get_merging_graph(
     let data = g.input(named_tuple_type(header_types.clone()))?;
 
     let num_entries = header_types[0].1.get_shape()[0];
-    let mut key_entry_bitlength = 0;
 
     let mut bit_columns = vec![];
     for header in key_headers {
@@ -404,21 +403,18 @@ fn get_merging_graph(
         };
         // Flatten all the bits per entry
         let flattened_shape = vec![num_entries, get_size_in_bits((*t).clone())? / num_entries];
-        key_entry_bitlength += flattened_shape[1];
         bit_column = bit_column.reshape(array_type(flattened_shape, BIT))?;
         // Pull out bits to simplify merging of columns
-        bit_columns.push(pull_out_bits(bit_column)?.array_to_vector()?);
+        bit_columns.push(bit_column);
     }
     // Merge key columns
-    let merged_columns = g
-        .create_tuple(bit_columns)?
-        .reshape(vector_type(
-            key_entry_bitlength,
-            array_type(vec![num_entries], BIT),
-        ))?
-        .vector_to_array()?;
+    let merged_columns = if bit_columns.len() > 1 {
+        g.concatenate(bit_columns, 1)?
+    } else {
+        bit_columns[0].clone()
+    };
 
-    put_in_bits(merged_columns)?.set_as_output()?;
+    merged_columns.set_as_output()?;
 
     g.finalize()?;
 
@@ -1127,20 +1123,10 @@ impl CustomOperationBody for SimpleHash {
         permuted_axes[len_output_shape as usize - 2] = len_output_shape - 3;
         hash_tables = hash_tables.permute_axes(permuted_axes)?;
 
-        hash_tables = pull_out_bits(hash_tables)?;
-        let hash_suffix_type = hash_tables.get_type()?.get_shape()[1..].to_vec();
         let num_zeros = 64 - hash_shape[1];
-        let zeros_type = vector_type(num_zeros, array_type(hash_suffix_type.clone(), BIT));
-        let zeros = zeros(&g, zeros_type)?;
+        let res = extend_with_zeros(&g, hash_tables, num_zeros, false)?;
 
-        hash_tables = g
-            .create_tuple(vec![hash_tables.array_to_vector()?, zeros])?
-            .reshape(vector_type(64, array_type(hash_suffix_type, BIT)))?
-            .vector_to_array()?;
-
-        hash_tables = put_in_bits(hash_tables)?.b2a(UINT64)?;
-
-        hash_tables.set_as_output()?;
+        res.b2a(UINT64)?.set_as_output()?;
 
         g.finalize()?;
         Ok(g)

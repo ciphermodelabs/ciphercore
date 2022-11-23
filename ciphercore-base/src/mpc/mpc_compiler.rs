@@ -244,6 +244,7 @@ fn propagate_private_annotations(
             | Operation::CreateNamedTuple(_)
             | Operation::CreateVector(_)
             | Operation::Stack(_)
+            | Operation::Concatenate(_)
             | Operation::Zip
             | Operation::Repeat(_) => {
                 let dependencies = node.get_node_dependencies();
@@ -650,6 +651,7 @@ pub(super) fn compile_to_mpc_graph(
             | Operation::CreateNamedTuple(_)
             | Operation::CreateVector(_)
             | Operation::Stack(_)
+            | Operation::Concatenate(_)
             | Operation::Zip => {
                 let dependencies = node.get_node_dependencies();
                 let new_dependencies: Vec<Node> = dependencies
@@ -1885,6 +1887,13 @@ mod tests {
     fn test_stack() {
         let t = array_type(vec![10, 128], INT32);
         test_helper_create_ops(vec![t.clone(); 3], Operation::Stack(vec![3])).unwrap();
+    }
+    #[test]
+    fn test_concatenate() {
+        let t1 = array_type(vec![10, 1, 10], INT32);
+        let t2 = array_type(vec![10, 2, 10], INT32);
+        let t3 = array_type(vec![10, 3, 10], INT32);
+        test_helper_create_ops(vec![t1, t2, t3], Operation::Concatenate(1)).unwrap();
     }
 
     // Checks that every PRF node of a context has a unique input.

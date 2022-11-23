@@ -326,14 +326,14 @@ pub(super) fn generate_equivalence_class(
                     unflatten_classes(&input_classes, result_type, &mut 0)
                 }
 
-                Operation::Stack(_) => {
+                Operation::Stack(_) | Operation::Concatenate(_) => {
                     let mut result_class = dependencies_class[0].clone();
                     if !result_class.is_atomic() {
-                        panic!("Stack input classes must be Atomic");
+                        panic!("Input classes must be Atomic");
                     }
                     for class in dependencies_class.iter().skip(1) {
                         if !class.is_atomic() {
-                            panic!("Stack input classes must be Atomic");
+                            panic!("Input classes must be Atomic");
                         }
                         result_class = combine_class(result_class, (*class).clone())?;
                     }
