@@ -4,7 +4,7 @@ use crate::bytes::{
     subtract_vectors_u64,
 };
 use crate::bytes::{vec_from_bytes, vec_to_bytes};
-use crate::data_types::{array_type, get_size_in_bits, ArrayShape, Type, BIT, UINT64};
+use crate::data_types::{array_type, ArrayShape, Type, BIT, UINT64};
 use crate::data_values::Value;
 use crate::errors::Result;
 use crate::evaluators::Evaluator;
@@ -13,7 +13,7 @@ use crate::random::{Prf, PRNG, SEED_SIZE};
 use crate::slices::slice_index;
 use crate::type_inference::{transpose_shape, NULL_HEADER};
 
-use std::cmp::{min, Ordering};
+use std::cmp::min;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::iter::repeat;
@@ -400,257 +400,6 @@ fn general_gemm(
     Value::from_flattened_array(&result_entries, st)
 }
 
-// Computes dot product of two binary strings of equal length
-fn binary_dot(bytes0: &[u8], bytes1: &[u8]) -> u8 {
-    let mut byte_i = 0;
-    let mut res_word;
-    let num_bytes = bytes0.len();
-    // read 64-bit words
-    {
-        let words_to_read = num_bytes / 8;
-        let mut sum_word = 0;
-        for word_i in 0..words_to_read {
-            let word0 = unsafe { *(&bytes0[byte_i + word_i * 8] as *const u8 as *const u64) };
-            let word1 = unsafe { *(&bytes1[byte_i + word_i * 8] as *const u8 as *const u64) };
-            sum_word ^= word0 & word1;
-        }
-        res_word = sum_word;
-        byte_i += 8 * words_to_read;
-    }
-    // read 32-bit words
-    if byte_i + 4 <= num_bytes {
-        let word0 = unsafe { *(&bytes0[byte_i] as *const u8 as *const u32) };
-        let word1 = unsafe { *(&bytes1[byte_i] as *const u8 as *const u32) };
-        let sum_word = word0 & word1;
-        res_word ^= sum_word as u64;
-        byte_i += 4;
-    }
-    // read 16-bit words
-    if byte_i + 2 <= num_bytes {
-        let word0 = unsafe { *(&bytes0[byte_i] as *const u8 as *const u16) };
-        let word1 = unsafe { *(&bytes1[byte_i] as *const u8 as *const u16) };
-        let sum_word = word0 & word1;
-        res_word ^= sum_word as u64;
-        byte_i += 2;
-    }
-    // read bytes
-    if byte_i < num_bytes {
-        let sum_word = bytes0[byte_i] & bytes1[byte_i];
-        res_word ^= sum_word as u64;
-    }
-    //res_bit
-    (res_word.count_ones() % 2) as u8
-}
-
-fn read_binary_row(destination: &mut [u8], source: &[u8], row_size: usize, start: usize) {
-    let bits_read_in_byte = start % 8;
-    let offset_size = if bits_read_in_byte > 0 {
-        min(8 - bits_read_in_byte, row_size)
-    } else {
-        0
-    };
-    let offset_mask = (1 << offset_size) - 1;
-
-    // bits remaining in the current byte
-    let mut offset_bits = (source[start / 8] >> bits_read_in_byte) & offset_mask;
-    let mut reading_point = start + offset_size;
-    let mut writing_point = 0;
-    // read 64-bit words
-    {
-        let num_words = (row_size - offset_size) / 64;
-        let byte_start = reading_point / 8;
-        let top_mask = if offset_size > 0 {
-            (1 << (64 - offset_size)) - 1
-        } else {
-            u64::MAX
-        };
-        for word_i in 0..num_words {
-            let word = unsafe { *(&source[byte_start + word_i * 8] as *const u8 as *const u64) };
-            let word_to_copy = if offset_size > 0 {
-                // extract 64 - offset_size LSBs
-                let top_bits = (word & top_mask) << offset_size;
-                let res_word = top_bits ^ offset_bits as u64;
-                offset_bits = (word >> (64 - offset_size) & offset_mask as u64) as u8;
-                res_word
-            } else {
-                word
-            };
-            let ptr = &mut destination[word_i * 8] as *mut u8 as *mut u64;
-            unsafe {
-                *ptr = word_to_copy;
-            }
-        }
-        writing_point += 64 * num_words;
-        reading_point += 64 * num_words;
-    }
-    if writing_point + 32 <= row_size {
-        let byte_start = reading_point / 8;
-        let word = unsafe { *(&source[byte_start] as *const u8 as *const u32) };
-        let word_to_copy = if offset_size > 0 {
-            // extract 32 - offset_size LSBs
-            let top_bits = (word & ((1 << (32 - offset_size)) - 1)) << offset_size;
-            let res_word = top_bits ^ offset_bits as u32;
-            offset_bits = (word >> (32 - offset_size) & offset_mask as u32) as u8;
-            res_word
-        } else {
-            word
-        };
-        let ptr = &mut destination[writing_point / 8] as *mut u8 as *mut u32;
-        unsafe {
-            *ptr = word_to_copy;
-        }
-        writing_point += 32;
-        reading_point += 32;
-    }
-    if writing_point + 16 <= row_size {
-        let byte_start = reading_point / 8;
-        let word = unsafe { *(&source[byte_start] as *const u8 as *const u16) };
-        let word_to_copy = if offset_size > 0 {
-            // extract 16 - offset_size LSBs
-            let top_bits = (word & ((1 << (16 - offset_size)) - 1)) << offset_size;
-            let res_word = top_bits ^ offset_bits as u16;
-            offset_bits = (word >> (16 - offset_size) & offset_mask as u16) as u8;
-            res_word
-        } else {
-            word
-        };
-        let ptr = &mut destination[writing_point / 8] as *mut u8 as *mut u16;
-        unsafe {
-            *ptr = word_to_copy;
-        }
-        writing_point += 16;
-        reading_point += 16;
-    }
-    if writing_point + 8 <= row_size {
-        let word = source[reading_point / 8];
-        let word_to_copy = if offset_size > 0 {
-            // extract 8 - offset_size LSBs
-            let top_bits = (word & ((1 << (8 - offset_size)) - 1)) << offset_size;
-            let res_word = top_bits ^ offset_bits;
-            offset_bits = word >> (8 - offset_size) & offset_mask;
-            res_word
-        } else {
-            word
-        };
-        destination[writing_point / 8] = word_to_copy;
-        writing_point += 8;
-        reading_point += 8;
-    }
-    // read remaining bits
-    if writing_point < row_size {
-        let bits_to_read = row_size - writing_point;
-        match bits_to_read.cmp(&offset_size) {
-            Ordering::Equal => {
-                destination[writing_point / 8] = offset_bits;
-            }
-            Ordering::Less => {
-                destination[writing_point / 8] = offset_bits & ((1 << bits_to_read) - 1);
-            }
-            Ordering::Greater => {
-                let top_bits_to_read = bits_to_read - offset_size;
-                let top_bits =
-                    (source[reading_point / 8] & ((1 << top_bits_to_read) - 1)) << offset_size;
-                destination[writing_point / 8] = top_bits ^ offset_bits;
-            }
-        }
-    }
-}
-
-fn binary_gemm(
-    trans_value0: Value,
-    trans_value1: Value,
-    trans_shape0: ArrayShape,
-    trans_shape1: ArrayShape,
-    result_type: Type,
-) -> Result<Value> {
-    let row_size = trans_shape1[trans_shape1.len() - 1] as usize;
-    let result_length = {
-        let result_shape = result_type.get_shape();
-        result_shape.into_iter().product::<u64>() as usize
-    };
-
-    let mut shape0 = trans_shape0;
-    let mut shape1 = trans_shape1;
-
-    let mut result_bytes = vec![];
-    trans_value0.access_bytes(|bytes0| {
-        trans_value1.access_bytes(|bytes1| {
-            // Scalar product case
-            if shape0.len() == 1 && shape1.len() == 1 {
-                let res_bit = binary_dot(bytes0, bytes1);
-                result_bytes.push(res_bit);
-                return Ok(());
-            }
-            // General case
-            let mut result_shape = result_type.get_shape();
-            // Insert 1 dims for the rank-1 cases, to simplify the broadcasting logic.
-            if shape0.len() == 1 {
-                shape0.insert(0, 1);
-                result_shape.insert(result_shape.len() - 1, 1);
-            }
-            if shape1.len() == 1 {
-                shape1.insert(0, 1);
-                result_shape.insert(result_shape.len(), 1);
-            }
-
-            let n0 = shape0[shape0.len() - 2] as usize;
-            let n1 = shape1[shape1.len() - 2] as usize;
-            let result_matrix_size = n0 * n1;
-
-            let mut current_byte = 0;
-            let mut bit_counter = 0;
-
-            let row_byte_size = (row_size + 7) / 8;
-
-            let mut row0 = vec![0; row_byte_size];
-            let mut rows1 = vec![vec![0; row_byte_size]; n1];
-
-            for matrix_i in (0..result_length).step_by(result_matrix_size) {
-                // index of the first element in the current matrix, i.e. it ends with [...,0,0]
-                let result_matrix_start_index = number_to_index(matrix_i as u64, &result_shape);
-
-                let index0 = result_matrix_start_index
-                    [result_shape.len() - shape0.len()..result_shape.len()]
-                    .to_vec();
-                let index1 = result_matrix_start_index
-                    [result_shape.len() - shape1.len()..result_shape.len()]
-                    .to_vec();
-
-                let matrix_start_index0 = index_to_number(&index0, &shape0) as usize;
-                let matrix_start_index1 = index_to_number(&index1, &shape1) as usize;
-
-                // First read all rows of the second matrix
-                for (j, row1) in rows1.iter_mut().enumerate() {
-                    let row1_start = matrix_start_index1 + j * row_size;
-                    read_binary_row(row1, bytes1, row_size, row1_start);
-                }
-
-                for i in 0..n0 {
-                    let row0_start = matrix_start_index0 + i * row_size;
-                    read_binary_row(&mut row0, bytes0, row_size, row0_start);
-                    for row1 in rows1.iter() {
-                        current_byte ^= binary_dot(&row0, row1) << bit_counter;
-                        if bit_counter == 7 {
-                            result_bytes.push(current_byte);
-                            current_byte = 0;
-                            bit_counter = 0;
-                        } else {
-                            bit_counter += 1;
-                        }
-                    }
-                }
-            }
-            if bit_counter != 0 {
-                result_bytes.push(current_byte);
-            }
-
-            Ok(())
-        })
-    })?;
-
-    Ok(Value::from_bytes(result_bytes))
-}
-
 fn evaluate_gemm(
     type0: Type,
     value0: Value,
@@ -680,14 +429,9 @@ fn evaluate_gemm(
     let shape1 = transpose_shape(type1.get_shape(), !transpose1);
 
     // Transposed types
-    let trans_t0 = array_type(shape0.clone(), st.clone());
-    let trans_t1 = array_type(shape1.clone(), st.clone());
+    let trans_t0 = array_type(shape0, st.clone());
+    let trans_t1 = array_type(shape1, st);
 
-    // Binary case
-    if st == BIT {
-        return binary_gemm(trans_value0, trans_value1, shape0, shape1, result_type);
-    }
-    // Non-binary case
     general_gemm(trans_value0, trans_value1, trans_t0, trans_t1, result_type)
 }
 
@@ -846,100 +590,6 @@ fn evaluate_sum(node: Node, input_value: Value, axes: ArrayShape) -> Result<Valu
             panic!("Inconsistency between process_node() and evaluate()");
         }
     }
-}
-
-fn sum_bits_along_last_dimension(input_t: Type, input_value: Value) -> Result<Value> {
-    let input_shape = input_t.get_shape();
-    let res_bytes = input_value.access_bytes(|bytes| {
-        let mut res_vec = vec![];
-        let mut bit_counter = 0;
-        let mut current_byte = 0;
-        let row_bitsize = input_shape[input_shape.len() - 1] as usize;
-
-        let num_rows = get_size_in_bits(input_t.clone())? as usize / row_bitsize;
-        let mut current_bit = 0;
-        for _row_i in 0..num_rows {
-            let mut num_bits_to_read = row_bitsize;
-            let row_end = current_bit + row_bitsize;
-            let mut sum_byte = 0;
-            while num_bits_to_read != 0 {
-                // Try to read by words first
-                if current_bit % 8 == 0 {
-                    // 64-bit words
-                    {
-                        let words_to_read = num_bits_to_read / 64;
-                        let start = current_bit / 8;
-                        let mut word = 0;
-                        for word_i in 0..words_to_read {
-                            let ptr = &bytes[start + word_i * 8] as *const u8 as *const u64;
-                            word ^= unsafe { *ptr };
-                        }
-                        num_bits_to_read -= 64 * words_to_read;
-                        current_bit += 64 * words_to_read;
-                        sum_byte ^= (word.count_ones() % 2) as u8;
-                    }
-                    // 32-bit words
-                    if current_bit + 32 <= row_end {
-                        let start = current_bit / 8;
-                        let ptr = &bytes[start] as *const u8 as *const u32;
-                        sum_byte ^= unsafe { ((*ptr).count_ones() % 2) as u8 };
-                        num_bits_to_read -= 32;
-                        current_bit += 32;
-                    }
-                    // 16-bit words
-                    if current_bit + 16 <= row_end {
-                        let start = current_bit / 8;
-                        let ptr = &bytes[start] as *const u8 as *const u16;
-                        sum_byte ^= unsafe { ((*ptr).count_ones() % 2) as u8 };
-                        num_bits_to_read -= 16;
-                        current_bit += 16;
-                    }
-                    // bytes
-                    if current_bit + 8 <= row_end {
-                        sum_byte ^= bytes[current_bit / 8];
-                        num_bits_to_read -= 8;
-                        current_bit += 8;
-                    }
-                    // Read a part of a byte
-                    if num_bits_to_read != 0 {
-                        sum_byte ^= bytes[current_bit / 8] & ((1 << num_bits_to_read) - 1);
-                        current_bit += num_bits_to_read;
-                        num_bits_to_read = 0;
-                    }
-                } else {
-                    // If the current bit is somewhere in the middle of a byte,
-                    // try to finish reading this byte
-                    let num_bits_read_in_byte = current_bit % 8;
-                    let num_bits_to_read_in_byte = 8 - num_bits_read_in_byte;
-                    if num_bits_to_read >= num_bits_to_read_in_byte {
-                        // Read all the remaining bits of the byte
-                        sum_byte ^= (bytes[current_bit / 8] >> num_bits_read_in_byte)
-                            & ((1 << num_bits_to_read_in_byte) - 1);
-                        current_bit += num_bits_to_read_in_byte;
-                        num_bits_to_read -= num_bits_to_read_in_byte;
-                    } else {
-                        // Read only bits of the current row
-                        sum_byte ^= (bytes[current_bit / 8] >> num_bits_read_in_byte)
-                            & ((1 << num_bits_to_read) - 1);
-                        current_bit += num_bits_to_read;
-                        num_bits_to_read = 0;
-                    }
-                }
-            }
-            let row_sum = (sum_byte.count_ones() % 2) as u8;
-            current_byte += row_sum << bit_counter;
-            if bit_counter == 7 {
-                res_vec.push(current_byte);
-                current_byte = 0;
-            }
-            bit_counter = (bit_counter + 1) % 8;
-        }
-        if bit_counter > 0 {
-            res_vec.push(current_byte);
-        }
-        Ok(res_vec)
-    })?;
-    Ok(Value::from_bytes(res_bytes))
 }
 
 fn get_named_types(t: Type) -> Vec<(String, Arc<Type>)> {
@@ -1321,18 +971,7 @@ impl Evaluator for SimpleEvaluator {
                 }
                 Value::from_flattened_array(&result, t.get_scalar_type())
             }
-            Operation::Sum(axes) => {
-                let dependency = node.get_node_dependencies()[0].clone();
-                let input_t = dependency.get_type()?;
-                let input_shape = input_t.get_shape();
-
-                // Special case for PSI
-                if axes == vec![input_shape.len() as u64 - 1] && input_t.get_scalar_type() == BIT {
-                    sum_bits_along_last_dimension(input_t, dependencies_values[0].clone())
-                } else {
-                    evaluate_sum(node, dependencies_values[0].clone(), axes)
-                }
-            }
+            Operation::Sum(axes) => evaluate_sum(node, dependencies_values[0].clone(), axes),
             Operation::Reshape(new_type) => {
                 let dependency_value = dependencies_values[0].clone();
                 let dependency_value_flattened = flatten_value(dependency_value);
