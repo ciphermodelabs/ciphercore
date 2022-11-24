@@ -1279,7 +1279,7 @@ impl Evaluator for SimpleEvaluator {
                     dependencies_values[0].to_flattened_array_u64(dependency_type.clone())?;
                 let dependency_shape = dependency_type.get_shape();
                 let result_type = node.get_type()?;
-                let result_shape = result_type.get_shape();
+                let result_shape = result_type.get_dimensions();
                 let mut result = vec![];
                 for i in 0..result_shape.iter().product() {
                     let index = number_to_index(i, &result_shape);

@@ -17,7 +17,11 @@ pub(super) fn broadcast_shapes(s1: ArrayShape, s2: ArrayShape) -> Result<ArraySh
             value2 = s2[i - offset2];
         }
         if value1 > 1 && value2 > 1 && value1 != value2 {
-            return Err(runtime_error!("Invalid broadcast"));
+            return Err(runtime_error!(
+                "Invalid broadcast: shapes {:?} and {:?}",
+                s1,
+                s2
+            ));
         }
         result.push(max(value1, value2));
     }

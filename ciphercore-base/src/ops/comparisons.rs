@@ -1,373 +1,417 @@
 //! Various comparison functions for signed and unsigned integers including greater-than, less-than, greater-than-equal-to, less-than-equal-to, equal, not-equal.
-use crate::broadcast::broadcast_shapes;
-use crate::custom_ops::{CustomOperation, CustomOperationBody, Not, Or};
-use crate::data_types::{array_type, scalar_type, tuple_type, vector_type, ArrayShape, Type, BIT};
+use crate::custom_ops::{CustomOperation, CustomOperationBody, Not};
+use crate::data_types::{Type, BIT};
 use crate::errors::Result;
 use crate::graphs::*;
-use crate::ops::utils::pull_out_bits;
 use crate::ops::utils::validate_arguments_in_broadcast_bit_ops;
-use std::cmp::Ordering;
+use crate::ops::utils::{constant_scalar, pull_out_bits};
+use std::cmp::max;
 
 use serde::{Deserialize, Serialize};
 
-use super::utils::zeros;
-
-/// Given an array_shape, this function returns the array's trailing
-/// axis' (or the innermost/last dimension's) length
-fn get_innermost_dim_len(array_shape: ArrayShape) -> u64 {
-    array_shape[array_shape.len() - 1]
+/// All comparison operations are built on top of a general comparison graph.
+///
+/// For each pair of numbers, which are compared, we need to distinguish 3 possible
+/// options:
+/// - the first number is smaller
+/// - numbers are equal
+/// - the first number is larger
+///
+/// To represent it we use 2 bits, which leads to 4 possible options, which doesn't
+/// map nicely to 3, so we always have one redundant state.
+///
+/// There are several possible ways to choose what those two bits represent. We
+/// chose the way which, could be a little bit confusing, but which minimizes the
+/// number of network rounds needed to compute the final result.
+///
+/// Let's say we want to compare numbers `a` and `b`. We can find a pair of bits
+/// `(a', b')` such that the compare result for `a` and `b` is the same as result
+/// for `a'` and `b'`.
+/// - if `a < b`, `(a', b')` must be `(0, 1)`.
+/// - if `a > b`, `(a', b')` must be `(1, 0)`.
+/// - if `a == b`, `(a', b')` could be `(0, 0)` or `(1, 1)`.
+///
+/// This way of representing the state is nice, because in the case of bits comparison,
+/// we can just use `a` and `b` itself without any additional modifications.
+///
+/// In our algorithm we use pair `(a' == b', a')` because it is easier to recompute,
+/// but still doesn't require network communication for initialization.
+///
+/// When those two bits are known, it is possible to compute the results of all
+/// other comparison operations.
+///
+/// # How is this graph computed?
+///
+/// - First, we `permuteAxes` so the innermost dimension, which stores bits of
+/// numbers become outermost. After that, each component of the array corresponds
+/// to one specific bit.
+///
+/// - Second, if signed numbers are compared, the most significant bit is inverted.
+/// It turns out, if we invert that bit, and then compare numbers as usual unsigned
+/// numbers, the result will be correct. See the [`flip_msb`] documentation to
+/// get more details about this fact.
+///
+/// - Third, we generate an instance of the `ComparisonResult` for bits.
+///
+/// - Later, we iteratively shrink `ComparisonResult` to get the result for a whole number
+/// instead of the result for each separate bit. On each iteration, we split the result into
+/// odd-indexed bits and even-indexed bits, and combine them. If the number of components
+/// is not divisible by two, we cut the first component and join it to the existing
+/// result.
+///
+/// # Example
+///
+/// Let's compare two 5-bit unsigned integers 15 (= 8 + 4 + 2 + 1) and 20 (= 16 + 4).
+///
+/// | bits     | 0 | 1 | 2 | 3 | 4 |
+/// |----------|---|---|---|---|---|
+/// |    a     | 1 | 1 | 1 | 1 | 0 |
+/// |    b     | 0 | 0 | 1 | 0 | 1 |
+/// | a' == b' | 0 | 0 | 1 | 0 | 0 |
+///
+/// We have 5 components, so 0-th is saved to `res`, 1-st and 2-nd are joined,
+/// as well as 3rd and 4th. When components are joined, higher bits have priority.
+/// So if we already found that `a != b` based on higher bits, we use that
+/// result. Otherwise, use results from smaller bits.
+///
+/// | components | res | 1..2 | 3..4 |
+/// |------------|-----|------|------|
+/// |     a'     |  1  |   1  |   0  |
+/// |  a' == b'  |  0  |   0  |   0  |
+///
+/// Number of components is divisible by two, so we only join 1..2, and 3..4,
+/// and not change the `res`. We already know the result in the group 3..4,
+/// so just copy it.
+///
+/// | components | res | 1..4 |
+/// |------------|-----|------|
+/// |     a'     |  1  |   0  |
+/// |  a' == b'  |  0  |   0  |
+///
+/// Only one component left, so join it to `res`.
+///
+/// | components | res |
+/// |------------|-----|
+/// |     a'     |  0  |
+/// |  a' == b'  |  0  |
+///
+/// We know that `a' == b'` is `false` and `a'` is `0`. Based on that we can
+/// compute the results for other comparison functions.
+///
+/// For example, if we want to know if `a < b` we can compute `(not a) and (not (a == b))`.
+///
+#[derive(Clone)]
+struct ComparisonResult {
+    a_equal_b: Node,
+    a: Node,
 }
 
-/// Given shape of graph inputs, this function returns:
-/// - bit_vect_len: Bit vector length after input vectorization, which is to be used in cust_op graph later.
-/// - permuted_shape: Permutation required for permute_axes graph operation, if argument has single dimension i.e. BIT ScalarType, this would be empty.
-/// - new_arg_shape: Shape taken by input once array is vectorized, could be empty if BIT ScalarType is the input.
-/// - new_arg_type: Type formed out of input once input is vectorized, could be a ArrayType(_, BIT) or ScalarType(BIT).
-/// - mult_dim_op: Value is `true` if argument has two or more dimensions else false
-fn preprocess_comparison_args(argument_type: Type) -> Result<(u64, ArrayShape, Type, bool)> {
-    let shape = argument_type.get_shape();
-    let new_arg_shape: ArrayShape;
-    let new_arg_type: Type;
-    let mult_dim_op: bool;
-    let shape_len: u64 = shape.len() as u64;
+struct ShrinkResult {
+    shrinked: Option<ComparisonResult>,
+    remainder: Option<ComparisonResult>,
+}
 
-    let bit_vect_len = get_innermost_dim_len(shape.clone());
-    match shape_len.cmp(&1) {
-        Ordering::Equal => {
-            new_arg_shape = vec![];
-            new_arg_type = scalar_type(BIT);
-            mult_dim_op = false;
+impl ComparisonResult {
+    fn from_a_b(a: Node, b: Node) -> Result<Self> {
+        let graph = a.get_graph();
+        let one = constant_scalar(&graph, 1, BIT)?;
+
+        let a_equal_b = a.add(b)?.add(one)?;
+        Ok(Self { a_equal_b, a })
+    }
+
+    /// `rhs` has higher priority. So if `rhs.a_is_smaller` or `rhs.b_is_smaller`
+    /// is set to 1 for a specific position, this value is used. Otherwise, values
+    /// from `self` are used.
+    ///
+    /// Multiplication depth of formulas here is 1, which is important for performance
+    /// reasons.
+    fn join(&self, rhs: &Self) -> Result<Self> {
+        let graph = &self.a_equal_b.get_graph();
+        let one = constant_scalar(graph, 1, BIT)?;
+
+        let a = self
+            .a
+            .multiply(rhs.a_equal_b.clone())?
+            .add(rhs.a.multiply(rhs.a_equal_b.add(one)?)?)?;
+
+        let a_equal_b = self.a_equal_b.multiply(rhs.a_equal_b.clone())?;
+
+        Ok(Self { a_equal_b, a })
+    }
+
+    /// Joins even-indexed and odd-indexed values
+    /// If the number of elements is not divisible by two,
+    /// the first element is returned in `ShrinkResult.remainder`.
+    fn shrink(&self) -> Result<ShrinkResult> {
+        let bit_len = self.a_equal_b.get_type()?.get_shape()[0] as i64;
+        let offset = bit_len % 2;
+        let remainder = if offset == 0 {
+            None
+        } else {
+            Some(Self {
+                a_equal_b: self.a_equal_b.get(vec![0])?,
+                a: self.a.get(vec![0])?,
+            })
+        };
+        let shrinked = if bit_len <= 1 {
+            None
+        } else {
+            let slice0 = self.sub_slice(offset, bit_len)?;
+            let slice1 = self.sub_slice(offset + 1, bit_len)?;
+            Some(slice0.join(&slice1)?)
+        };
+
+        Ok(ShrinkResult {
+            shrinked,
+            remainder,
+        })
+    }
+
+    /// Returns every second element starting from `start_offset`
+    fn sub_slice(&self, start_offset: i64, bit_len: i64) -> Result<Self> {
+        // TODO: at some point this could become the slowest part, as getting
+        // every second element is not efficient. If we have an efficient way to
+        // reorder elements of the array at the beginning, we potentially could
+        // do it an a way, such that later all splits will have the form
+        // [0..len/2] and [len/2..len].
+        // But currently the slowest part is `permuteAxes` and there is no good
+        // way of permutating the array, so not optimizing it right now.
+        let get_slice = |node: &Node| {
+            node.get_slice(vec![SliceElement::SubArray(
+                Some(start_offset),
+                Some(bit_len),
+                Some(2),
+            )])
+        };
+        Ok(Self {
+            a_equal_b: get_slice(&self.a_equal_b)?,
+            a: get_slice(&self.a)?,
+        })
+    }
+
+    fn not_a(&self) -> Result<Node> {
+        let graph = self.a_equal_b.get_graph();
+        graph.custom_op(CustomOperation::new(Not {}), vec![self.a.clone()])
+    }
+
+    fn equal(&self) -> Result<Node> {
+        Ok(self.a_equal_b.clone())
+    }
+
+    fn not_equal(&self) -> Result<Node> {
+        let graph = self.a_equal_b.get_graph();
+        graph.custom_op(CustomOperation::new(Not {}), vec![self.equal()?])
+    }
+
+    fn less_than(&self) -> Result<Node> {
+        self.not_a()?.multiply(self.not_equal()?)
+    }
+
+    fn greater_than(&self) -> Result<Node> {
+        self.a.multiply(self.not_equal()?)
+    }
+
+    fn greater_than_equal_to(&self) -> Result<Node> {
+        let graph = self.a_equal_b.get_graph();
+        graph.custom_op(CustomOperation::new(Not {}), vec![self.less_than()?])
+    }
+
+    fn less_than_equal_to(&self) -> Result<Node> {
+        let graph = self.a_equal_b.get_graph();
+        graph.custom_op(CustomOperation::new(Not {}), vec![self.greater_than()?])
+    }
+}
+
+/// See [`ComparisonResult`].
+///
+/// `a` and `b` should have type `Array` with bits pulled out to the outermost dimension.
+/// Inputs are interpreted as unsigned numbers. The number of bits should be the same
+/// in `a` and `b`.
+fn build_comparison_graph(a: Node, b: Node) -> Result<ComparisonResult> {
+    let mut to_shrink = ComparisonResult::from_a_b(a, b)?;
+    let mut remainders = vec![];
+    loop {
+        let shrink_res = to_shrink.shrink()?;
+
+        if let Some(remainder) = shrink_res.remainder {
+            remainders.push(remainder);
         }
-        Ordering::Greater => {
-            new_arg_shape = Vec::from(&shape[0..(shape.len() - 1)]);
-            new_arg_type = array_type(new_arg_shape.to_vec(), argument_type.get_scalar_type());
-            mult_dim_op = true;
+
+        if let Some(shrinked) = shrink_res.shrinked {
+            to_shrink = shrinked;
+        } else {
+            break;
         }
-        _ => {
+    }
+
+    let mut res = remainders[0].clone();
+    for remainder in remainders[1..].iter() {
+        res = res.join(remainder)?;
+    }
+    Ok(res)
+}
+
+fn prepend_dims_with_ones(node: Node, prepend_dims: usize) -> Result<Node> {
+    if prepend_dims == 0 {
+        return Ok(node);
+    }
+    let scalar = node.get_type()?.get_scalar_type();
+    let mut shape = node.get_type()?.get_shape();
+    shape.splice(0..0, vec![1; prepend_dims]);
+    node.get_graph().reshape(node, Type::Array(shape, scalar))
+}
+
+/// As we support broadcasting in comparison arguments, we need to make
+/// sure they are still broadcastable after bits are pulled out to the
+/// outermost dimension.
+///
+/// Say, we want to compare array of size `[2, 3, 64]` and array of size
+/// `[3, 64]`. This is a valid operation because `[3, 64]` could be broadcasted
+/// to `[2, 3, 64]`.
+///
+/// After pulling out bits, we get shapes `[64, 2, 3]` and `[64, 3]`, which are not
+/// broadcastable anymore.
+///
+/// To fix this, we convert `[3, 64]` into `[1, 3, 64]` first. After pulling out
+/// bits, shape is `[64, 1, 3]`, which could be broadcasted to `[64, 2, 3]`.
+fn expand_to_same_dims(a: Node, b: Node) -> Result<(Node, Node)> {
+    let len_a = a.get_type()?.get_shape().len();
+    let len_b = b.get_type()?.get_shape().len();
+    let result_len = max(len_a, len_b);
+    let a = prepend_dims_with_ones(a, result_len - len_a)?;
+    let b = prepend_dims_with_ones(b, result_len - len_b)?;
+    Ok((a, b))
+}
+
+/// - This function flips all values of the input Array's last component,
+/// which correspond to MSB bit (after `pull_out_bits`), to enable the
+/// signed comparisons.
+///
+/// - Why bit flip is sufficient for obtaining signed comparisons given
+/// unsigned comparison functionality? Please see below example:
+///
+///
+/// |sign bit MSB|  b1|  b0| unsigned value|   signed value|
+/// |------------|----|----|---------------|---------------|
+/// |           0|   0|   0|              0|              0|
+/// |           0|   0|   1|              1|              1|
+/// |           0|   1|   0|              2|              2|
+/// |           0|   1|   1|              3|              3|
+/// |           1|   0|   0|              4|             -4|
+/// |           1|   0|   1|              5|             -3|
+/// |           1|   1|   0|              6|             -2|
+/// |           1|   1|   1|              7|             -1|
+/// --------------------------------------------------------
+///
+/// - From the table, it can be seen that simply flipping the Most Significant Bit
+/// followed by doing unsigned comparison operation can provide the result achieved
+/// by performing the signed operation before the flipping.
+///
+/// - e.g. For both positive inputs,
+/// (2, 3)->(010, 011)-FlipMSB->(110, 111)-unsignedGreaterThan-> false
+/// unsigned comparison over them gives signed result
+///
+/// - e.g. For positive and negative inputs,
+/// (3, -4)->(011, 100)-FlipMSB->(111, 000)-unsignedGreaterThan-> true
+///
+/// - e.g. For negative and positive inputs,
+/// (-3, 3)->(101, 011)-FlipMSB->(001, 111)-unsignedGreaterThan-> false
+///
+/// - e.g. For both negative inputs,
+/// (-3 > -4) -> (101>100) -flipMSB-> (001>000)-unsignedGreaterThan-> true
+///
+/// - Once the MSB bit is flipped, and reattached, unsigned operations can be
+/// done on signed, MSB flipped inputs to enable signed comparisons
+///
+/// There is also another way of thinking about why bit flip is enough.
+///
+/// Let `A` be an unsigned integer with the following binary representation
+/// `A = | a_(n-1) | ... | a_0 |`.
+/// Let `a` be a signed integer with the following binary representations
+/// `a = | sign_bit | a_(n-1) | ... | a_0 | = A - sign_bit * 2^n`.
+/// Flipping the sign bit and recasting to unsigned results in a shift by `2^n`, i.e.
+/// `flib_msb(a) = A + (1 - sign_bit) * 2^n = a + 2^n`.
+fn flip_msb(ip: Node) -> Result<Node> {
+    let bit_len = ip.get_type()?.get_shape()[0] as i64;
+
+    let magnitude_slice = vec![SliceElement::SubArray(None, Some(-1), Some(1))];
+    let graph = ip.get_graph();
+    // we want `sign_bit` to be an array, so we can use it in `concatenate` later
+    let sign_bit = graph.get_slice(
+        ip.clone(),
+        vec![SliceElement::SubArray(
+            Some(bit_len - 1),
+            Some(bit_len),
+            None,
+        )],
+    )?;
+
+    let magnitude_bits = graph.get_slice(ip, magnitude_slice)?;
+    let flipped_bit = graph.custom_op(CustomOperation::new(Not {}), vec![sign_bit])?;
+    graph.concatenate(vec![magnitude_bits, flipped_bit], 0)
+}
+
+/// This function pulls out bits to outermost dimension, and flips MSB for
+/// signed comparsions.
+///
+/// See [`flip_msb`] and [`ComparisonResult`] for details.
+fn preprocess_input(signed_comparison: bool, node: Node) -> Result<Node> {
+    let node = pull_out_bits(node)?;
+
+    if signed_comparison {
+        flip_msb(node)
+    } else {
+        Ok(node)
+    }
+}
+
+fn preprocess_inputs(signed_comparison: bool, a: Node, b: Node) -> Result<(Node, Node)> {
+    let (a, b) = expand_to_same_dims(a, b)?;
+    let a = preprocess_input(signed_comparison, a)?;
+    let b = preprocess_input(signed_comparison, b)?;
+    Ok((a, b))
+}
+
+/// This function validates if the `arguments_types` are suitable for the
+/// intended signed custom operation. E.g. there should be at least `2` bits
+/// i.e. ( magnitude + sign )
+fn validate_signed_arguments(custom_op_name: &str, arguments_types: Vec<Type>) -> Result<()> {
+    for (arg_id, arg_type) in arguments_types.iter().enumerate() {
+        if *arg_type.get_shape().last().unwrap() < 2 {
             return Err(runtime_error!(
-                "Input argument for custom operation - comparison - is empty"
+                "{custom_op_name}: Signed input{arg_id} has less than 2 bits"
             ));
         }
     }
-    Ok((bit_vect_len, new_arg_shape, new_arg_type, mult_dim_op))
+    Ok(())
 }
 
-/// This trait has to be implemented by any comparison custom operation
-#[typetag::serde(tag = "type")]
-trait ComparisonCustomOperation: CustomOperationBody {
-    /// - This function needs to be implemented if the arguments need to be
-    /// validated additionally, i.e. apart from the generic argument validation,
-    /// as implemented by `validate_arguments_in_broadcast_bit_ops()`
-    /// - Some custom comparison operations may require additional operation-
-    /// specific validation
-    /// - E.g. see the implementation for this function for `GreaterThan` custom op,
-    /// in there, unsigned comparison for single-bit inputs is supported,
-    /// whereas signed comparison requires at least two bits (one for MSB). This
-    /// signed-operation specific validation is done in the default
-    /// `validate_signed_arguments()` function for the trait `NeedsSignedPreprocessing`.
-    /// This function's overridden counterpart for `GreaterThan` custom operation
-    /// simply makes a call for it.
-    fn validate_c_op_specific_arguments(&self, _arguments_types: Vec<Type>) -> Result<()> {
-        Ok(())
+/// This function first builds a generic comparison graph, and then
+/// calls `post_process_result` to obtain the final result.
+/// This functions handles pre-processing of input types to support vectorized inputs.
+fn instantiate_comparison_custom_op(
+    context: Context,
+    arguments_types: Vec<Type>,
+    signed_comparison: bool,
+    custom_op_name: &str,
+    post_process_result: impl FnOnce(&ComparisonResult) -> Result<Node>,
+) -> Result<Graph> {
+    validate_arguments_in_broadcast_bit_ops(arguments_types.clone(), custom_op_name)?;
+    if signed_comparison {
+        validate_signed_arguments(custom_op_name, arguments_types.clone())?;
     }
 
-    /// Returns error if vector comparison custom_ops input is invalid.
-    fn validate_comparison_arguments(&self, arguments_types: Vec<Type>) -> Result<()> {
-        // Do generic argument validations
-        validate_arguments_in_broadcast_bit_ops(arguments_types.clone(), &self.get_name())?;
-        // Do custom comparison operation specific argument validation
-        self.validate_c_op_specific_arguments(arguments_types)
-    }
+    let graph = context.create_graph()?;
+    let a = graph.input(arguments_types[0].clone())?;
+    let b = graph.input(arguments_types[1].clone())?;
 
-    /// - This function returns the Node after array_to_vector() Graph operation
-    /// for input operation node `ip`.
-    /// - While doing so it will permute `ip`, for multidimensional inputs only,
-    /// using the permute_axes() Graph operation. Permutation is done to bring
-    /// the innermost dimension axis to the outermost dimension as it is assumed
-    /// that, prior to permutation, inner dimension corresponds to the bit representation of `ip`.
-    /// Inputs -
-    /// - ip: Input node to be converted to vector
-    fn get_bin_vec(&self, ip: Node) -> Result<Node> {
-        // TODO - Could be unified with `pull_out_bits()` or extracted to `utils.rs`
-        match ip.get_type()? {
-            Type::Array(_, _) => {
-                let graph = ip.get_graph();
-                Ok(graph.array_to_vector(pull_out_bits(ip)?)?)
-            }
-            _ => Err(runtime_error!(
-                "Invalid Node argument: expected operation Input of ArrayType"
-            )),
-        }
-    }
-}
+    let (a, b) = preprocess_inputs(signed_comparison, a, b)?;
+    let result = post_process_result(&build_comparison_graph(a, b)?)?;
 
-/// This trait would only be implemented by custom comparison operations that
-/// support signed comparisons e.g. GreaterThan, LessThan, GreaterThanEqualTo,
-/// LessThanEqualTo.
-#[typetag::serde(tag = "type")]
-trait NeedsSignedPreprocessing: CustomOperationBody + ComparisonCustomOperation {
-    fn is_signed_custom_operation(&self) -> bool;
-
-    /// This function validates if the `arguments_types` are suitable for the
-    /// intended signed custom operation. E.g. there should be at least `2` bits
-    /// i.e. ( magnitude + sign )
-    fn validate_signed_arguments(&self, arguments_types: Vec<Type>) -> Result<()> {
-        let mut are_valid_inputs: bool = true;
-        let mut error_message: String = format!("{}: ", self.get_name());
-        match (&arguments_types[0], &arguments_types[1]) {
-            (Type::Array(shape0, _), Type::Array(shape1, _)) => {
-                let shape0_len = shape0.len();
-                let shape1_len = shape1.len();
-                if self.is_signed_custom_operation()
-                    && shape0_len == 1
-                    && shape0[shape0_len - 1] < 2
-                {
-                    are_valid_inputs = false;
-                    error_message.push_str("Signed input0 has less than 2 bits");
-                } else if self.is_signed_custom_operation()
-                    && shape1_len == 1
-                    && shape1[shape1_len - 1] < 2
-                {
-                    are_valid_inputs = false;
-                    error_message.push_str("Signed input1 has less than 2 bits");
-                }
-            }
-            _ => {
-                are_valid_inputs = false;
-                error_message.push_str("Invalid input argument type, expected Array type");
-            }
-        }
-
-        if !are_valid_inputs {
-            Err(runtime_error!("{}", error_message))
-        } else {
-            Ok(())
-        }
-    }
-
-    /// - This function flips the input Array's MSB bit, to enable the signed
-    /// comparisons, and returns a vector, whose each component corresponds to
-    /// the BIT, i.e. the inner-most, Array dimension
-    ///
-    /// - Why bit flip is sufficient for obtaining signed comparisons given
-    /// unsigned comparison functionality? Please see below example:
-    ///
-    /// ========================================
-    /// |sign bit|  b1|  b0| unsigned|   signed|
-    /// |   MSB  |    |    |    value|    value|
-    /// |========|====|====|=========|=========|
-    /// |       0|   0|   0|        0|        0|
-    /// |       0|   0|   1|        1|        1|
-    /// |       0|   1|   0|        2|        2|
-    /// |       0|   1|   1|        3|        3|
-    /// |       1|   0|   0|        4|       -4|
-    /// |       1|   0|   1|        5|       -3|
-    /// |       1|   1|   0|        6|       -2|
-    /// |       1|   1|   1|        7|       -1|
-    /// ========================================
-    ///
-    /// - From the table, it can be seen that simply flipping the Most Significant Bit
-    /// followed by doing unsigned comparison operation can provide the result achieved
-    /// by performing the signed operation before the flipping.
-    ///
-    /// - e.g. For both positive inputs,
-    /// (2, 3)->(010, 011)-FlipMSB->(110, 111)-unsignedGreaterThan-> false
-    /// unsigned comparison over them gives signed result
-    ///
-    /// - e.g. For positive and negative inputs,
-    /// (3, -4)->(011, 100)-FlipMSB->(111, 000)-unsignedGreaterThan-> true
-    ///
-    /// - e.g. For negative and positive inputs,
-    /// (-3, 3)->(101, 011)-FlipMSB->(001, 111)-unsignedGreaterThan-> false
-    ///
-    /// - e.g. For both negative inputs,
-    /// (-3 > -4) -> (101>100) -flipMSB-> (001>000)-unsignedGreaterThan-> true
-    ///
-    /// - Once the MSB bit is flipped, and reattached, unsigned operations can be
-    /// done on signed, MSB flipped inputs to enable signed comparisons
-    ///
-    /// - As an effort to reduce the array_to_vector() and vector_to_array()
-    /// transformations, this function does not convert from vector to array as that
-    /// operation would be reversed in the next part of the code - Optimization
-    /// pass should be able to handle this
-    fn get_bin_vec_w_flipped_msb(&self, ip: Node) -> Result<Node> {
-        let ip_type = ip.get_type()?;
-        let (ip_shape, sc_t) = match &ip_type {
-            Type::Array(shape_v, sc_t) => {
-                if shape_v.is_empty() {
-                    return Err(runtime_error!(
-                        "Input argument for custom operation - comparison - has no shape"
-                    ));
-                }
-                if *sc_t != BIT {
-                    return Err(runtime_error!(
-                        "Input argument for custom operation - comparison - has no BIT ScalarType"
-                    ));
-                }
-                (shape_v, sc_t.clone())
-            }
-            _ => {
-                return Err(runtime_error!(
-                    "Input argument for custom operation - comparison - is not Array Type"
-                ))
-            }
-        };
-
-        let graph = ip.get_graph();
-        let mut msb_slice: Slice = vec![];
-        let mut magnitude_slice: Slice = vec![];
-        msb_slice.push(SliceElement::Ellipsis);
-        magnitude_slice.push(SliceElement::Ellipsis);
-        msb_slice.push(SliceElement::SubArray(Some(-1), None, None));
-        magnitude_slice.push(SliceElement::SubArray(None, Some(-1), Some(1)));
-        let sign_bit = graph.get_slice(ip.clone(), msb_slice)?;
-        let magnitude_bits = graph.get_slice(ip, magnitude_slice)?;
-        let flipped_bit = graph.custom_op(CustomOperation::new(Not {}), vec![sign_bit])?;
-        // 1. Convert to vector form with each component representing each magnitude bit
-        // 2. For the output vector to be returned, determine its individual
-        // component type. Notes:
-        //  2.1 Input was an array (Type::Array) with single axis or multiple axes
-        //  2.2 Number of bits would be constant in input and output after all the
-        // slicing, negation, array-to-vector and combining/stitching operations
-        let magnitude_vec: Node;
-        let op_vec_type: Type;
-        // total_bits <- #magnitude_bits + #sign_bit(1)
-        let total_bits = ip_shape[ip_shape.len() - 1];
-        let ip_num_axes = ip_shape.len();
-        if ip_num_axes == 1 {
-            magnitude_vec = graph.array_to_vector(magnitude_bits)?;
-            op_vec_type = vector_type(total_bits, scalar_type(sc_t));
-        } else {
-            magnitude_vec = self.get_bin_vec(magnitude_bits)?;
-            // The innermost dimension of the input array corresponds to the bits and
-            // after the conversion to vector, each component is now an array of shape
-            // ip_shape[0..(ip_shape.len()-1)]
-            op_vec_type = vector_type(
-                total_bits,
-                array_type(ip_shape[0..(ip_num_axes - 1)].to_vec(), sc_t),
-            );
-        };
-        // Combine the magnitude and sign bits back after flipping the latter i.e.
-        // sign bit
-        let combined_tup = graph.create_tuple(vec![magnitude_vec, flipped_bit])?;
-        let combined_vec = graph.reshape(combined_tup, op_vec_type)?;
-
-        Ok(combined_vec)
-    }
-}
-
-/// - Certain custom operations are the building-blocks for other similar
-/// comparison operations
-/// - e.g. GreaterThan, a 'primitive' comparison operation,
-/// can be used to build other comparison operations such as LessThan,
-/// LessThanEqualTo, GreaterThanEqualTo
-/// - Likewise, for NotEqual being a primitive operation for Equal custom
-/// comparison operation
-/// - Thus, we define a trait `PrimitiveComparisonCustomOperation` for such primitive
-/// operations
-/// - The trait specifies that there could be graph operating per bit given
-/// by get_bit_lvl_graph(), which these operations could define individually
-/// - The other trait functionality could be the actual construction of the
-/// respective graph, whether GreaterThan or NotEqual, using this bit-level,
-/// low granular graph given by `get_bit_lvl_graph()`
-#[typetag::serde(tag = "type")]
-trait PrimitiveComparisonCustomOperation: ComparisonCustomOperation {
-    /// - Depending on the custom comparison operation being designed,
-    /// this function should return a low-granular graph operating on
-    /// two input bits and a state bit
-    /// - Primitive comparison operations such as GreaterThan or NotEqual
-    /// should provide this behavior
-    /// - The resulting graph could be used as part of an `iterate` graph
-    /// operation
-    fn get_bit_lvl_graph(
-        &self,
-        context: Context,
-        constant_type: Type,
-        ip_a_array_type: Type,
-        ip_b_array_type: Type,
-    ) -> Result<Graph>;
-
-    /// - This function varies if signed comparison is to be made or an unsigned
-    /// comparison has to be made
-    /// - Signed comparisons typically would involve slicing, flipping and
-    /// repositioning the MSB bit, permuting the axes and then converting from
-    /// array to vector types. See implementation for GreaterThan custom op for
-    /// more details
-    /// - Unsigned comparisons would involve just permuting the axes and then
-    /// converting from array to vector types. See implementation for
-    /// GreaterThan and NotEqual for more details
-    fn preprocess_inputs(&self, ip_a: Node, ip_b: Node) -> Result<(Node, Node)>;
-
-    /// This is a generic function and returns graphs for the basic building blocks of
-    /// the custom operations, namely, GreaterThan {} and NotEqual {}.
-    /// This functions handles pre-processing of input types to support vectorized inputs.
-    fn create_comparison_custom_op(
-        &self,
-        context: Context,
-        arguments_types: Vec<Type>,
-    ) -> Result<Graph> {
-        self.validate_comparison_arguments(arguments_types.clone())?;
-
-        // Pre-processing steps for both the arguments
-        let (bit_vect_len0, new_shape0, new_array_type0, mult_dim_op0) =
-            preprocess_comparison_args(arguments_types[0].clone())?;
-        let (bit_vect_len1, new_shape1, new_array_type1, mult_dim_op1) =
-            preprocess_comparison_args(arguments_types[1].clone())?;
-
-        let constant_type = if mult_dim_op0 || mult_dim_op1 {
-            let constant_shape = broadcast_shapes(new_shape0, new_shape1)?;
-            array_type(constant_shape, BIT)
-        } else {
-            scalar_type(BIT)
-        };
-
-        let bit_level_comparison_graph = self.get_bit_lvl_graph(
-            context.clone(),
-            constant_type.clone(),
-            new_array_type0.clone(),
-            new_array_type1.clone(),
-        )?;
-
-        let graph_comp_n_bits = context.create_graph()?;
-        {
-            // Graph to compare two arrays/scalars or a combination
-            // of the two in their vector forms of lengths (l) bit_vect_len0 and
-            // bit_vect_len1. Each vector component represents the corresponding
-            // bit location, i.e. component 0 (l-1) value -> LSB (MSB) bit value.
-            // Assumption: bit_vect_len0 == bit_vect_len1
-            let inputs = graph_comp_n_bits.input(tuple_type(vec![
-                vector_type(bit_vect_len0, new_array_type0),
-                vector_type(bit_vect_len1, new_array_type1),
-            ]))?;
-
-            let a = graph_comp_n_bits.tuple_get(inputs.clone(), 0)?;
-            let b = graph_comp_n_bits.tuple_get(inputs, 1)?;
-            let azb = graph_comp_n_bits.zip(vec![a, b])?;
-
-            let prev_r = zeros(&graph_comp_n_bits, constant_type)?;
-
-            let r_tuple = graph_comp_n_bits.iterate(bit_level_comparison_graph, prev_r, azb)?;
-            let r = graph_comp_n_bits.tuple_get(r_tuple, 0)?;
-            graph_comp_n_bits.set_output_node(r)?;
-            graph_comp_n_bits.finalize()?;
-        }
-
-        // Graph to compare two unsigned numbers as represented as ArrayType and
-        // having the same final/innermost dimension length
-        let comparison_custom_op_graph = context.create_graph()?;
-        let a = comparison_custom_op_graph.input(arguments_types[0].clone())?;
-        let b = comparison_custom_op_graph.input(arguments_types[1].clone())?;
-
-        // If signed operation, flip MSB bits and then do the `permute_axes()` and `array_to_vector()`
-        // else for NotEqual, Equal or unsigned comparisons, just do latter two and avoid flipping MSB part
-        let (a_vec_bin, b_vec_bin) = self.preprocess_inputs(a, b)?;
-
-        let arg_comp_64b = comparison_custom_op_graph.create_tuple(vec![a_vec_bin, b_vec_bin])?;
-        let result = comparison_custom_op_graph.call(graph_comp_n_bits, vec![arg_comp_64b])?;
-        comparison_custom_op_graph.set_output_node(result)?;
-        comparison_custom_op_graph.finalize()?;
-        Ok(comparison_custom_op_graph)
-    }
+    graph.set_output_node(result)?;
+    graph.finalize()?;
+    Ok(graph)
 }
 
 /// A structure that defines the custom operation GreaterThan that compares arrays of binary strings elementwise as follows:
@@ -414,81 +458,17 @@ pub struct GreaterThan {
 #[typetag::serde]
 impl CustomOperationBody for GreaterThan {
     fn instantiate(&self, context: Context, arguments_types: Vec<Type>) -> Result<Graph> {
-        self.create_comparison_custom_op(context, arguments_types)
+        instantiate_comparison_custom_op(
+            context,
+            arguments_types,
+            self.signed_comparison,
+            &self.get_name(),
+            |res| res.greater_than(),
+        )
     }
 
     fn get_name(&self) -> String {
         format!("GreaterThan(signed_comparison={})", self.signed_comparison)
-    }
-}
-
-#[typetag::serde]
-impl ComparisonCustomOperation for GreaterThan {
-    fn validate_c_op_specific_arguments(&self, arguments_types: Vec<Type>) -> Result<()> {
-        self.validate_signed_arguments(arguments_types)
-    }
-}
-
-#[typetag::serde]
-impl NeedsSignedPreprocessing for GreaterThan {
-    fn is_signed_custom_operation(&self) -> bool {
-        self.signed_comparison
-    }
-}
-
-#[typetag::serde]
-impl PrimitiveComparisonCustomOperation for GreaterThan {
-    /// Graph to compare a single bit: (a > b)?
-    /// The logic assumes traversing from LSB to MSB
-    /// For current pair of bits, for two inputs to be compared,
-    /// #1 if current bits differ in a favorable way s.t. a_i > b_i then propagate
-    ///    the result ahead, else propagate previous result or unfavorable result ahead
-    /// #2 if current bits differ then stop the propagation of result generated
-    ///    for previous lower significant bits, else let previous result be propagated ahead
-    /// Formula: `cur_r = (a ^ prev_r) & (b ^ prev_r) ^ a`
-    fn get_bit_lvl_graph(
-        &self,
-        context: Context,
-        constant_type: Type,
-        ip_a_array_type: Type,
-        ip_b_array_type: Type,
-    ) -> Result<Graph> {
-        let is_greater_than_bit_graph = context.create_graph()?;
-        let input_prev_r = is_greater_than_bit_graph.input(constant_type)?;
-        let inputs =
-            is_greater_than_bit_graph.input(tuple_type(vec![ip_a_array_type, ip_b_array_type]))?;
-        let a = is_greater_than_bit_graph.tuple_get(inputs.clone(), 0)?;
-        let b = is_greater_than_bit_graph.tuple_get(inputs, 1)?;
-        let a_xor_prev_r = a.add(input_prev_r.clone())?;
-        let b_xor_prev_r = b.add(input_prev_r)?;
-        let output_r = a_xor_prev_r.multiply(b_xor_prev_r)?.add(a)?;
-        let empty = is_greater_than_bit_graph.create_tuple(vec![])?;
-        let output_tuple = is_greater_than_bit_graph.create_tuple(vec![output_r, empty])?;
-        is_greater_than_bit_graph.set_output_node(output_tuple)?;
-        is_greater_than_bit_graph.add_annotation(GraphAnnotation::OneBitState)?;
-        is_greater_than_bit_graph.finalize()?;
-        Ok(is_greater_than_bit_graph)
-    }
-
-    /// Behavior varies if operation is signed or unsigned as explained in the
-    /// trait declaration of this function
-    fn preprocess_inputs(&self, ip_a: Node, ip_b: Node) -> Result<(Node, Node)> {
-        let (a_vec_bin, b_vec_bin) = if self.signed_comparison {
-            // - If the custom comparison operation is signed, flip the bits and do
-            // rest of the pre-processing computations of `permute_axes()`
-            // (if required) and `array_to_vector()`
-            // - Using default method from trait `NeedsSignedPreprocessing`
-            (
-                self.get_bin_vec_w_flipped_msb(ip_a)?,
-                self.get_bin_vec_w_flipped_msb(ip_b)?,
-            )
-        } else {
-            // - Permute and generate vectors to leverage broadcasting rules for input a, b
-            // - Using default method from trait `ComparisonCustomOperation` as there are
-            // no special requirements to flip the bit
-            (self.get_bin_vec(ip_a)?, self.get_bin_vec(ip_b)?)
-        };
-        Ok((a_vec_bin, b_vec_bin))
     }
 }
 
@@ -531,62 +511,13 @@ pub struct NotEqual {}
 #[typetag::serde]
 impl CustomOperationBody for NotEqual {
     fn instantiate(&self, context: Context, arguments_types: Vec<Type>) -> Result<Graph> {
-        self.create_comparison_custom_op(context, arguments_types)
+        instantiate_comparison_custom_op(context, arguments_types, false, &self.get_name(), |res| {
+            res.not_equal()
+        })
     }
 
     fn get_name(&self) -> String {
         "NotEqual".to_owned()
-    }
-}
-
-#[typetag::serde]
-impl ComparisonCustomOperation for NotEqual {}
-
-#[typetag::serde]
-impl PrimitiveComparisonCustomOperation for NotEqual {
-    /// - Returns 1 if input_prev_r == 1 OR tuple inputs = {(1, 0), (0, 1)}, else returns 0.
-    /// - This function generates a Graph to evaluate if input two bits given are not equal or to
-    /// propagate the previous state result if it is 1.
-    /// - The logic assumes traversing from LSB to MSB
-    /// - There are two inputs - tuple of bits 'a' and 'b', which are to be tested for non-equality
-    /// and previous_bits' state resulting out of use of this function.
-    /// - To obtain result, XOR current pair of bits in the tuple and OR the outcome with input_prev_state.
-    /// - Obtain XOR by using Add() Graph Operation given inputs' `BIT` `ScalarType` and OR by using the OR custom op.
-    /// Formula: `output_r = (a ^ b) | input_prev_r`
-    fn get_bit_lvl_graph(
-        &self,
-        context: Context,
-        constant_type: Type,
-        ip_a_array_type: Type,
-        ip_b_array_type: Type,
-    ) -> Result<Graph> {
-        let are_not_equal_bit_graph = context.create_graph()?;
-        let input_prev_r = are_not_equal_bit_graph.input(constant_type)?;
-        let inputs =
-            are_not_equal_bit_graph.input(tuple_type(vec![ip_a_array_type, ip_b_array_type]))?;
-        let a = are_not_equal_bit_graph.tuple_get(inputs.clone(), 0)?;
-        let b = are_not_equal_bit_graph.tuple_get(inputs, 1)?;
-        let diff_bit = are_not_equal_bit_graph.add(a, b)?;
-        let output_r = are_not_equal_bit_graph
-            .custom_op(CustomOperation::new(Or {}), vec![input_prev_r, diff_bit])?;
-        let empty = are_not_equal_bit_graph.create_tuple(vec![])?;
-        let output_tuple = are_not_equal_bit_graph.create_tuple(vec![output_r, empty])?;
-        are_not_equal_bit_graph.set_output_node(output_tuple)?;
-        are_not_equal_bit_graph.add_annotation(GraphAnnotation::OneBitState)?;
-        are_not_equal_bit_graph.finalize()?;
-        Ok(are_not_equal_bit_graph)
-    }
-
-    /// - Behavior varies if operation is signed or unsigned as explained in the
-    /// trait declaration of this function
-    /// - NotEqual and Equal are only unsigned
-    fn preprocess_inputs(&self, ip_a: Node, ip_b: Node) -> Result<(Node, Node)> {
-        // - Permute and generate vectors to leverage broadcasting rules for input a, b
-        // - Using default method from trait `ComparisonCustomOperation` as there are
-        // no special requirements to flip the bit, as this is not signed supported
-        // operation
-        let (a_vec_bin, b_vec_bin) = (self.get_bin_vec(ip_a)?, self.get_bin_vec(ip_b)?);
-        Ok((a_vec_bin, b_vec_bin))
     }
 }
 
@@ -634,38 +565,17 @@ pub struct LessThan {
 #[typetag::serde]
 impl CustomOperationBody for LessThan {
     fn instantiate(&self, context: Context, arguments_types: Vec<Type>) -> Result<Graph> {
-        self.validate_comparison_arguments(arguments_types.clone())?;
-        //Graph to compare two n bit numbers as arrays
-        let less_than_graph = context.create_graph()?;
-        let a = less_than_graph.input(arguments_types[0].clone())?;
-        let b = less_than_graph.input(arguments_types[1].clone())?;
-        let result = less_than_graph.custom_op(
-            CustomOperation::new(GreaterThan {
-                signed_comparison: self.signed_comparison,
-            }),
-            vec![b, a],
-        )?;
-        less_than_graph.set_output_node(result)?;
-        less_than_graph.finalize()?;
-        Ok(less_than_graph)
+        instantiate_comparison_custom_op(
+            context,
+            arguments_types,
+            self.signed_comparison,
+            &self.get_name(),
+            |res| res.less_than(),
+        )
     }
 
     fn get_name(&self) -> String {
         format!("LessThan(signed_comparison={})", self.signed_comparison)
-    }
-}
-
-#[typetag::serde]
-impl ComparisonCustomOperation for LessThan {
-    fn validate_c_op_specific_arguments(&self, arguments_types: Vec<Type>) -> Result<()> {
-        self.validate_signed_arguments(arguments_types)
-    }
-}
-
-#[typetag::serde]
-impl NeedsSignedPreprocessing for LessThan {
-    fn is_signed_custom_operation(&self) -> bool {
-        self.signed_comparison
     }
 }
 
@@ -713,20 +623,13 @@ pub struct LessThanEqualTo {
 #[typetag::serde]
 impl CustomOperationBody for LessThanEqualTo {
     fn instantiate(&self, context: Context, arguments_types: Vec<Type>) -> Result<Graph> {
-        self.validate_comparison_arguments(arguments_types.clone())?;
-        let less_than_equal_to = context.create_graph()?;
-        let a = less_than_equal_to.input(arguments_types[0].clone())?;
-        let b = less_than_equal_to.input(arguments_types[1].clone())?;
-        let a_gt_b = less_than_equal_to.custom_op(
-            CustomOperation::new(GreaterThan {
-                signed_comparison: self.signed_comparison,
-            }),
-            vec![a, b],
-        )?;
-        let result = less_than_equal_to.custom_op(CustomOperation::new(Not {}), vec![a_gt_b])?;
-        less_than_equal_to.set_output_node(result)?;
-        less_than_equal_to.finalize()?;
-        Ok(less_than_equal_to)
+        instantiate_comparison_custom_op(
+            context,
+            arguments_types,
+            self.signed_comparison,
+            &self.get_name(),
+            |res| res.less_than_equal_to(),
+        )
     }
 
     fn get_name(&self) -> String {
@@ -734,20 +637,6 @@ impl CustomOperationBody for LessThanEqualTo {
             "LessThanEqualTo(signed_comparison={})",
             self.signed_comparison
         )
-    }
-}
-
-#[typetag::serde]
-impl ComparisonCustomOperation for LessThanEqualTo {
-    fn validate_c_op_specific_arguments(&self, arguments_types: Vec<Type>) -> Result<()> {
-        self.validate_signed_arguments(arguments_types)
-    }
-}
-
-#[typetag::serde]
-impl NeedsSignedPreprocessing for LessThanEqualTo {
-    fn is_signed_custom_operation(&self) -> bool {
-        self.signed_comparison
     }
 }
 
@@ -795,20 +684,13 @@ pub struct GreaterThanEqualTo {
 #[typetag::serde]
 impl CustomOperationBody for GreaterThanEqualTo {
     fn instantiate(&self, context: Context, arguments_types: Vec<Type>) -> Result<Graph> {
-        self.validate_comparison_arguments(arguments_types.clone())?;
-        let greater_than_equal_to = context.create_graph()?;
-        let a = greater_than_equal_to.input(arguments_types[0].clone())?;
-        let b = greater_than_equal_to.input(arguments_types[1].clone())?;
-        let a_lt_b = greater_than_equal_to.custom_op(
-            CustomOperation::new(LessThan {
-                signed_comparison: self.signed_comparison,
-            }),
-            vec![a, b],
-        )?;
-        let result = greater_than_equal_to.custom_op(CustomOperation::new(Not {}), vec![a_lt_b])?;
-        greater_than_equal_to.set_output_node(result)?;
-        greater_than_equal_to.finalize()?;
-        Ok(greater_than_equal_to)
+        instantiate_comparison_custom_op(
+            context,
+            arguments_types,
+            self.signed_comparison,
+            &self.get_name(),
+            |res| res.greater_than_equal_to(),
+        )
     }
 
     fn get_name(&self) -> String {
@@ -816,20 +698,6 @@ impl CustomOperationBody for GreaterThanEqualTo {
             "GreaterThanEqualTo(signed_comparison={})",
             self.signed_comparison
         )
-    }
-}
-
-#[typetag::serde]
-impl ComparisonCustomOperation for GreaterThanEqualTo {
-    fn validate_c_op_specific_arguments(&self, arguments_types: Vec<Type>) -> Result<()> {
-        self.validate_signed_arguments(arguments_types)
-    }
-}
-
-#[typetag::serde]
-impl NeedsSignedPreprocessing for GreaterThanEqualTo {
-    fn is_signed_custom_operation(&self) -> bool {
-        self.signed_comparison
     }
 }
 
@@ -872,16 +740,9 @@ pub struct Equal {}
 #[typetag::serde]
 impl CustomOperationBody for Equal {
     fn instantiate(&self, context: Context, arguments_types: Vec<Type>) -> Result<Graph> {
-        self.validate_comparison_arguments(arguments_types.clone())?;
-        //Graph to compare two n bit numbers as arrays
-        let equal_to = context.create_graph()?;
-        let a = equal_to.input(arguments_types[0].clone())?;
-        let b = equal_to.input(arguments_types[1].clone())?;
-        let is_not_equal = equal_to.custom_op(CustomOperation::new(NotEqual {}), vec![a, b])?;
-        let result = equal_to.custom_op(CustomOperation::new(Not {}), vec![is_not_equal])?;
-        equal_to.set_output_node(result)?;
-        equal_to.finalize()?;
-        Ok(equal_to)
+        instantiate_comparison_custom_op(context, arguments_types, false, &self.get_name(), |res| {
+            res.equal()
+        })
     }
 
     fn get_name(&self) -> String {
@@ -889,21 +750,26 @@ impl CustomOperationBody for Equal {
     }
 }
 
-#[typetag::serde]
-impl ComparisonCustomOperation for Equal {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    use crate::broadcast::broadcast_shapes;
     use crate::custom_ops::run_instantiation_pass;
     use crate::custom_ops::CustomOperation;
+    use crate::data_types::scalar_type;
+    use crate::data_types::tuple_type;
+    use crate::data_types::ArrayShape;
     use crate::data_types::{
         array_type, ScalarType, INT16, INT32, INT64, INT8, UINT16, UINT32, UINT64, UINT8,
     };
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
     use crate::graphs::create_context;
+    use crate::inline::inline_common::DepthOptimizationLevel;
+    use crate::inline::inline_ops::inline_operations;
+    use crate::inline::inline_ops::InlineConfig;
+    use crate::inline::inline_ops::InlineMode;
 
     fn test_unsigned_greater_than_cust_op_helper(a: Vec<u8>, b: Vec<u8>) -> Result<u8> {
         let c = create_context()?;
@@ -2454,5 +2320,44 @@ mod tests {
             Ok(())
         }()
         .unwrap();
+    }
+
+    #[test]
+    fn test_comparison_graph_size() -> Result<()> {
+        let mut custom_ops = vec![];
+        custom_ops.push(CustomOperation::new(Equal {}));
+        custom_ops.push(CustomOperation::new(NotEqual {}));
+        for &signed_comparison in [false, true].iter() {
+            custom_ops.push(CustomOperation::new(GreaterThan { signed_comparison }));
+            custom_ops.push(CustomOperation::new(LessThan { signed_comparison }));
+            custom_ops.push(CustomOperation::new(GreaterThanEqualTo {
+                signed_comparison,
+            }));
+            custom_ops.push(CustomOperation::new(LessThanEqualTo { signed_comparison }));
+        }
+
+        for custom_op in custom_ops.into_iter() {
+            let c = create_context()?;
+            let g = c.create_graph()?;
+            let i_a = g.input(array_type(vec![64], BIT))?;
+            let i_b = g.input(array_type(vec![64], BIT))?;
+            let o = g.custom_op(custom_op, vec![i_a, i_b])?;
+            g.set_output_node(o)?;
+            g.finalize()?;
+
+            c.set_main_graph(g.clone())?;
+            c.finalize()?;
+
+            let inline_config = InlineConfig {
+                default_mode: InlineMode::DepthOptimized(DepthOptimizationLevel::Default),
+                ..Default::default()
+            };
+            let instantiated_context = run_instantiation_pass(c)?.get_context();
+            let inlined_context = inline_operations(instantiated_context, inline_config.clone())?;
+            let num_nodes = inlined_context.get_main_graph()?.get_num_nodes();
+
+            assert!(num_nodes <= 200);
+        }
+        Ok(())
     }
 }

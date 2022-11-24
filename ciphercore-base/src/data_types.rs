@@ -738,7 +738,7 @@ impl Type {
         if let Type::Array(shape, _) = self {
             shape.clone()
         } else {
-            panic!("Can't get shape");
+            panic!("Can't get shape of {:?})", self);
         }
     }
 
@@ -1061,7 +1061,9 @@ impl FromStr for ScalarType {
             "i32" => Ok(INT32),
             "u64" => Ok(UINT64),
             "i64" => Ok(INT64),
-            _ => Err(runtime_error!("Unknown scalar type")),
+            _ => Err(runtime_error!(
+                "Unknown scalar type. Expected b|u8|i8|u16|i16|u32|i32|u64|i64."
+            )),
         }
     }
 }

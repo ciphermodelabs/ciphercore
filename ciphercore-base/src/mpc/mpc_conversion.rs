@@ -12,7 +12,7 @@ use crate::inline::inline_ops::{
 use crate::mpc::mpc_arithmetic::{AddMPC, MultiplyMPC};
 use crate::mpc::mpc_compiler::{check_private_tuple, compile_to_mpc_graph, PARTIES};
 use crate::ops::adder::BinaryAdd;
-use crate::ops::utils::put_in_bits;
+use crate::ops::utils::{constant_scalar, put_in_bits};
 use crate::type_inference::a2b_type_inference;
 
 use serde::{Deserialize, Serialize};
@@ -81,7 +81,7 @@ impl CustomOperationBody for A2BMPC {
         // Create an MPC graph for the left shift
         let shift_mpc_g = get_left_shift_graph(context.clone(), bits_t.clone())?;
         // Create an MPC graph for the binary adder
-        let adder_mpc_g = get_binary_adder_graph(context.clone(), bits_t.clone())?;
+        let adder_mpc_g = get_binary_adder_graph(context.clone(), bits_t)?;
 
         let g = context.create_graph()?;
         let input = g.input(t)?;
@@ -92,7 +92,10 @@ impl CustomOperationBody for A2BMPC {
         // generate shares of arithmetic shares converted to binary strings
         let mut bit_shares = vec![];
 
-        let zero_bits = g.constant(bits_t.clone(), Value::zero_of_type(bits_t))?;
+        // this is a hacky way to create an array of shape `bits_t`, but without
+        // storing big constant inside generated json graph
+        let zero = constant_scalar(&g, 0, BIT)?;
+        let zero_bits = input.tuple_get(0)?.a2b()?.multiply(zero)?;
 
         for share_id in 0..PARTIES {
             let mut bit_share = vec![];

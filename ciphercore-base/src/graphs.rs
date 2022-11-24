@@ -1671,7 +1671,8 @@ impl Graph {
         let size_estimate = get_size_estimation_in_bits(new_type.clone());
         if size_estimate.is_err() {
             return Err(runtime_error!(
-                "Trying to add a reshape node with invalid type size"
+                "Trying to add a reshape node with invalid type size: {:?}",
+                size_estimate
             ));
         }
         if size_estimate? > type_size_limit_constants::MAX_INDIVIDUAL_NODE_SIZE {
@@ -2625,12 +2626,21 @@ impl Graph {
             }
         }
         for dependency in &graph_dependencies {
-            if dependency.get_context() != self.get_context()
-                || !dependency.is_finalized()
-                || dependency.get_id() >= self.get_id()
-            {
+            if !dependency.is_finalized() {
                 return Err(runtime_error!(
-                    "Can't add a node with invalid graph dependencies"
+                    "Can't add a node with not finilized graph dependency"
+                ));
+            }
+            if dependency.get_id() >= self.get_id() {
+                return Err(runtime_error!(
+                    "Can't add a node with graph dependency with bigger id. {} >= {}",
+                    dependency.get_id(),
+                    self.get_id()
+                ));
+            }
+            if dependency.get_context() != self.get_context() {
+                return Err(runtime_error!(
+                    "Can't add a node with graph dependency from different context"
                 ));
             }
         }

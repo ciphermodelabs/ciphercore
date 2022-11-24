@@ -8,7 +8,7 @@ use crate::ops::min_max::{Max, Min};
 
 use serde::{Deserialize, Serialize};
 
-/// A structure that defines the custom operation BinaryAdd that implements sorting of binary strings representing signed or unsigned numbers.
+/// A structure that defines the custom operation Sort that implements sorting of binary strings representing signed or unsigned numbers.
 ///
 /// This operation sorts an array of `k` bitstrings with `b` bits in  using [Batcher's algorithm](https://math.mit.edu/~shor/18.310/batcher.pdf).
 /// Bitstrings can be sorted in ascending lexicographic order, or they can be interpreted and sorted in ascending order as signed integers,

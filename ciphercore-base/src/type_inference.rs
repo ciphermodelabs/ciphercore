@@ -823,7 +823,11 @@ impl TypeInferenceWorker {
             Operation::Reshape(new_type) => {
                 let old_type = node_dependencies_types[0].clone();
                 if flatten_type_size(old_type.clone())? != flatten_type_size(new_type.clone())? {
-                    return Err(runtime_error!("Incompatible types for reshape"));
+                    return Err(runtime_error!(
+                        "Incompatible types for reshape: {:?} to {:?}",
+                        old_type,
+                        new_type
+                    ));
                 }
                 let v1 = flatten_type(old_type);
                 let v2 = flatten_type(new_type.clone());
