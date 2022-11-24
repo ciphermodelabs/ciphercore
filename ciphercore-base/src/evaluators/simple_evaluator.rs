@@ -786,7 +786,7 @@ fn evaluate_cuckoo(
                 }
             }
             if insertion_failed {
-                panic!("Cuckoo hashing failed");
+                return Err(runtime_error!("Cuckoo hashing failed"));
             }
         }
     }
@@ -1305,13 +1305,17 @@ impl Evaluator for SimpleEvaluator {
                 values_without_dup.sort_unstable();
                 values_without_dup.dedup();
                 if values.len() != values_without_dup.len() {
-                    panic!("Input array doesn't contain a valid permutation");
+                    return Err(runtime_error!(
+                        "Input array doesn't contain a valid permutation"
+                    ));
                 }
                 let mut result = vec![0u64; values.len()];
                 for i in 0..values.len() {
                     let value = values[i] as usize;
                     if value >= values.len() {
-                        panic!("Input array doesn't contain a valid permutation");
+                        return Err(runtime_error!(
+                            "Input array doesn't contain a valid permutation"
+                        ));
                     }
                     result[value] = i as u64;
                 }
@@ -1476,7 +1480,7 @@ impl Evaluator for SimpleEvaluator {
                     for i in 0..map_size {
                         let input_index = input_array[map_start + i];
                         if input_index >= n {
-                            panic!("Switching map has incorrect indices");
+                            return Err(runtime_error!("Switching map has incorrect indices"));
                         }
                         if let Some(v) = switch_indexes.get_mut(&input_index) {
                             v.push(i as u64);
@@ -1566,10 +1570,10 @@ impl Evaluator for SimpleEvaluator {
                     input_wout_dup.dedup();
                     if num_dummies > 1 {
                         if input_wout_dup.len() as u64 + num_dummies - 1 != table_size {
-                            panic!("Input array contains duplicate indices");
+                            return Err(runtime_error!("Input array contains duplicate indices"));
                         }
                     } else if input_wout_dup.len() as u64 != table_size {
-                        panic!("Input array contains duplicate indices");
+                        return Err(runtime_error!("Input array contains duplicate indices"));
                     }
                     let mut remaining_indices: Vec<u64> =
                         (table_size - num_dummies..table_size).collect();
@@ -1585,7 +1589,7 @@ impl Evaluator for SimpleEvaluator {
                         if input_array[table_start + i] >= table_size - num_dummies
                             && input_array[table_start + i] != CUCKOO_DUMMY_ELEMENT
                         {
-                            panic!("Indices are incorrect");
+                            return Err(runtime_error!("Indices are incorrect"));
                         }
                         // Compute the bit input element == CUCKOO_DUMMY_ELEMENT using the fact that CUCKOO_DUMMY_ELEMENT = u64::MAX
                         let is_dummy = input_array[table_start + i] / CUCKOO_DUMMY_ELEMENT;
@@ -1703,7 +1707,7 @@ impl Evaluator for SimpleEvaluator {
                 for array_i in 0..num_arrays {
                     for index_entry in indices_entries.iter() {
                         if *index_entry >= input_shape[axis as usize] {
-                            panic!("Incorrect index");
+                            return Err(runtime_error!("Incorrect index"));
                         }
                         let input_flat_index =
                             (array_i * input_shape[axis as usize] + index_entry) * row_size;
@@ -1756,8 +1760,6 @@ impl Evaluator for SimpleEvaluator {
 
 #[cfg(test)]
 mod tests {
-    use std::panic::{catch_unwind, AssertUnwindSafe};
-
     use ndarray::array;
 
     use crate::{
@@ -1891,9 +1893,7 @@ mod tests {
                 // [3,2,3]-array
                 // Hashes everything to 0
                 let hash_matrix = Value::from_flattened_array(&[0; 18], BIT)?;
-                let e = catch_unwind(AssertUnwindSafe(|| {
-                    cuckoo_helper(vec![2, 3], vec![3, 2, 3], vec![input, hash_matrix])
-                }));
+                let e = cuckoo_helper(vec![2, 3], vec![3, 2, 3], vec![input, hash_matrix]);
                 assert!(e.is_err());
             }
             // somewhat big example
@@ -2077,16 +2077,12 @@ mod tests {
             // malformed input
             {
                 let input = Value::from_flattened_array(&[2, 0, 1, 4, 4], UINT64)?;
-                let e = catch_unwind(AssertUnwindSafe(|| {
-                    inverse_permutation_helper(5, vec![input])
-                }));
+                let e = inverse_permutation_helper(5, vec![input]);
                 assert!(e.is_err());
             }
             {
                 let input = Value::from_flattened_array(&[2, 0, 1, 4, 5], UINT64)?;
-                let e = catch_unwind(AssertUnwindSafe(|| {
-                    inverse_permutation_helper(5, vec![input])
-                }));
+                let e = inverse_permutation_helper(5, vec![input]);
                 assert!(e.is_err());
             }
             Ok(())
@@ -2167,9 +2163,7 @@ mod tests {
                 let input = Value::from_flattened_array(&[1, 2, 3, 4, 5], UINT32)?;
                 // [3]-array
                 let indices = Value::from_flattened_array(&[2, 5, 0], UINT64)?;
-                let e = catch_unwind(AssertUnwindSafe(|| {
-                    gather_helper(vec![5], vec![3], 0, vec![input, indices])
-                }));
+                let e = gather_helper(vec![5], vec![3], 0, vec![input, indices]);
                 assert!(e.is_err());
             }
             Ok(())
@@ -2296,16 +2290,12 @@ mod tests {
             }
             {
                 let input_value = Value::from_flattened_array(&[0, x, 2, 1, x, 4, 4, x], UINT64)?;
-                let e = catch_unwind(AssertUnwindSafe(|| {
-                    cuckoo_to_permutation_helper(vec![8], input_value, seed)
-                }));
+                let e = cuckoo_to_permutation_helper(vec![8], input_value, seed);
                 assert!(e.is_err());
             }
             {
                 let input_value = Value::from_flattened_array(&[0, x, 2, 1, x, 5, 4, x], UINT64)?;
-                let e = catch_unwind(AssertUnwindSafe(|| {
-                    cuckoo_to_permutation_helper(vec![8], input_value, seed)
-                }));
+                let e = cuckoo_to_permutation_helper(vec![8], input_value, seed);
                 assert!(e.is_err());
             }
             // random seed
@@ -2508,9 +2498,7 @@ mod tests {
             }
             {
                 let input_map = Value::from_flattened_array(&[0, 1, 5], UINT64)?;
-                let e = catch_unwind(AssertUnwindSafe(|| {
-                    decompose_switching_map_helper(vec![3], 5, input_map, seed)
-                }));
+                let e = decompose_switching_map_helper(vec![3], 5, input_map, seed);
                 assert!(e.is_err());
             }
             // random seed
