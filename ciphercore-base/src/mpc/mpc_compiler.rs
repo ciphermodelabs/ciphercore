@@ -467,7 +467,7 @@ pub(super) fn compile_to_mpc_graph(
                     let keys = match prf_keys_mul {
                         Some(ref k) => k.clone(),
                         None => {
-                            panic!("Propagation of annotations failed")
+                            return Err(runtime_error!("Propagation of annotations failed"));
                         }
                     };
                     out_graph.custom_op(
@@ -497,7 +497,7 @@ pub(super) fn compile_to_mpc_graph(
                     let keys = match prf_keys_mul {
                         Some(ref k) => k.clone(),
                         None => {
-                            panic!("Propagation of annotations failed")
+                            return Err(runtime_error!("Propagation of annotations failed"));
                         }
                     };
                     out_graph.custom_op(
@@ -528,7 +528,7 @@ pub(super) fn compile_to_mpc_graph(
                     let keys = match prf_keys_mul {
                         Some(ref k) => k.clone(),
                         None => {
-                            panic!("Propagation of annotations failed")
+                            return Err(runtime_error!("Propagation of annotations failed"));
                         }
                     };
                     out_graph.custom_op(
@@ -555,7 +555,7 @@ pub(super) fn compile_to_mpc_graph(
                     let prf_mul_keys = match prf_keys_mul {
                         Some(ref k) => k.clone(),
                         None => {
-                            panic!("Propagation of annotations failed")
+                            return Err(runtime_error!("Propagation of annotations failed"));
                         }
                     };
 
@@ -563,7 +563,7 @@ pub(super) fn compile_to_mpc_graph(
                         let prf_truncate_keys = match prf_keys_truncate2k {
                             Some(ref k) => k.clone(),
                             None => {
-                                panic!("Propagation of annotations failed")
+                                return Err(runtime_error!("Propagation of annotations failed"));
                             }
                         };
 
@@ -589,7 +589,7 @@ pub(super) fn compile_to_mpc_graph(
                     let keys = match prf_keys_mul {
                         Some(ref k) => k.clone(),
                         None => {
-                            panic!("Propagation of annotations failed")
+                            return Err(runtime_error!("Propagation of annotations failed"));
                         }
                     };
                     out_graph.custom_op(custom_op, vec![new_input.clone(), keys])?
@@ -608,13 +608,13 @@ pub(super) fn compile_to_mpc_graph(
                     let keys_mul = match prf_keys_mul {
                         Some(ref k) => k.clone(),
                         None => {
-                            panic!("Propagation of annotations failed")
+                            return Err(runtime_error!("Propagation of annotations failed"));
                         }
                     };
                     let keys_b2a = match prf_keys_b2a {
                         Some(ref k) => k.clone(),
                         None => {
-                            panic!("Propagation of annotations failed")
+                            return Err(runtime_error!("Propagation of annotations failed"));
                         }
                     };
                     out_graph.custom_op(custom_op, vec![new_input.clone(), keys_mul, keys_b2a])?

@@ -56,7 +56,10 @@ fn get_column(named_tuple_shares: &[Node], header: String) -> Result<Node> {
     } else if named_tuple_shares.len() == 1 {
         named_tuple_shares[0].named_tuple_get(header)
     } else {
-        panic!("Shouldn't be here");
+        Err(runtime_error!(
+            "Wrong number of shares {}",
+            named_tuple_shares.len()
+        ))
     }
 }
 
@@ -349,7 +352,7 @@ fn get_lowmc_graph(context: Context, input_t: Type, key_t: Type) -> Result<Graph
         80 => LowMCBlockSize::SIZE80,
         128 => LowMCBlockSize::SIZE128,
         _ => {
-            panic!("LowMC doesn't support this block size");
+            return Err(runtime_error!("LowMC doesn't support this block size"));
         }
     };
     let low_mc_op = CustomOperation::new(LowMC {
@@ -481,7 +484,7 @@ fn check_and_extract_dataset_parameters(
 ) -> Result<(u64, ColumnHeaderTypes)> {
     let column_header_types = if is_private {
         if !t.is_tuple() {
-            panic!("Private database must be a tuple of shares");
+            return Err(runtime_error!("Private database must be a tuple of shares"));
         }
 
         let t_vec = get_types_vector(t)?;
@@ -514,13 +517,13 @@ impl CustomOperationBody for SetIntersectionMPC {
             } else {
                 // Panics since:
                 // - the user has no direct access to this function.
-                // - the MPC compiler should pass the correct number of arguments
+                // - the MPC compiler should pass correct arguments
                 // and this panic should never happen.
                 panic!("Inconsistency with type checker");
             }
         }
         if argument_types.len() != 3 {
-            panic!("PSI protocol should have 3 inputs");
+            return Err(runtime_error!("PSI protocol should have 3 inputs"));
         }
 
         let data_x_t = argument_types[0].clone();
@@ -1045,7 +1048,7 @@ impl CustomOperationBody for SimpleHash {
             // - the user has no direct access to this function.
             // - the MPC compiler should pass the correct number of arguments
             // and this panic should never happen.
-            panic!("SimpleHash should have 2 inputs.");
+            return Err(runtime_error!("SimpleHash should have 2 inputs."));
         }
 
         let input_type = argument_types[0].clone();
@@ -1144,55 +1147,61 @@ fn check_and_extract_map_input_parameters(
     programmer_id: u64,
 ) -> Result<(u64, ColumnHeaderTypes)> {
     if argument_types.len() != 3 {
-        panic!("This map should have 3 input types");
+        return Err(runtime_error!("This map should have 3 input types"));
     }
     let shares_t = argument_types[0].clone();
     if !shares_t.is_tuple() {
-        panic!("Input shares must be a tuple of 2 elements");
+        return Err(runtime_error!("Input shares must be a tuple of 2 elements"));
     }
     let shares_type_vector = get_types_vector(shares_t)?;
     if shares_type_vector.len() != 2 {
-        panic!("There should be only 2 shares in the input tuple");
+        return Err(runtime_error!(
+            "There should be only 2 shares in the input tuple"
+        ));
     }
     let share_t = (*shares_type_vector[0]).clone();
     if share_t != (*shares_type_vector[1]).clone() {
-        panic!("Input shares must be of the same type");
+        return Err(runtime_error!("Input shares must be of the same type"));
     }
     if !share_t.is_named_tuple() {
-        panic!("Each share must be a named tuple");
+        return Err(runtime_error!("Each share must be a named tuple"));
     }
     let column_header_types = get_named_types(share_t);
     let mut num_entries = 0;
     for v in &column_header_types {
         let column_type = v.1.clone();
         if !column_type.is_array() {
-            panic!("Column must be an array");
+            return Err(runtime_error!("Column must be an array"));
         }
         let column_shape = column_type.get_dimensions();
         if num_entries == 0 {
             num_entries = column_shape[0];
         }
         if num_entries != column_shape[0] {
-            panic!("Number of entries should be the same in all columns");
+            return Err(runtime_error!(
+                "Number of entries should be the same in all columns"
+            ));
         }
     }
 
     let prf_t = argument_types[2].clone();
     let expected_key_type = tuple_type(vec![array_type(vec![KEY_LENGTH], BIT); 3]);
     if prf_t != expected_key_type {
-        panic!(
+        return Err(runtime_error!(
             "PRF key type should be a tuple of 3 binary arrays of length {}",
             KEY_LENGTH
-        );
+        ));
     }
     if sender_id >= PARTIES as u64 {
-        panic!("Sender ID is incorrect");
+        return Err(runtime_error!("Sender ID is incorrect"));
     }
     if programmer_id >= PARTIES as u64 {
-        panic!("Programmer ID is incorrect");
+        return Err(runtime_error!("Programmer ID is incorrect"));
     }
     if sender_id == programmer_id {
-        panic!("Programmer ID should be different from the Sender ID");
+        return Err(runtime_error!(
+            "Programmer ID should be different from the Sender ID"
+        ));
     }
 
     Ok((num_entries, column_header_types))
@@ -1257,10 +1266,12 @@ impl CustomOperationBody for PermutationMPC {
         // Check that the permutation map is of the correct form
         let permutation_t = argument_types[1].clone();
         if !permutation_t.is_array() {
-            panic!("Permutation map must be an array");
+            return Err(runtime_error!("Permutation map must be an array"));
         }
         if permutation_t.get_shape()[0] > num_entries {
-            panic!("Permutation map length can't be bigger than the number of entries");
+            return Err(runtime_error!(
+                "Permutation map length can't be bigger than the number of entries"
+            ));
         }
 
         let shares_t = argument_types[0].clone();
@@ -1436,26 +1447,32 @@ impl CustomOperationBody for DuplicationMPC {
             let dup_indices_t = dup_map_types[0].clone();
             let dup_bits_t = dup_map_types[1].clone();
             if !dup_indices_t.is_array() || !dup_bits_t.is_array() {
-                panic!("Duplication map should contain two arrays");
+                return Err(runtime_error!("Duplication map should contain two arrays"));
             }
             if dup_indices_t.get_scalar_type() != UINT64 {
-                panic!("Duplication map indices should be of the UINT64 type");
+                return Err(runtime_error!(
+                    "Duplication map indices should be of the UINT64 type"
+                ));
             }
             if dup_bits_t.get_scalar_type() != BIT {
-                panic!("Duplication map bits should be of the BIT type");
+                return Err(runtime_error!(
+                    "Duplication map bits should be of the BIT type"
+                ));
             }
             let num_dup_indices = dup_indices_t.get_shape()[0];
             let num_dup_bits = dup_bits_t.get_shape()[0];
             if num_dup_indices != num_entries {
-                panic!(
+                return Err(runtime_error!(
                     "Duplication map indices should be of length equal to the number of entries"
-                );
+                ));
             }
             if num_dup_bits != num_entries {
-                panic!("Duplication map bits should be of length equal to the number of entries");
+                return Err(runtime_error!(
+                    "Duplication map bits should be of length equal to the number of entries"
+                ));
             }
         } else {
-            panic!("Duplication map should be a tuple");
+            return Err(runtime_error!("Duplication map should be a tuple"));
         }
 
         let sender_id = self.sender_id;
@@ -1694,17 +1711,19 @@ impl CustomOperationBody for SwitchingMPC {
         // An additional check that the switching map is of the correct form
         let switch_map_t = argument_types[1].clone();
         if !switch_map_t.is_array() {
-            panic!("Switching map should be an array");
+            return Err(runtime_error!("Switching map should be an array"));
         }
         if switch_map_t.get_scalar_type() != UINT64 {
-            panic!("Switching map indices should be of the UINT64 type");
+            return Err(runtime_error!(
+                "Switching map indices should be of the UINT64 type"
+            ));
         }
         let num_switch_indices = switch_map_t.get_shape()[0];
         if num_switch_indices > num_entries {
-            panic!(
+            return Err(runtime_error!(
                 "Switching map cannot have more than {} indices",
                 num_entries
-            );
+            ));
         }
 
         let receiver_id = get_receiver_id(self.sender_id, self.programmer_id);

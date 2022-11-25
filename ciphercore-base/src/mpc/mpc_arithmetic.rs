@@ -14,12 +14,8 @@ pub(super) struct AddMPC {}
 #[typetag::serde]
 impl CustomOperationBody for AddMPC {
     fn instantiate(&self, context: Context, argument_types: Vec<Type>) -> Result<Graph> {
-        // Panics since:
-        // - the user has no direct access to this function.
-        // - the MPC compiler should pass the correct number of arguments
-        // and this panic should never happen.
         if argument_types.len() != 2 {
-            panic!("AddMPC should have two inputs");
+            return Err(runtime_error!("AddMPC should have two inputs"));
         }
         let g = context.create_graph()?;
         let t0 = argument_types[0].clone();
@@ -88,12 +84,8 @@ pub(super) struct SubtractMPC {}
 #[typetag::serde]
 impl CustomOperationBody for SubtractMPC {
     fn instantiate(&self, context: Context, argument_types: Vec<Type>) -> Result<Graph> {
-        // Panics since:
-        // - the user has no direct access to this function.
-        // - the MPC compiler should pass the correct number of arguments
-        // and this panic should never happen.
         if argument_types.len() != 2 {
-            panic!("SubtractMPC should have two inputs");
+            return Err(runtime_error!("SubtractMPC should have two inputs"));
         }
         let g = context.create_graph()?;
         let t0 = argument_types[0].clone();
@@ -261,12 +253,11 @@ fn instantiate_bilinear_product(
         Operation::Gemm(_, _) => "GemmMPC".to_owned(),
         _ => return Err(runtime_error!("Not a bilinear product")),
     };
-    // Panics since:
-    // - the user has no direct access to this function.
-    // - the MPC compiler should pass the correct number of arguments
-    // and this panic should never happen.
     if !(2..=3).contains(&argument_types.len()) {
-        panic!("{} should have either 2 or 3 inputs.", op_name);
+        return Err(runtime_error!(
+            "{} should have either 2 or 3 inputs.",
+            op_name
+        ));
     }
     let g = context.create_graph()?;
     let t0 = argument_types[0].clone();
@@ -283,15 +274,11 @@ fn instantiate_bilinear_product(
         (Type::Tuple(v0), Type::Tuple(v1)) => {
             check_private_tuple(v0)?;
             check_private_tuple(v1)?;
-            // Panics since:
-            // - the user has no direct access to this function,
-            // - the MPC compiler should pass the correct number of arguments
-            // and this panic should never happen.
             if argument_types.len() != 3 {
-                panic!(
+                return Err(runtime_error!(
                     "{} with two private inputs should be provided a tuple of keys",
                     op_name
-                );
+                ));
             }
             let prf_type = argument_types[2].clone();
             private_product(i0, i1, prf_type, g.clone(), op)?;
@@ -459,12 +446,10 @@ fn multiply_bits_by_public_integers(
 #[typetag::serde]
 impl CustomOperationBody for MixedMultiplyMPC {
     fn instantiate(&self, context: Context, argument_types: Vec<Type>) -> Result<Graph> {
-        // Panics since:
-        // - the user has no direct access to this function.
-        // - the MPC compiler should pass the correct number of arguments
-        // and this panic should never happen.
         if !(2..=3).contains(&argument_types.len()) {
-            panic!("MixedMultiplyMPC should have either 2 or 3 inputs");
+            return Err(runtime_error!(
+                "MixedMultiplyMPC should have either 2 or 3 inputs"
+            ));
         }
         let g = context.create_graph()?;
         let t_a = argument_types[0].clone();
@@ -486,12 +471,8 @@ impl CustomOperationBody for MixedMultiplyMPC {
                 // The final step is to sum shares [a0 * b] and [(a1+a2) * b], which yields [a0 * b + (a1+a2) * b] = [a * b]
                 check_private_tuple(v_a)?;
                 check_private_tuple(v_b)?;
-                // Panics since:
-                // - the user has no direct access to this function,
-                // - the MPC compiler should pass the correct number of arguments
-                // and this panic should never happen.
                 if argument_types.len() != 3 {
-                    panic!("MixedMultiply with two private inputs should be provided a tuple of PRF keys");
+                    return Err(runtime_error!("MixedMultiply with two private inputs should be provided a tuple of PRF keys"));
                 }
                 let prf_type = argument_types[2].clone();
                 let prf_keys = g.input(prf_type)?;
@@ -523,14 +504,10 @@ impl CustomOperationBody for MixedMultiplyMPC {
                 // Integers are public, bits are private.
                 // In this case, bits are multiplied by public integers using the above protocol with party 1 having a role of the integer owner.
                 check_private_tuple(v1)?;
-                // Panics since:
-                // - the user has no direct access to this function,
-                // - the MPC compiler should pass the correct number of arguments
-                // and this panic should never happen.
                 if argument_types.len() != 3 {
-                    panic!(
+                    return Err(runtime_error!(
                         "MixedMultiply with private bits should be provided a tuple of PRF keys"
-                    );
+                    ));
                 }
                 let prf_type = argument_types[2].clone();
                 let prf_keys = g.input(prf_type)?;

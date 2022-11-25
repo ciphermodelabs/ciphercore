@@ -41,17 +41,13 @@ impl CustomOperationBody for A2BMPC {
             } else {
                 // Panics since:
                 // - the user has no direct access to this function.
-                // - the MPC compiler should pass the correct number of arguments
+                // - the MPC compiler should pass correct arguments
                 // and this panic should never happen.
                 panic!("Inconsistency with type checker");
             }
         }
         if argument_types.len() != 2 {
-            // Panics since:
-            // - the user has no direct access to this function.
-            // - the MPC compiler should pass the correct number of arguments
-            // and this panic should never happen.
-            panic!("A2BMPC should have either 1 or 2 inputs.");
+            return Err(runtime_error!("A2BMPC should have either 1 or 2 inputs."));
         }
 
         if let (Type::Tuple(v0), Type::Tuple(v1)) =
@@ -60,18 +56,16 @@ impl CustomOperationBody for A2BMPC {
             check_private_tuple(v0)?;
             check_private_tuple(v1)?;
         } else {
-            // Panics since:
-            // - the user has no direct access to this function.
-            // - the MPC compiler should pass the correct number of arguments
-            // and this panic should never happen.
-            panic!("A2BMPC should have a private tuple and a tuple of keys as input");
+            return Err(runtime_error!(
+                "A2BMPC should have a private tuple and a tuple of keys as input"
+            ));
         }
 
         let t = argument_types[0].clone();
         let input_t = if let Type::Tuple(t_vec) = t.clone() {
             (*t_vec[0]).clone()
         } else {
-            panic!("Shouldn't be here");
+            return Err(runtime_error!("Shouldn't be here"));
         };
 
         let bits_t = a2b_type_inference(input_t)?;
@@ -169,17 +163,13 @@ impl CustomOperationBody for B2AMPC {
             } else {
                 // Panics since:
                 // - the user has no direct access to this function.
-                // - the MPC compiler should pass the correct number of arguments
+                // - the MPC compiler should pass correct arguments
                 // and this panic should never happen.
                 panic!("Inconsistency with type checker");
             }
         }
         if argument_types.len() != 3 {
-            // Panics since:
-            // - the user has no direct access to this function.
-            // - the MPC compiler should pass the correct number of arguments
-            // and this panic should never happen.
-            panic!("B2AMPC should have either 1 or 3 inputs.");
+            return Err(runtime_error!("B2AMPC should have either 1 or 3 inputs."));
         }
 
         if let (Type::Tuple(v0), Type::Tuple(v1), Type::Tuple(v2)) = (
@@ -203,14 +193,14 @@ impl CustomOperationBody for B2AMPC {
             if let Type::Tuple(sub_v) = (*v2[0]).clone() {
                 check_private_tuple(sub_v)?;
             } else {
-                panic!("Special PRF keys for B2A should be a tuple of tuples");
+                return Err(runtime_error!(
+                    "Special PRF keys for B2A should be a tuple of tuples"
+                ));
             }
         } else {
-            // Panics since:
-            // - the user has no direct access to this function.
-            // - the MPC compiler should pass the correct number of arguments
-            // and this panic should never happen.
-            panic!("B2AMPC should have a private tuple and a tuple of keys as input");
+            return Err(runtime_error!(
+                "B2AMPC should have a private tuple and a tuple of keys as input"
+            ));
         }
 
         let t = argument_types[0].clone();

@@ -34,32 +34,37 @@ pub(super) struct ObliviousTransfer {
 #[typetag::serde]
 impl CustomOperationBody for ObliviousTransfer {
     fn instantiate(&self, context: Context, argument_types: Vec<Type>) -> Result<Graph> {
-        // Panics since:
-        // - the user has no direct access to this function.
-        // - the MPC compiler should pass the correct number of arguments
-        // and this panic should never happen.
         if argument_types.len() != 4 {
-            panic!("Oblivious transport should have 4 input types");
+            return Err(runtime_error!(
+                "Oblivious transport should have 4 input types"
+            ));
         }
         if argument_types[0] != argument_types[1] {
-            panic!("First two input types should be equal")
+            return Err(runtime_error!("First two input types should be equal"));
         }
         let bit_type = argument_types[2].clone();
         if bit_type.get_scalar_type() != BIT {
-            panic!("Bit type should be a binary array or scalar");
+            return Err(runtime_error!(
+                "Bit type should be a binary array or scalar"
+            ));
         }
         let key_type = argument_types[3].clone();
         if key_type != array_type(vec![KEY_LENGTH], BIT) {
-            panic!("Key type should be a binary array of length {}", KEY_LENGTH);
+            return Err(runtime_error!(
+                "Key type should be a binary array of length {}",
+                KEY_LENGTH
+            ));
         }
         if self.sender_id >= PARTIES as u64 {
-            panic!("Sender ID is incorrect");
+            return Err(runtime_error!("Sender ID is incorrect"));
         }
         if self.receiver_id >= PARTIES as u64 {
-            panic!("Receiver ID is incorrect");
+            return Err(runtime_error!("Receiver ID is incorrect"));
         }
         if self.sender_id == self.receiver_id {
-            panic!("Receiver ID should be different from the sender id")
+            return Err(runtime_error!(
+                "Receiver ID should be different from the sender id"
+            ));
         }
 
         let g = context.create_graph()?;
