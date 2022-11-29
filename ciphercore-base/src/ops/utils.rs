@@ -119,3 +119,31 @@ pub fn single_bit_to_arithmetic(node: Node, st: ScalarType) -> Result<Node> {
     .add(constant_scalar(&node.get_graph(), 1, st)?)?;
     ones.mixed_multiply(node)
 }
+
+/// Similar to `numpy.expand_dims` `<https://numpy.org/doc/stable/reference/generated/numpy.expand_dims.html>`.
+///
+/// Insert new axis that will appear at `axis` positions in the new shape.
+///
+/// Only positions in a range `[0..new_shape.len())` are valid. All positions
+/// in `axis` should be distinct.
+pub fn expand_dims(node: Node, axis: &[usize]) -> Result<Node> {
+    if axis.is_empty() {
+        return Ok(node);
+    }
+    let old_shape = node.get_type()?.get_shape();
+    let mut new_shape = vec![1; axis.len() + old_shape.len()];
+    let mut new_shape_iter = 0;
+    let mut axis_iter = 0;
+    for &old_dim in old_shape.iter() {
+        while axis_iter != axis.len() && axis[axis_iter] <= new_shape_iter {
+            new_shape_iter += 1;
+            axis_iter += 1;
+        }
+        new_shape[new_shape_iter] = old_dim;
+        new_shape_iter += 1;
+    }
+
+    let scalar = node.get_type()?.get_scalar_type();
+    node.get_graph()
+        .reshape(node, Type::Array(new_shape, scalar))
+}

@@ -3,8 +3,8 @@ use crate::custom_ops::{CustomOperation, CustomOperationBody, Not};
 use crate::data_types::{Type, BIT};
 use crate::errors::Result;
 use crate::graphs::*;
-use crate::ops::utils::validate_arguments_in_broadcast_bit_ops;
 use crate::ops::utils::{constant_scalar, pull_out_bits};
+use crate::ops::utils::{expand_dims, validate_arguments_in_broadcast_bit_ops};
 use std::cmp::max;
 
 use serde::{Deserialize, Serialize};
@@ -252,16 +252,6 @@ fn build_comparison_graph(a: Node, b: Node) -> Result<ComparisonResult> {
     Ok(res)
 }
 
-fn prepend_dims_with_ones(node: Node, prepend_dims: usize) -> Result<Node> {
-    if prepend_dims == 0 {
-        return Ok(node);
-    }
-    let scalar = node.get_type()?.get_scalar_type();
-    let mut shape = node.get_type()?.get_shape();
-    shape.splice(0..0, vec![1; prepend_dims]);
-    node.get_graph().reshape(node, Type::Array(shape, scalar))
-}
-
 /// As we support broadcasting in comparison arguments, we need to make
 /// sure they are still broadcastable after bits are pulled out to the
 /// outermost dimension.
@@ -279,8 +269,8 @@ fn expand_to_same_dims(a: Node, b: Node) -> Result<(Node, Node)> {
     let len_a = a.get_type()?.get_shape().len();
     let len_b = b.get_type()?.get_shape().len();
     let result_len = max(len_a, len_b);
-    let a = prepend_dims_with_ones(a, result_len - len_a)?;
-    let b = prepend_dims_with_ones(b, result_len - len_b)?;
+    let a = expand_dims(a, &(0..result_len - len_a).collect::<Vec<_>>())?;
+    let b = expand_dims(b, &(0..result_len - len_b).collect::<Vec<_>>())?;
     Ok((a, b))
 }
 
