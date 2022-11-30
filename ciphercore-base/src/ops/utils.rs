@@ -147,3 +147,33 @@ pub fn expand_dims(node: Node, axis: &[usize]) -> Result<Node> {
     node.get_graph()
         .reshape(node, Type::Array(new_shape, scalar))
 }
+
+// Another incarnation of `expand_dims`, following the contract https://pytorch.org/docs/stable/generated/torch.unsqueeze.html
+// (in particular, the `axis` argument can be negative).
+pub fn unsqueeze(x: Node, axis: i64) -> Result<Node> {
+    let (mut shape, sc) = match x.get_type()? {
+        Type::Array(shape, sc) => (shape, sc),
+        Type::Scalar(sc) => (vec![], sc),
+        _ => {
+            return Err(runtime_error!(
+                "Expected array or scalar type, got {:?}",
+                x.get_type()?
+            ))
+        }
+    };
+    if axis < -(shape.len() as i64) - 1 || axis > shape.len() as i64 {
+        return Err(runtime_error!(
+            "Expected axis in range [{}, {}], got {}",
+            -(shape.len() as i64) - 1,
+            shape.len() as i64,
+            axis
+        ));
+    }
+    let pos = if axis < 0 {
+        shape.len() as i64 + axis + 1
+    } else {
+        axis
+    };
+    shape.insert(pos as usize, 1);
+    x.reshape(array_type(shape, sc))
+}
