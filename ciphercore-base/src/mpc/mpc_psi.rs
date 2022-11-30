@@ -4,8 +4,7 @@ use crate::custom_ops::{
     run_instantiation_pass, ContextMappings, CustomOperation, CustomOperationBody, Or,
 };
 use crate::data_types::{
-    array_type, get_size_in_bits, get_types_vector, named_tuple_type, scalar_type, tuple_type,
-    vector_type, Type, BIT, UINT64,
+    array_type, get_size_in_bits, get_types_vector, named_tuple_type, tuple_type, Type, BIT, UINT64,
 };
 use crate::errors::Result;
 use crate::graphs::{create_context, Context, Graph, Node, NodeAnnotation, SliceElement};
@@ -174,28 +173,12 @@ fn pad_columns(columns: Node, num_extra_rows: u64, prf_keys: &[Node]) -> Result<
         let mut result_columns = vec![];
         for (header, t) in header_types.clone() {
             let column = data_share.named_tuple_get(header.clone())?;
-            let num_input_entries = t.get_shape()[0];
             let mut extra_rows_shape = t.get_shape();
             extra_rows_shape[0] = num_extra_rows;
             let st = t.get_scalar_type();
             let extra_rows = prf_key.prf(0, array_type(extra_rows_shape.clone(), st.clone()))?;
             // Merge input rows and extra rows
-            let mut padded_column = graph.create_tuple(vec![
-                column.array_to_vector()?,
-                extra_rows.array_to_vector()?,
-            ])?;
-            padded_column = if extra_rows_shape.len() > 1 {
-                padded_column.reshape(vector_type(
-                    num_extra_rows + num_input_entries,
-                    array_type(extra_rows_shape[1..].to_vec(), st),
-                ))?
-            } else {
-                padded_column.reshape(vector_type(
-                    num_extra_rows + num_input_entries,
-                    scalar_type(st),
-                ))?
-            }
-            .vector_to_array()?;
+            let padded_column = graph.concatenate(vec![column, extra_rows], 0)?;
             result_columns.push((header, padded_column));
         }
         let share = graph.create_named_tuple(result_columns)?;
@@ -1547,16 +1530,16 @@ impl CustomOperationBody for DuplicationMPC {
             // The result is assigned to B_r[0] and sent to Receiver.
             let entry0 = sender_column.get(vec![0])?;
             let b0_p = prf_key_s_p.prf(0, entry0.get_type()?)?;
+            let mut first_entry_shape = column_shape.clone();
+            first_entry_shape[0] = 1;
             let b0_r = entry0
                 .subtract(b0_p.clone())?
+                .reshape(array_type(first_entry_shape, column_t.get_scalar_type()))?
                 .nop()?
                 .add_annotation(NodeAnnotation::Send(sender_id, receiver_id))?;
 
             // Merge B_r[0] and B_r[i] for i in [1,num_entries]
-            let b_r = g
-                .create_tuple(vec![b0_r.clone(), bi_r.array_to_vector()?])?
-                .reshape(vector_type(num_entries, b0_r.get_type()?))?
-                .vector_to_array()?;
+            let b_r = g.concatenate(vec![b0_r.clone(), bi_r], 0)?;
 
             // Sender and programmer generate a random mask phi of the duplication map
             let mut phi = prf_key_s_p.prf(0, array_type(vec![num_entries - 1], BIT))?;
@@ -2455,19 +2438,10 @@ mod tests {
                         share_r_sp.clone(),
                         // The result is assigned to B_r[0].
                         private_class(),
+                        private_class(),
                         // B_r is sent to Receiver
                         share_p_rs.clone(),
                         // Merge B_r[0] and B_r[i] for i in [1,num_entries]
-                        // B_r[i] to vector
-                        vector_class(vec![share_p_rs.clone(); num_entries - 1]),
-                        // B_r[0] and B_r[i] for i in [1,num_entries]
-                        vector_class(vec![
-                            share_p_rs.clone(),
-                            vector_class(vec![share_p_rs.clone(); num_entries - 1]),
-                        ]),
-                        // Reshape to B_r[i] for i in [0,num_entries]
-                        vector_class(vec![share_p_rs.clone(); num_entries]),
-                        // Vector to array B_r[i]
                         share_p_rs.clone(),
                         // Sender and Programmer generate a random mask phi of the duplication map
                         share_r_sp.clone(),

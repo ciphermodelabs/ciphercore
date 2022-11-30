@@ -162,9 +162,7 @@ pub(crate) fn print_stats(graph: Graph) -> Result<()> {
             | Operation::Dot
             | Operation::Matmul
             | Operation::Truncate(_)
-            | Operation::Sum(_)
-            | Operation::Random(_)
-            | Operation::PRF(_, _) => {
+            | Operation::Sum(_) => {
                 let st = node.get_type()?.get_scalar_type();
                 let ops = calculate_integer_operations(node.clone())?;
                 match st {
