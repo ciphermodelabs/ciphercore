@@ -1,9 +1,9 @@
 use std::ops::Not;
 
-use crate::data_types::{array_type, scalar_type, ScalarType, Type, BIT};
+use crate::data_types::{array_type, scalar_type, ScalarType, Type, BIT, UINT64};
 use crate::data_values::Value;
 use crate::errors::Result;
-use crate::graphs::{Graph, Node};
+use crate::graphs::{Context, Graph, GraphAnnotation, Node};
 use crate::typed_value::TypedValue;
 
 /// This function tests that two given inputs containing arrays or scalars of bitstrings
@@ -148,6 +148,72 @@ pub fn expand_dims(node: Node, axis: &[usize]) -> Result<Node> {
         .reshape(node, Type::Array(new_shape, scalar))
 }
 
+// Another apporach to approximate the inital value is proposed here:
+// https://www.ifca.ai/pub/fc10/31_47.pdf section 3.4
+// However, the current approach seems to work fine for Goldschmidt's as well as Newton's method.
+pub fn inverse_initial_approximation(
+    context: &Context,
+    t: Type,
+    denominator_cap_2k: u64,
+) -> Result<Graph> {
+    let sc = t.get_scalar_type();
+
+    let bit_type = if t.is_scalar() {
+        scalar_type(BIT)
+    } else {
+        array_type(t.get_shape(), BIT)
+    };
+    // Graph for identifying highest one bit.
+    let g_highest_one_bit = context.create_graph()?;
+    {
+        let input_state = g_highest_one_bit.input(bit_type.clone())?;
+        let input_bit = g_highest_one_bit.input(bit_type.clone())?;
+
+        let one = constant_scalar(&g_highest_one_bit, 1, BIT)?;
+        let not_input_state = one.add(input_state.clone())?;
+        // If input state is 1, then the highest bit has been already encountered.
+        // All other bits can be set to zero.
+        let output = not_input_state.multiply(input_bit)?;
+        // new_state is equal to input_state OR input_bit
+        // Hence, input state becomes and stays 1 once the highest bit has been encountered.
+        let new_state = input_state.add(output.clone())?;
+        let output_tuple = g_highest_one_bit.create_tuple(vec![new_state, output])?;
+        output_tuple.set_as_output()?;
+    }
+    g_highest_one_bit.add_annotation(GraphAnnotation::AssociativeOperation)?;
+    g_highest_one_bit.finalize()?;
+
+    let g = context.create_graph()?;
+    let divisor = g.input(t)?;
+    let divisor_bits = pull_out_bits(divisor.a2b()?)?.array_to_vector()?;
+    let mut divisor_bits_reversed = vec![];
+    for i in 0..denominator_cap_2k {
+        let index = constant_scalar(&g, denominator_cap_2k - i - 1, UINT64)?;
+        divisor_bits_reversed.push(divisor_bits.vector_get(index)?);
+    }
+    let zero = zeros(&g, bit_type.clone())?;
+    let highest_one_bit_binary = g
+        .iterate(
+            g_highest_one_bit,
+            zero,
+            g.create_vector(bit_type, divisor_bits_reversed)?,
+        )?
+        .tuple_get(1)?
+        .vector_to_array()?;
+    let highest_one_bit = single_bit_to_arithmetic(highest_one_bit_binary, sc.clone())?;
+    let first_approximation_bits = put_in_bits(highest_one_bit)?;
+    let mut powers_of_two = vec![];
+    for i in 0..denominator_cap_2k {
+        powers_of_two.push(1u64 << i);
+    }
+    let powers_of_two_node = g.constant(
+        array_type(vec![denominator_cap_2k], sc.clone()),
+        Value::from_flattened_array(&powers_of_two, sc)?,
+    )?;
+    let approximation = first_approximation_bits.dot(powers_of_two_node)?;
+    approximation.set_as_output()?;
+    g.finalize()
+}
 // Another incarnation of `expand_dims`, following the contract https://pytorch.org/docs/stable/generated/torch.unsqueeze.html
 // (in particular, the `axis` argument can be negative).
 pub fn unsqueeze(x: Node, axis: i64) -> Result<Node> {

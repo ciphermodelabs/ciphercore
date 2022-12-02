@@ -1,15 +1,14 @@
 //! Multiplicative inversion via [the Newton-Raphson method](https://en.wikipedia.org/wiki/Newton%27s_method#Multiplicative_inverses_of_numbers_and_power_series).
 use crate::custom_ops::CustomOperationBody;
-use crate::data_types::{array_type, scalar_type, Type, BIT, INT64, UINT64};
-use crate::data_values::Value;
+use crate::data_types::{Type, INT64, UINT64};
 use crate::errors::Result;
-use crate::graphs::{Context, Graph, GraphAnnotation};
-use crate::ops::utils::{constant, pull_out_bits, put_in_bits};
+use crate::graphs::{Context, Graph};
+use crate::ops::utils::constant;
 use crate::typed_value::TypedValue;
 
 use serde::{Deserialize, Serialize};
 
-use super::utils::{constant_scalar, multiply_fixed_point, single_bit_to_arithmetic, zeros};
+use super::utils::{constant_scalar, inverse_initial_approximation, multiply_fixed_point, zeros};
 
 /// A structure that defines the custom operation NewtonInversion that computes an inversion of a number via [the Newton-Raphson method](https://en.wikipedia.org/wiki/Newton%27s_method#Multiplicative_inverses_of_numbers_and_power_series).
 ///
@@ -86,31 +85,8 @@ impl CustomOperationBody for NewtonInversion {
             }
         }
 
-        let bit_type = if t.is_scalar() {
-            scalar_type(BIT)
-        } else {
-            array_type(t.get_shape(), BIT)
-        };
-        // Graph for identifying highest one bit.
-        let g_highest_one_bit = context.create_graph()?;
-        {
-            let input_state = g_highest_one_bit.input(bit_type.clone())?;
-            let input_bit = g_highest_one_bit.input(bit_type.clone())?;
-
-            let one = constant_scalar(&g_highest_one_bit, 1, BIT)?;
-            let not_input_state = one.add(input_state.clone())?;
-            // If input state is 1, then the highest bit has been already encountered.
-            // All other bits can be set to zero.
-            let output = not_input_state.multiply(input_bit)?;
-            // new_state is equal to input_state OR input_bit
-            // Hence, input state becomes and stays 1 once the highest bit has been encountered.
-            let new_state = input_state.add(output.clone())?;
-            let output_tuple = g_highest_one_bit.create_tuple(vec![new_state, output])?;
-            output_tuple.set_as_output()?;
-        }
-        g_highest_one_bit.add_annotation(GraphAnnotation::AssociativeOperation)?;
-        g_highest_one_bit.finalize()?;
-
+        let g_initial_approximation =
+            inverse_initial_approximation(&context, t.clone(), self.denominator_cap_2k)?;
         let g = context.create_graph()?;
         let divisor = g.input(t.clone())?;
         let mut approximation = if has_initial_approximation {
@@ -119,32 +95,7 @@ impl CustomOperationBody for NewtonInversion {
             let one = constant(&g, TypedValue::from_scalar(1, sc.clone())?)?;
             zeros(&g, t)?.add(one)?
         } else {
-            let divisor_bits = pull_out_bits(divisor.a2b()?)?.array_to_vector()?;
-            let mut divisor_bits_reversed = vec![];
-            for i in 0..self.denominator_cap_2k {
-                let index = constant_scalar(&g, self.denominator_cap_2k - i - 1, UINT64)?;
-                divisor_bits_reversed.push(divisor_bits.vector_get(index)?);
-            }
-            let zero = zeros(&g, bit_type.clone())?;
-            let highest_one_bit_binary = g
-                .iterate(
-                    g_highest_one_bit,
-                    zero,
-                    g.create_vector(bit_type, divisor_bits_reversed)?,
-                )?
-                .tuple_get(1)?
-                .vector_to_array()?;
-            let highest_one_bit = single_bit_to_arithmetic(highest_one_bit_binary, sc.clone())?;
-            let first_approximation_bits = put_in_bits(highest_one_bit)?;
-            let mut powers_of_two = vec![];
-            for i in 0..self.denominator_cap_2k {
-                powers_of_two.push(1u64 << i);
-            }
-            let powers_of_two_node = g.constant(
-                array_type(vec![self.denominator_cap_2k], sc.clone()),
-                Value::from_flattened_array(&powers_of_two, sc.clone())?,
-            )?;
-            first_approximation_bits.dot(powers_of_two_node)?
+            g.call(g_initial_approximation, vec![divisor.clone()])?
         };
         // Now, we do Newton approximation for computing 1 / x, where x = divisor / (2 ** cap).
         // The formula for the Newton method is x_{i + 1} = x_i * (2 - d * x_i).
@@ -173,7 +124,7 @@ mod tests {
 
     use crate::custom_ops::run_instantiation_pass;
     use crate::custom_ops::CustomOperation;
-    use crate::data_types::ScalarType;
+    use crate::data_types::{array_type, scalar_type, ScalarType};
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
     use crate::graphs::create_context;

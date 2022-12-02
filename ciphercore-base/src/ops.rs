@@ -4,6 +4,7 @@
 pub mod adder;
 pub mod clip;
 pub mod comparisons;
+pub mod goldschmidt_division;
 pub mod inverse_sqrt;
 pub mod min_max;
 pub mod multiplexer;
