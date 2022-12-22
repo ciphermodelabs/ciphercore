@@ -868,7 +868,7 @@ impl TypedValue {
     pub fn to_json(&self) -> Result<JsonValue> {
         match &self.t {
             Type::Scalar(st) => {
-                let string_type = format!("{}", st);
+                let string_type = format!("{st}");
                 let value = match *st {
                     BIT => to_json_aux!(self.value, st, to_u8),
                     UINT8 => to_json_aux!(self.value, st, to_u8),
@@ -886,7 +886,7 @@ impl TypedValue {
                 Ok(object! {"kind": "scalar", "type": string_type, "value": value})
             }
             Type::Array(shape, st) => {
-                let string_type = format!("{}", st);
+                let string_type = format!("{st}");
                 let flattened_array = match *st {
                     BIT => to_json_array_aux!(self.value, self.t, to_flattened_array_u8),
                     UINT8 => to_json_array_aux!(self.value, self.t, to_flattened_array_u8),

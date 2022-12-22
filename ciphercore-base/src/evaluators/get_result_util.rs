@@ -145,7 +145,7 @@ pub fn get_evaluator_result<T: Evaluator>(
     let mut input_values = vec![];
     let mut prng = PRNG::new(None)?;
     for i in 0..inputs.len() {
-        eprint!("Input {}: ", i);
+        eprint!("Input {i}: ");
         if inputs[i].value.check_type(input_types[i].clone())? {
             eprintln!("Using as is");
             input_values.push(inputs[i].value.clone());

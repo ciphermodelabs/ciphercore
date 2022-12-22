@@ -35,8 +35,7 @@ fn get_send_anno_info_str(node: Node) -> Result<String> {
                 };
                 write!(
                     &mut send_info_str,
-                    "{}Send[{}->{}]",
-                    comma_req, sender_id, receiver_id
+                    "{comma_req}Send[{sender_id}->{receiver_id}]"
                 )
                 .unwrap();
                 send_count += 1;
@@ -70,7 +69,7 @@ fn get_graphviz_node_def(node: Node) -> Result<String> {
     let node_type = node.get_type()?;
     type_str.push_str(&(node_type.to_string()));
     let node_name = if let Ok(s) = node.get_name() {
-        format!("\\n{}\\n", s)
+        format!("\\n{s}\\n")
     } else {
         "".to_owned()
     };
@@ -97,7 +96,7 @@ fn get_graphviz_edge_def(dependent_node: Node, dependee_node: Node) -> String {
 
 fn get_graphviz_open_subgraph(graph: Graph) -> String {
     let graph_name = if let Ok(s) = graph.get_name() {
-        format!("label = \"{}\"\n", s)
+        format!("label = \"{s}\"\n")
     } else {
         "label = \"\"\n".to_string()
     };
@@ -229,7 +228,7 @@ fn main() {
         let context: Context = serde_json::from_str::<Context>(&serialized_context)?;
         let mut viz_code = String::from("");
         generate_graphviz_context_code(context, &mut viz_code)?;
-        println!("{}", viz_code);
+        println!("{viz_code}");
         Ok(())
     });
 }

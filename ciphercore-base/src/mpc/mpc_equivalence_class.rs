@@ -217,10 +217,7 @@ pub(super) fn generate_equivalence_class(
                     equivalence_classes
                         .get(&node_id)
                         .unwrap_or_else(|| {
-                            panic!(
-                                "{} node {:?} wasn't added to equivalence classes",
-                                op, node_id
-                            )
+                            panic!("{op} node {node_id:?} wasn't added to equivalence classes")
                         })
                         .clone(),
                 );

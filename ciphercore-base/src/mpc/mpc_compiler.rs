@@ -1174,8 +1174,8 @@ where
             input_parties.len()
         ));
     }
-    eprintln!("input_parties = {:?}", input_parties);
-    eprintln!("output_parties = {:?}", output_parties);
+    eprintln!("input_parties = {input_parties:?}");
+    eprintln!("output_parties = {output_parties:?}");
     let compiled_context0 = prepare_for_mpc_evaluation(
         context4,
         vec![input_parties],

@@ -124,7 +124,7 @@ impl fmt::Display for Operation {
                 vec_operation_and_types[0].to_owned()
             }
         };
-        write!(f, "{}", operation_name)
+        write!(f, "{operation_name}")
     }
 }
 
@@ -2953,7 +2953,7 @@ impl fmt::Debug for Context {
 impl fmt::Display for Context {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match serde_json::to_string(&self) {
-            Ok(s) => write!(f, "{}", s),
+            Ok(s) => write!(f, "{s}"),
             Err(_err) => Err(fmt::Error::default()),
         }
     }

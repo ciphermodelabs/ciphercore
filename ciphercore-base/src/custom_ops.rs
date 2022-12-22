@@ -485,7 +485,7 @@ impl Instantiation {
             } else {
                 name.push_str(", ");
             }
-            write!(name, "{}", t).unwrap();
+            write!(name, "{t}").unwrap();
         }
         name.push('>');
         name

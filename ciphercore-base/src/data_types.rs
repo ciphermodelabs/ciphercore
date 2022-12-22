@@ -738,7 +738,7 @@ impl Type {
         if let Type::Array(shape, _) = self {
             shape.clone()
         } else {
-            panic!("Can't get shape of {:?})", self);
+            panic!("Can't get shape of {self:?})");
         }
     }
 
@@ -983,10 +983,10 @@ fn form_array_shape_str(array_shape: ArrayShape) -> String {
     array_shape_str.push('[');
     let mut dim_len_iter = array_shape.iter();
     if let Some(&d) = dim_len_iter.next() {
-        write!(array_shape_str, "{}", d).unwrap();
+        write!(array_shape_str, "{d}").unwrap();
     }
     for dimension_length in dim_len_iter {
-        write!(array_shape_str, ", {}", dimension_length).unwrap();
+        write!(array_shape_str, ", {dimension_length}").unwrap();
     }
     array_shape_str.push(']');
     array_shape_str
@@ -1042,9 +1042,9 @@ impl fmt::Display for ScalarType {
             } else {
                 scalar_type_string.push('u');
             }
-            write!(scalar_type_string, "{}", bit_size).unwrap();
+            write!(scalar_type_string, "{bit_size}").unwrap();
         }
-        write!(f, "{}", scalar_type_string)
+        write!(f, "{scalar_type_string}")
     }
 }
 
@@ -1072,7 +1072,7 @@ impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let type_string = match self {
             Type::Scalar(scalar_type) => {
-                format!("{}", scalar_type)
+                format!("{scalar_type}")
             }
             Type::Array(shape, scalar_type) => {
                 form_array_type_str(shape.clone(), scalar_type.clone())
@@ -1087,7 +1087,7 @@ impl fmt::Display for Type {
                 format!("({})", form_named_tuple_vec_type_str(elements.clone()))
             }
         };
-        write!(f, "{}", type_string)
+        write!(f, "{type_string}")
     }
 }
 

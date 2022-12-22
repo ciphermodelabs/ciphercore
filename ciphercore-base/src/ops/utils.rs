@@ -17,7 +17,7 @@ pub(super) fn validate_arguments_in_broadcast_bit_ops(
         return Err(runtime_error!("Invalid number of arguments"));
     }
     let mut are_valid_inputs: bool = true;
-    let mut error_message: String = format!("{}: ", custom_op_name);
+    let mut error_message: String = format!("{custom_op_name}: ");
     match (&arguments_types[0], &arguments_types[1]) {
         (Type::Array(shape0, scalar_type0), Type::Array(shape1, scalar_type1)) => {
             if shape0[shape0.len() - 1] != shape1[shape1.len() - 1] {

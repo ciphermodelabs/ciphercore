@@ -110,7 +110,7 @@ fn format_traffic(t_in_bits: u64) -> String {
     } else if t_in_bytes >= TWO.pow(10) {
         format!("{:.2}KB", t_in_bytes as f32 / TWO.pow(10) as f32)
     } else {
-        format!("{}B", t_in_bytes)
+        format!("{t_in_bytes}B")
     }
 }
 
@@ -123,7 +123,7 @@ fn format_operations(ops: u64) -> String {
     } else if ops >= TEN.pow(3) {
         format!("{:.2}K Ops", ops as f32 / TEN.pow(3) as f32)
     } else {
-        format!("{} Ops", ops)
+        format!("{ops} Ops")
     }
 }
 
@@ -139,7 +139,7 @@ pub(crate) fn print_stats(graph: Graph) -> Result<()> {
     let mut total_64bits_operations = 0;
     for node in graph.get_nodes() {
         let op = node.get_operation();
-        let op_name = format!("{}", op);
+        let op_name = format!("{op}");
         *cnt.entry(op_name).or_insert(0) += 1;
         match op {
             Operation::Input(_) => {
@@ -195,10 +195,10 @@ pub(crate) fn print_stats(graph: Graph) -> Result<()> {
         .or_else(|_| Result::Ok("unnamed".to_string()))?;
     let output_type = format!("{}", output_node.get_type()?);
     println!("Output: ",);
-    println!("  Name:{}", output_name);
-    println!("  Type:{}", output_type);
+    println!("  Name:{output_name}");
+    println!("  Type:{output_type}");
 
-    println!("Network rounds: {}", network_rounds);
+    println!("Network rounds: {network_rounds}");
     println!(
         "Network traffic: {}",
         format_traffic(network_traffic_in_bits)
