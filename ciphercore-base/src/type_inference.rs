@@ -38,23 +38,23 @@ pub fn create_type_inference_worker(context: Context) -> TypeInferenceWorker {
 fn mixed_multiply_inference(t0: Type, t1: Type) -> Result<Type> {
     if !t0.is_scalar() && !t0.is_array() {
         return Err(runtime_error!(
-            "The first argument of mixed multiply is not a scalar or an array"
+            "The first argument of mixed multiply is not a scalar or an array: {t0:?}"
         ));
     }
     if !t1.is_scalar() && !t1.is_array() {
         return Err(runtime_error!(
-            "The second argument of mixed multiply is not a scalar or an array"
+            "The second argument of mixed multiply is not a scalar or an array: {t1:?}"
         ));
     }
 
     if t0.get_scalar_type() == BIT {
         return Err(runtime_error!(
-            "The scalar type of the first argument shouldn't be BIT"
+            "The scalar type of the first argument shouldn't be BIT: {t0:?}"
         ));
     }
     if t1.get_scalar_type() != BIT {
         return Err(runtime_error!(
-            "The scalar type of the second argument must be BIT"
+            "The scalar type of the second argument must be BIT: {t1:?}"
         ));
     }
 
@@ -74,16 +74,18 @@ fn mixed_multiply_inference(t0: Type, t1: Type) -> Result<Type> {
 fn dot_type_inference(t0: Type, t1: Type) -> Result<Type> {
     if !t0.is_scalar() && !t0.is_array() {
         return Err(runtime_error!(
-            "The first argument of dot is not a scalar or an array"
+            "The first argument of dot is not a scalar or an array: {t0:?}"
         ));
     }
     if !t1.is_scalar() && !t1.is_array() {
         return Err(runtime_error!(
-            "The second argument of dot is not a scalar or an array"
+            "The second argument of dot is not a scalar or an array: {t1:?}"
         ));
     }
     if t0.get_scalar_type() != t1.get_scalar_type() {
-        return Err(runtime_error!("Incompatible scalar types"));
+        return Err(runtime_error!(
+            "Incompatible scalar types: {t0:?} vs {t1:?}"
+        ));
     }
     let st = t0.get_scalar_type();
     if t0.is_array() && t1.is_array() {
@@ -91,19 +93,25 @@ fn dot_type_inference(t0: Type, t1: Type) -> Result<Type> {
         let s1 = t1.get_shape();
         if s0.len() == 1 && s1.len() == 1 {
             if s0[0] != s1[0] {
-                return Err(runtime_error!("Dot with incompatible dimensions"));
+                return Err(runtime_error!(
+                    "Dot with incompatible dimensions: {s0:?} vs {s1:?}"
+                ));
             }
             Ok(scalar_type(st))
         } else if s1.len() == 1 {
             if s0[s0.len() - 1] != s1[0] {
-                Err(runtime_error!("Dot with incompatible dimensions"))
+                Err(runtime_error!(
+                    "Dot with incompatible dimensions: {s0:?} vs {s1:?}"
+                ))
             } else {
                 let mut sr = s0.clone();
                 sr.remove(s0.len() - 1);
                 Ok(array_type(sr, st))
             }
         } else if s0[s0.len() - 1] != s1[s1.len() - 2] {
-            Err(runtime_error!("Dot with incompatible dimensions"))
+            Err(runtime_error!(
+                "Dot with incompatible dimensions: {s0:?} vs {s1:?}"
+            ))
         } else {
             let mut sr = s0.clone();
             sr.remove(s0.len() - 1);
@@ -124,16 +132,18 @@ fn dot_type_inference(t0: Type, t1: Type) -> Result<Type> {
 fn matmul_type_inference(t0: Type, t1: Type) -> Result<Type> {
     if !t0.is_array() {
         return Err(runtime_error!(
-            "The first argument of matmul is not an array"
+            "The first argument of matmul is not an array: {t0:?}"
         ));
     }
     if !t1.is_array() {
         return Err(runtime_error!(
-            "The second argument of matmul is not an array"
+            "The second argument of matmul is not an array: {t1:?}"
         ));
     }
     if t0.get_scalar_type() != t1.get_scalar_type() {
-        return Err(runtime_error!("Incompatible scalar types"));
+        return Err(runtime_error!(
+            "Incompatible scalar types: {t0:?} vs {t1:?}"
+        ));
     }
     let st = t0.get_scalar_type();
     let mut s0 = t0.get_shape();
@@ -147,7 +157,9 @@ fn matmul_type_inference(t0: Type, t1: Type) -> Result<Type> {
         s1.push(1);
     }
     if s0[s0.len() - 1] != s1[s1.len() - 2] {
-        return Err(runtime_error!("Matmul with incompatible dimensions"));
+        return Err(runtime_error!(
+            "Matmul with incompatible dimensions: {s0:?} vs {s1:?}"
+        ));
     }
     let mut result_dims =
         broadcast_shapes(s0[0..s0.len() - 2].to_vec(), s1[0..s1.len() - 2].to_vec())?;
@@ -177,21 +189,25 @@ pub(crate) fn transpose_shape(shape: ArrayShape, transpose_flag: bool) -> ArrayS
 
 fn gemm_type_inference(t0: Type, t1: Type, transpose0: bool, transpose1: bool) -> Result<Type> {
     if !t0.is_array() {
-        return Err(runtime_error!("The first argument of gemm is not an array"));
+        return Err(runtime_error!(
+            "The first argument of gemm is not an array: {t0:?}"
+        ));
     }
     if !t1.is_array() {
         return Err(runtime_error!(
-            "The second argument of gemm is not an array"
+            "The second argument of gemm is not an array: {t1:?}"
         ));
     }
     if t0.get_scalar_type() != t1.get_scalar_type() {
-        return Err(runtime_error!("Incompatible scalar types"));
+        return Err(runtime_error!(
+            "Incompatible scalar types: {t0:?} vs {t1:?}"
+        ));
     }
     let input_shape0 = t0.get_shape();
     let input_shape1 = t1.get_shape();
     if input_shape0.len() == 1 || input_shape1.len() == 1 {
         return Err(runtime_error!(
-            "To multiply vectors, use matmul or dot operations instead of gemm"
+            "To multiply vectors, use matmul or dot operations instead of gemm. Shapes are: {input_shape0:?} and {input_shape1:?}."
         ));
     }
 
@@ -200,7 +216,9 @@ fn gemm_type_inference(t0: Type, t1: Type, transpose0: bool, transpose1: bool) -
     let s1 = transpose_shape(input_shape1, transpose1);
 
     if s0[s0.len() - 1] != s1[s1.len() - 2] {
-        return Err(runtime_error!("Gemm with incompatible dimensions"));
+        return Err(runtime_error!(
+            "Gemm with incompatible dimensions: {s0:?} vs {s1:?}"
+        ));
     }
     let mut result_dims =
         broadcast_shapes(s0[0..s0.len() - 2].to_vec(), s1[0..s1.len() - 2].to_vec())?;
@@ -213,12 +231,14 @@ fn gemm_type_inference(t0: Type, t1: Type, transpose0: bool, transpose1: bool) -
 pub(super) fn a2b_type_inference(original_type: Type) -> Result<Type> {
     if !original_type.is_scalar() && !original_type.is_array() {
         return Err(runtime_error!(
-            "Invalid type for A2B: can only be array or scalar"
+            "Invalid type for A2B: can only be array or scalar: {original_type:?}"
         ));
     }
     let st = original_type.get_scalar_type();
     if st == BIT {
-        return Err(runtime_error!("A2B can't be applied to bits"));
+        return Err(runtime_error!(
+            "A2B can't be applied to bits, got {original_type:?}"
+        ));
     }
     let sz = scalar_size_in_bits(st);
     if original_type.is_scalar() {
@@ -232,21 +252,21 @@ pub(super) fn a2b_type_inference(original_type: Type) -> Result<Type> {
 
 fn b2a_type_inference(t: Type, st: ScalarType) -> Result<Type> {
     if !t.is_valid() {
-        return Err(runtime_error!("Invalid type"));
+        return Err(runtime_error!("Invalid type: {t:?}"));
     }
     if !t.is_array() {
-        return Err(runtime_error!("Trying to B2A non-array"));
+        return Err(runtime_error!("Trying to B2A non-array: {t:?}"));
     }
     let mut shape = t.get_shape();
     let array_st = t.get_scalar_type();
     if array_st != BIT {
-        return Err(runtime_error!("Trying to B2A from non-bits"));
+        return Err(runtime_error!("Trying to B2A from non-bits: {t:?}"));
     }
     if st == BIT {
-        return Err(runtime_error!("Trying to B2A into bits"));
+        return Err(runtime_error!("Trying to B2A into bits: {t:?}"));
     }
     if shape[shape.len() - 1] != scalar_size_in_bits(st.clone()) {
-        return Err(runtime_error!("Invalid scalar type for B2A"));
+        return Err(runtime_error!("Invalid scalar type for B2A: {t:?}"));
     }
     if shape.len() == 1 {
         Ok(scalar_type(st))
@@ -271,14 +291,16 @@ fn set_intersection_inference(
     let check_and_extract_types = |t: Type| -> Result<HashMap<String, Arc<Type>>> {
         if let Type::NamedTuple(v) = t {
             if v.len() < 2 {
-                return Err(runtime_error!("Named tuple should contain at least two columns, one of which must be the null column"));
+                return Err(runtime_error!("Named tuple should contain at least two columns, one of which must be the null column. Got: {v:?}"));
             }
             let mut num_entries = 0;
             let mut contains_null = false;
             let mut all_headers: HashMap<String, Arc<Type>> = HashMap::new();
             for (h, sub_t) in v {
                 if !sub_t.is_array() {
-                    return Err(runtime_error!("Named tuple should consist of arrays"));
+                    return Err(runtime_error!(
+                        "Named tuple should consist of arrays, got: {sub_t:?}"
+                    ));
                 }
                 let shape = sub_t.get_shape();
                 if num_entries == 0 {
@@ -286,12 +308,16 @@ fn set_intersection_inference(
                 }
                 if num_entries != shape[0] {
                     return Err(runtime_error!(
-                        "Number of entries should be the same in each column"
+                        "Number of entries should be the same in each column: {} vs {}",
+                        num_entries,
+                        shape[0]
                     ));
                 }
                 if h == NULL_HEADER {
                     if sub_t.get_scalar_type() != BIT {
-                        return Err(runtime_error!("Null column should be binary"));
+                        return Err(runtime_error!(
+                            "Null column should be binary, got {sub_t:?}"
+                        ));
                     }
                     if shape != vec![num_entries] {
                         return Err(runtime_error!(
@@ -308,7 +334,9 @@ fn set_intersection_inference(
             }
             Ok(all_headers)
         } else {
-            Err(runtime_error!("Only named tuples can be intersected"))
+            Err(runtime_error!(
+                "Only named tuples can be intersected, got {t:?}"
+            ))
         }
     };
     let headers_types_map0 = check_and_extract_types(t0.clone())?;
@@ -323,14 +351,12 @@ fn set_intersection_inference(
         }
         if !headers_types_map0.contains_key(&h0) {
             return Err(runtime_error!(
-                "There is no header {} in the first named tuple",
-                h0
+                "There is no header {h0} in the first named tuple"
             ));
         }
         if !headers_types_map1.contains_key(&h1) {
             return Err(runtime_error!(
-                "There is no header {} in the second named tuple",
-                h1
+                "There is no header {h1} in the second named tuple"
             ));
         }
         let sub_t0 = headers_types_map0.get(&h0).unwrap();
@@ -341,23 +367,19 @@ fn set_intersection_inference(
         // First dimension can differ as input tuples might have different number of entries/rows
         if shape0[1..] != shape1[1..] {
             return Err(runtime_error!(
-                "Columns with names {} {} have incompatible shapes to be compared",
-                h0,
-                h1
+                "Columns with names {h0} {h1} have incompatible shapes to be compared"
             ));
         }
         if sub_t0.get_scalar_type() != sub_t1.get_scalar_type() {
             return Err(runtime_error!(
-                "Columns with names {} {} have incompatible scalar types to be compared",
-                h0,
-                h1
+                "Columns with names {h0} {h1} have incompatible scalar types to be compared"
             ));
         }
         key_headers1.push(h1);
     }
     for (h, _) in headers_types_map1 {
         if h != NULL_HEADER && headers_types_map0.contains_key(&h) && !key_headers1.contains(&h) {
-            return Err(runtime_error!("Both tuples contain columns named {} that don't participate in set intersection. Rename one of these to a unique name.", h));
+            return Err(runtime_error!("Both tuples contain columns named {h} that don't participate in set intersection. Rename one of these to a unique name."));
         }
     }
 
@@ -593,10 +615,7 @@ impl TypeInferenceWorker {
         match node.get_operation() {
             Operation::Input(input_type) => {
                 if !input_type.is_valid() {
-                    return Err(runtime_error!(
-                        "Input with an invalid type: {:?}",
-                        input_type
-                    ));
+                    return Err(runtime_error!("Input with an invalid type: {input_type:?}"));
                 }
                 let result = input_type;
                 self.register_result(node, result.clone())?;
@@ -659,10 +678,10 @@ impl TypeInferenceWorker {
                     return Err(runtime_error!("Can't divide by zero"));
                 }
                 if !t.is_array() && !t.is_scalar() {
-                    return Err(runtime_error!("Can't truncate this type"));
+                    return Err(runtime_error!("Can't truncate this type: {t:?}"));
                 }
                 if t.get_scalar_type().get_signed() && d > i64::MAX as u64 {
-                    return Err(runtime_error!("Scale for truncation is too large"));
+                    return Err(runtime_error!("Scale for truncation is too large: {d}"));
                 }
                 self.register_result(node, t.clone())?;
                 Ok(t)
@@ -670,19 +689,19 @@ impl TypeInferenceWorker {
             Operation::Sum(s) => {
                 let t = node_dependencies_types[0].clone();
                 if !t.is_array() {
-                    return Err(runtime_error!("Can't sum this type"));
+                    return Err(runtime_error!("Can't sum this type: {t:?}"));
                 }
                 let os = t.get_shape();
                 let mut tmp = s.clone();
                 tmp.sort_unstable();
                 tmp.dedup();
                 if tmp.len() < s.len() {
-                    return Err(runtime_error!("Non-unique axes"));
+                    return Err(runtime_error!("Non-unique axes: {s:?}"));
                 }
                 let mut set: HashSet<u64> = HashSet::new();
                 for x in s {
                     if x >= os.len() as u64 {
-                        return Err(runtime_error!("Invalid axis"));
+                        return Err(runtime_error!("Invalid axis: {x}"));
                     }
                     set.insert(x);
                 }
@@ -704,22 +723,22 @@ impl TypeInferenceWorker {
             Operation::PermuteAxes(s) => {
                 let t = node_dependencies_types[0].clone();
                 if !t.is_array() {
-                    return Err(runtime_error!("Can't permute_axes this type"));
+                    return Err(runtime_error!("Can't permute_axes this type: {t:?}"));
                 }
                 let os = t.get_shape();
                 let mut tmp = s.clone();
                 tmp.sort_unstable();
                 tmp.dedup();
                 if tmp.len() < s.len() {
-                    return Err(runtime_error!("Non-unique axes"));
+                    return Err(runtime_error!("Non-unique axes: {s:?}"));
                 }
                 for x in &s {
                     if *x >= os.len() as u64 {
-                        return Err(runtime_error!("Invalid axes"));
+                        return Err(runtime_error!("Invalid axes: {s:?}"));
                     }
                 }
                 if s.len() != os.len() {
-                    return Err(runtime_error!("Not a permutation"));
+                    return Err(runtime_error!("Not a permutation: {s:?}"));
                 }
                 let mut rs = vec![];
                 for i in 0..s.len() {
@@ -733,14 +752,17 @@ impl TypeInferenceWorker {
             Operation::InversePermutation => {
                 let t = node_dependencies_types[0].clone();
                 if !t.is_array() {
-                    return Err(runtime_error!("Input type should be an array"));
+                    return Err(runtime_error!("Input type should be an array: {t:?}"));
                 }
                 if t.get_scalar_type() != UINT64 {
-                    return Err(runtime_error!("Input elements must be 64-bit integers"));
+                    return Err(runtime_error!(
+                        "Input elements must be unsigned 64-bit integers: {t:?}"
+                    ));
                 }
                 if t.get_shape().len() > 1 {
                     return Err(runtime_error!(
-                        "Input type should be an array with one dimension"
+                        "Input type should be an array with one dimension: {:?}",
+                        t.get_shape()
                     ));
                 }
                 self.register_result(node, t.clone())?;
@@ -749,10 +771,12 @@ impl TypeInferenceWorker {
             Operation::CuckooToPermutation => {
                 let t = node_dependencies_types[0].clone();
                 if !t.is_array() {
-                    return Err(runtime_error!("Input type should be an array"));
+                    return Err(runtime_error!("Input type should be an array: {t:?}"));
                 }
                 if t.get_scalar_type() != UINT64 {
-                    return Err(runtime_error!("Input elements must be 64-bit integers"));
+                    return Err(runtime_error!(
+                        "Input elements must be 64-bit integers: {t:?}"
+                    ));
                 }
                 self.register_result(node, t.clone())?;
                 Ok(t)
@@ -760,14 +784,18 @@ impl TypeInferenceWorker {
             Operation::DecomposeSwitchingMap(n) => {
                 let t = node_dependencies_types[0].clone();
                 if !t.is_array() {
-                    return Err(runtime_error!("Input type should be an array"));
+                    return Err(runtime_error!("Input type should be an array: {t:?}"));
                 }
                 if t.get_scalar_type() != UINT64 {
-                    return Err(runtime_error!("Input elements must be 64-bit integers"));
+                    return Err(runtime_error!(
+                        "Input elements must be 64-bit integers: {t:?}"
+                    ));
                 }
                 let shape = t.get_shape();
                 if shape[0] > n {
-                    return Err(runtime_error!("Switching map is longer than expected"));
+                    return Err(runtime_error!(
+                        "Switching map is longer than expected: {shape:?} vs {n:?}"
+                    ));
                 }
                 let duplication_map_t = tuple_type(vec![
                     array_type(shape.clone(), UINT64),
@@ -779,15 +807,15 @@ impl TypeInferenceWorker {
             Operation::Get(s) => {
                 let t = node_dependencies_types[0].clone();
                 if !t.is_array() {
-                    return Err(runtime_error!("Can't run get on this type"));
+                    return Err(runtime_error!("Can't run get on this type: {t:?}"));
                 }
                 let os = t.get_shape();
                 if s.len() > os.len() {
-                    return Err(runtime_error!("Too long index"));
+                    return Err(runtime_error!("Too long index: {s:?}"));
                 }
                 for i in 0..s.len() {
                     if s[i] >= os[i] {
-                        return Err(runtime_error!("Out of bounds"));
+                        return Err(runtime_error!("Out of bounds: {s:?}"));
                     }
                 }
                 let st = t.get_scalar_type();
@@ -807,7 +835,7 @@ impl TypeInferenceWorker {
             Operation::GetSlice(slice) => {
                 let t = node_dependencies_types[0].clone();
                 if !t.is_array() {
-                    return Err(runtime_error!("Can't run get_slice on this type"));
+                    return Err(runtime_error!("Can't run get_slice on this type: {t:?}"));
                 }
                 let os = t.get_shape();
                 let st = t.get_scalar_type();
@@ -824,16 +852,18 @@ impl TypeInferenceWorker {
                 let old_type = node_dependencies_types[0].clone();
                 if flatten_type_size(old_type.clone())? != flatten_type_size(new_type.clone())? {
                     return Err(runtime_error!(
-                        "Incompatible types for reshape: {:?} to {:?}",
-                        old_type,
-                        new_type
+                        "Incompatible types for reshape: {old_type:?} to {new_type:?}"
                     ));
                 }
                 let v1 = flatten_type(old_type);
                 let v2 = flatten_type(new_type.clone());
                 for i in 0..v1.len() {
                     if !can_atomic_reshape(v1[i].clone(), v2[i].clone()) {
-                        return Err(runtime_error!("Incompatible types for reshape"));
+                        return Err(runtime_error!(
+                            "Incompatible types for reshape: {:?} to {:?}",
+                            v1[i],
+                            v2[i]
+                        ));
                     }
                 }
                 let result = new_type;
@@ -860,26 +890,30 @@ impl TypeInferenceWorker {
             Operation::PRF(_, ot) => {
                 let t = node_dependencies_types[0].clone();
                 if !t.is_array() {
-                    return Err(runtime_error!("PRF key must be an array"));
+                    return Err(runtime_error!("PRF key must be an array: {t:?}"));
                 }
                 let s = t.get_shape();
                 let st = t.get_scalar_type();
                 if s.len() != 1 || s[0] != 128 || st != BIT {
-                    return Err(runtime_error!("PRF key must consist of 128 bits"));
+                    return Err(runtime_error!("PRF key must consist of 128 bits: {s:?}"));
                 }
                 self.register_result(node, ot.clone())?;
                 Ok(ot)
             }
             Operation::Stack(outer_shape) => {
                 if !is_valid_shape(outer_shape.clone()) {
-                    return Err(runtime_error!("Invalid outer shape"));
+                    return Err(runtime_error!("Invalid outer shape: {outer_shape:?}"));
                 }
                 let mut pr = 1;
                 for x in &outer_shape {
                     pr *= *x;
                 }
                 if node_dependencies.len() as u64 != pr {
-                    return Err(runtime_error!("Stack with a wrong number of arguments"));
+                    return Err(runtime_error!(
+                        "Stack with a wrong number of arguments: {:?} vs {:?}",
+                        node_dependencies.len(),
+                        pr
+                    ));
                 }
                 let inner_type = broadcast_arrays(node_dependencies_types)?;
                 let st = inner_type.get_scalar_type();
@@ -898,12 +932,15 @@ impl TypeInferenceWorker {
             Operation::Concatenate(axis) => {
                 if node_dependencies.len() < 2 {
                     return Err(runtime_error!(
-                        "Concatenate should have at least two input arrays"
+                        "Concatenate should have at least two input arrays, got {:?}",
+                        node_dependencies.len()
                     ));
                 }
                 for t in &node_dependencies_types {
                     if !t.is_array() {
-                        return Err(runtime_error!("All inputs of Concatenate must be arrays"));
+                        return Err(runtime_error!(
+                            "All inputs of Concatenate must be arrays, got {t:?}"
+                        ));
                     }
                 }
                 let first_type = &node_dependencies_types[0];
@@ -911,19 +948,29 @@ impl TypeInferenceWorker {
 
                 let mut result_shape = first_type.get_shape();
                 if axis >= result_shape.len() as u64 {
-                    return Err(runtime_error!("Wrong concatenation axis"));
+                    return Err(runtime_error!("Wrong concatenation axis: {axis:?}"));
                 }
                 for t in node_dependencies_types.iter().skip(1) {
                     if t.get_scalar_type() != st {
-                        return Err(runtime_error!("Inputs have different scalar types"));
+                        return Err(runtime_error!(
+                            "Inputs have different scalar types: {:?} vs {:?}",
+                            st,
+                            t.get_scalar_type()
+                        ));
                     }
                     let shape = t.get_shape();
                     if result_shape.len() != shape.len() {
-                        return Err(runtime_error!("Inputs have shapes of different length"));
+                        return Err(runtime_error!(
+                            "Inputs have shapes of different length: {:?} vs {:?}",
+                            result_shape.len(),
+                            shape.len()
+                        ));
                     }
                     for (i, d) in shape.iter().enumerate() {
                         if result_shape[i] != *d && axis != i as u64 {
-                            return Err(runtime_error!("Inputs have incompatible shapes"));
+                            return Err(runtime_error!(
+                                "Inputs have incompatible shapes: {result_shape:?} vs {shape:?}"
+                            ));
                         }
                     }
                     result_shape[axis as usize] += shape[axis as usize];
@@ -933,7 +980,9 @@ impl TypeInferenceWorker {
             }
             Operation::Constant(t, ref value) => {
                 if !value.check_type(t.clone())? {
-                    return Err(runtime_error!("Invalid constant type"));
+                    return Err(runtime_error!(
+                        "Invalid constant type: {t:?} for value {value:?}"
+                    ));
                 }
                 self.register_result(node, t.clone())?;
                 Ok(t)
@@ -961,7 +1010,11 @@ impl TypeInferenceWorker {
             }
             Operation::CreateNamedTuple(fields) => {
                 if node_dependencies.len() != fields.len() {
-                    return Err(runtime_error!("Invalid number of fields provided"));
+                    return Err(runtime_error!(
+                        "Invalid number of fields provided: {:?} vs {:?}",
+                        node_dependencies.len(),
+                        fields.len()
+                    ));
                 }
                 let mut types = vec![];
                 for dependency_type in node_dependencies_types {
@@ -980,7 +1033,9 @@ impl TypeInferenceWorker {
             Operation::CreateVector(element_type) => {
                 for dependency_type in node_dependencies_types.clone() {
                     if dependency_type != element_type {
-                        return Err(runtime_error!("Vector element type mismatch"));
+                        return Err(runtime_error!(
+                            "Vector element type mismatch: {dependency_type:?} vs {element_type:?}"
+                        ));
                     }
                 }
                 let result = vector_type(node_dependencies_types.len() as u64, element_type);
@@ -992,19 +1047,29 @@ impl TypeInferenceWorker {
                 let result = match original_type {
                     Type::Tuple(fields) => {
                         if field_id >= fields.len() as u64 {
-                            return Err(runtime_error!("Index is out of bounds"));
+                            return Err(runtime_error!(
+                                "Index is out of bounds: {:?} vs {:?}",
+                                field_id,
+                                fields.len()
+                            ));
                         }
                         (*fields[field_id as usize]).clone()
                     }
                     Type::NamedTuple(fields) => {
                         if field_id >= fields.len() as u64 {
-                            return Err(runtime_error!("Index is out of bounds"));
+                            return Err(runtime_error!(
+                                "Index is out of bounds: {:?} vs {:?}",
+                                field_id,
+                                fields.len()
+                            ));
                         }
                         let (_, t) = fields[field_id as usize].clone();
                         (*t).clone()
                     }
                     _ => {
-                        return Err(runtime_error!("Can't TupleGet from this type"));
+                        return Err(runtime_error!(
+                            "Can't TupleGet from this type: {original_type:?}"
+                        ));
                     }
                 };
                 self.register_result(node, result.clone())?;
@@ -1023,21 +1088,27 @@ impl TypeInferenceWorker {
                         }
                     }
                     _ => {
-                        return Err(runtime_error!("Can't TupleGet from this type"));
+                        return Err(runtime_error!(
+                            "Can't NamedTupleGet from this type: {original_type:?}"
+                        ));
                     }
                 };
-                Err(runtime_error!("Invalid field name"))
+                Err(runtime_error!("Invalid field name: {field_name:?}"))
             }
             Operation::VectorGet => {
                 let index_type = node_dependencies_types[1].clone();
                 if index_type != scalar_type(UINT64) && index_type != scalar_type(UINT32) {
-                    return Err(runtime_error!("Vector index must be an UINT64 or UINT32."));
+                    return Err(runtime_error!(
+                        "Vector index must be an UINT64 or UINT32, got {index_type:?}"
+                    ));
                 }
                 let vector_type = node_dependencies_types[0].clone();
                 let result = match vector_type {
                     Type::Vector(_, inner_type) => (*inner_type).clone(),
                     _ => {
-                        return Err(runtime_error!("VectorGet can only be applied to vectors"));
+                        return Err(runtime_error!(
+                            "VectorGet can only be applied to vectors: {vector_type:?}"
+                        ));
                     }
                 };
                 self.register_result(node, result.clone())?;
@@ -1045,7 +1116,10 @@ impl TypeInferenceWorker {
             }
             Operation::Zip => {
                 if node_dependencies.len() < 2 {
-                    return Err(runtime_error!("Zip with a wrong number of arguments"));
+                    return Err(runtime_error!(
+                        "Zip with a wrong number of arguments: {:?}",
+                        node_dependencies.len()
+                    ));
                 }
                 let mut types = vec![];
                 for dependency_type in node_dependencies_types {
@@ -1059,7 +1133,9 @@ impl TypeInferenceWorker {
                             match length {
                                 Some(len) => {
                                     if *l != len {
-                                        return Err(runtime_error!("Zip of uneven lengths"));
+                                        return Err(runtime_error!(
+                                            "Zip of uneven lengths: {len:?} vs {l:?}"
+                                        ));
                                     }
                                 }
                                 None => {
@@ -1069,7 +1145,9 @@ impl TypeInferenceWorker {
                             element_types.push((*et).clone());
                         }
                         _ => {
-                            return Err(runtime_error!("An argument of zip is not a vector"));
+                            return Err(runtime_error!(
+                                "An argument of zip is not a vector: {t:?}"
+                            ));
                         }
                     }
                 }
@@ -1100,11 +1178,20 @@ impl TypeInferenceWorker {
                     }
                 }
                 if node_dependencies.len() != input_types.len() {
-                    return Err(runtime_error!("Invalid number of arguments in Call"));
+                    return Err(runtime_error!(
+                        "Invalid number of arguments in Call: {:?} vs {:?}",
+                        node_dependencies.len(),
+                        input_types.len()
+                    ));
                 }
                 for i in 0..node_dependencies.len() {
                     if input_types[i] != node_dependencies_types[i] {
-                        return Err(runtime_error!("Type mismatch for argument {}", i));
+                        return Err(runtime_error!(
+                            "Type mismatch for argument {}: expected {:?}, got {:?}",
+                            i,
+                            input_types[i],
+                            node_dependencies_types[i]
+                        ));
                     }
                 }
                 let result = self.process_node(graph.get_output_node()?)?;
@@ -1122,7 +1209,7 @@ impl TypeInferenceWorker {
                 }
                 if input_types.len() != 2 {
                     return Err(runtime_error!(
-                        "Iterate graph must have two inputs: state and current input"
+                        "Iterate graph must have two inputs: state and current input. Got {} inputs", input_types.len()
                     ));
                 }
                 let state_type = input_types[0].clone();
@@ -1132,22 +1219,30 @@ impl TypeInferenceWorker {
                     Type::Tuple(element_types) => {
                         if element_types.len() != 2 {
                             return Err(runtime_error!(
-                                "Iterate graph must output a tuple of two elements as an output"
+                                "Iterate graph must output a tuple of two elements as an output, got {} elements", element_types.len()
                             ));
                         }
                         if *element_types[0] != state_type {
-                            return Err(runtime_error!("State type mismatch"));
+                            return Err(runtime_error!(
+                                "State type mismatch: expected {:?}, got {:?}",
+                                state_type,
+                                element_types[0]
+                            ));
                         }
                         let output_sequence_type = (*element_types[1]).clone();
                         let t0 = node_dependencies_types[0].clone();
                         let t1 = node_dependencies_types[1].clone();
                         if t0 != state_type {
-                            return Err(runtime_error!("Invalid state type"));
+                            return Err(runtime_error!(
+                                "Invalid state type: expected {state_type:?}, got {t0:?}"
+                            ));
                         }
                         match t1 {
                             Type::Vector(len, element_type) => {
                                 if *element_type != input_sequence_type {
-                                    return Err(runtime_error!("Invalid sequence type"));
+                                    return Err(runtime_error!(
+                                        "Invalid sequence type: expected {input_sequence_type:?}, got {element_type:?}"
+                                    ));
                                 }
                                 let result = tuple_type(vec![
                                     state_type,
@@ -1156,16 +1251,22 @@ impl TypeInferenceWorker {
                                 self.register_result(node, result.clone())?;
                                 Ok(result)
                             }
-                            _ => Err(runtime_error!("Invalid sequence type")),
+                            _ => Err(runtime_error!(
+                                "Invalid sequence type: expected vector, got {t1:?}"
+                            )),
                         }
                     }
-                    _ => Err(runtime_error!("Iterate graph must output a tuple")),
+                    _ => Err(runtime_error!(
+                        "Iterate graph must output a tuple: got {output_type:?}"
+                    )),
                 }
             }
             Operation::ArrayToVector => {
                 let t = node_dependencies_types[0].clone();
                 if !t.is_array() {
-                    return Err(runtime_error!("ArrayToVector applied to a non-array"));
+                    return Err(runtime_error!(
+                        "ArrayToVector applied to a non-array: {t:?}"
+                    ));
                 }
                 let st = t.get_scalar_type();
                 let shape = t.get_shape();
@@ -1189,7 +1290,7 @@ impl TypeInferenceWorker {
                     }
                     if !element_type.is_scalar() && !element_type.is_array() {
                         return Err(runtime_error!(
-                            "VectorToArray can be only applied to a vector of scalars or arrays"
+                            "VectorToArray can be only applied to a vector of scalars or arrays, got {element_type:?}"
                         ));
                     }
                     let st = element_type.get_scalar_type();
@@ -1205,32 +1306,38 @@ impl TypeInferenceWorker {
                     Ok(result)
                 } else {
                     Err(runtime_error!(
-                        "VectorToArray can't be applied to a non-vector"
+                        "VectorToArray can't be applied to a non-vector: {t:?}"
                     ))
                 }
             }
             Operation::Gather(axis) => {
                 let input_t = node_dependencies_types[0].clone();
                 if !input_t.is_array() {
-                    return Err(runtime_error!("Take can be only applied to an array"));
+                    return Err(runtime_error!(
+                        "Take can be only applied to an array: {input_t:?}"
+                    ));
                 }
                 let indices_t = node_dependencies_types[1].clone();
                 // TODO: support UINT32
                 if !matches!(indices_t, Type::Array(_, UINT64)) {
-                    return Err(runtime_error!("Indices must be an array of UINT64"));
+                    return Err(runtime_error!(
+                        "Indices must be an array of UINT64: {indices_t:?}"
+                    ));
                 }
                 let input_shape = input_t.get_shape();
                 if axis >= input_shape.len() as u64 {
                     return Err(runtime_error!(
-                        "Invalid axis. The axis index should be smaller than {}",
-                        input_shape.len()
+                        "Invalid axis. The axis index should be smaller than {}, got {}",
+                        input_shape.len(),
+                        axis
                     ));
                 }
                 let indices_shape = indices_t.get_shape();
                 let indices_size = indices_shape.iter().product::<u64>();
                 if indices_size > input_shape[axis as usize] {
                     return Err(runtime_error!(
-                        "Number of indices is too big. At most {} elements can be extracted.",
+                        "Number of indices is too big: {}. At most {} elements can be extracted.",
+                        indices_size,
                         input_shape[axis as usize]
                     ));
                 }
@@ -1246,32 +1353,36 @@ impl TypeInferenceWorker {
                 let hash_t = node_dependencies_types[1].clone();
                 if !matches!(input_t, Type::Array(_, BIT)) {
                     return Err(runtime_error!(
-                        "CuckooHash can't be applied to a non-binary arrays"
+                        "CuckooHash can't be applied to a non-binary arrays: {input_t:?}"
                     ));
                 }
                 let input_shape = input_t.get_shape();
                 if input_shape.len() < 2 {
                     return Err(runtime_error!(
-                        "Input shape must have at least 2 dimensions"
+                        "Input shape must have at least 2 dimensions, got {input_shape:?}"
                     ));
                 }
                 if !matches!(hash_t, Type::Array(_, BIT)) {
                     return Err(runtime_error!(
-                        "CuckooHash needs a binary array as a hash matrix"
+                        "CuckooHash needs a binary array as a hash matrix: {hash_t:?}"
                     ));
                 }
                 let hash_shape = hash_t.get_shape();
                 if hash_shape.len() != 3 {
-                    return Err(runtime_error!("Hash array should have 3 dimensions"));
+                    return Err(runtime_error!(
+                        "Hash array should have 3 dimensions: {hash_shape:?}"
+                    ));
                 }
                 if hash_shape[0] < 3 {
                     return Err(runtime_error!(
-                        "At least 3 hash matrices should be provided"
+                        "At least 3 hash matrices should be provided, got {}",
+                        hash_shape[0]
                     ));
                 }
                 if hash_shape[1] > 63 {
                     return Err(runtime_error!(
-                        "Hash map is too big. Decrease the number of rows of hash matrices"
+                        "Hash map is too big: {}. Decrease the number of rows of hash matrices",
+                        hash_shape[1]
                     ));
                 }
                 let input_element_length = input_shape[input_shape.len() - 1];
@@ -1296,7 +1407,9 @@ impl TypeInferenceWorker {
                 let first_t = node_dependencies_types[2].clone();
 
                 if !input_t.is_array() {
-                    return Err(runtime_error!("First argument must be an array"));
+                    return Err(runtime_error!(
+                        "First argument must be an array: {input_t:?}"
+                    ));
                 }
                 let input_shape = input_t.get_shape();
                 if Type::Array(vec![input_shape[0]], BIT) != binary_t {
@@ -1309,11 +1422,13 @@ impl TypeInferenceWorker {
                 if input_shape.len() == 1 {
                     if Type::Scalar(input_st) != first_t {
                         return Err(runtime_error!(
-                            "Input array and first row have different scalar types"
+                            "Input array and first row have different scalar types: {input_t:?} and {first_t:?}"
                         ));
                     }
                 } else if Type::Array(input_shape[1..].to_vec(), input_st) != first_t {
-                    return Err(runtime_error!("Input array and first row are incompatible"));
+                    return Err(runtime_error!(
+                        "Input array and first row are incompatible: {input_t:?} and {first_t:?}"
+                    ));
                 }
 
                 let mut result_shape = input_shape;

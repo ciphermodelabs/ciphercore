@@ -18,9 +18,7 @@ pub(super) fn broadcast_shapes(s1: ArrayShape, s2: ArrayShape) -> Result<ArraySh
         }
         if value1 > 1 && value2 > 1 && value1 != value2 {
             return Err(runtime_error!(
-                "Invalid broadcast: shapes {:?} and {:?}",
-                s1,
-                s2
+                "Invalid broadcast: shapes {s1:?} and {s2:?}"
             ));
         }
         result.push(max(value1, value2));
@@ -30,7 +28,7 @@ pub(super) fn broadcast_shapes(s1: ArrayShape, s2: ArrayShape) -> Result<ArraySh
 
 fn broadcast_pair(t1: Type, t2: Type) -> Result<Type> {
     if t1.get_scalar_type() != t2.get_scalar_type() {
-        return Err(runtime_error!("Scalar types mismatch"));
+        return Err(runtime_error!("Scalar types mismatch: {t1:?} and {t2:?}"));
     }
     if t1.is_scalar() {
         return Ok(t2);
@@ -51,10 +49,12 @@ pub(super) fn broadcast_arrays(element_types: Vec<Type>) -> Result<Type> {
     }
     for x in &element_types {
         if !x.is_scalar() && !x.is_array() {
-            return Err(runtime_error!("Can broadcast only scalars and arrays"));
+            return Err(runtime_error!(
+                "Can broadcast only scalars and arrays, got {x:?}"
+            ));
         }
         if x.is_array() && !is_valid_shape(x.get_shape()) {
-            return Err(runtime_error!("Invalid shape"));
+            return Err(runtime_error!("Invalid shape: {:?}", x.get_shape()));
         }
     }
     let mut result = element_types[0].clone();

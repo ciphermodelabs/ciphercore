@@ -230,7 +230,11 @@ impl TypedValueOperations<TypedValue> for TypedValue {
         match &self.t {
             Type::Tuple(ts) => {
                 if ts.len() != vec_val.len() {
-                    return Err(runtime_error!("Inconsistent number of elements!"));
+                    return Err(runtime_error!(
+                        "Inconsistent number of elements: {} vs {}",
+                        ts.len(),
+                        vec_val.len()
+                    ));
                 }
                 for (t, value) in ts.iter().zip(vec_val.iter()) {
                     res.push(TypedValue::new(t.as_ref().clone(), value.clone())?);
@@ -239,7 +243,11 @@ impl TypedValueOperations<TypedValue> for TypedValue {
             }
             Type::Vector(n, t) => {
                 if *n != (vec_val.len() as u64) {
-                    return Err(runtime_error!("Inconsistent number of elements!"));
+                    return Err(runtime_error!(
+                        "Inconsistent number of elements: {} vs {}",
+                        *n,
+                        vec_val.len()
+                    ));
                 }
                 let mut res = vec![];
                 for val in vec_val {
@@ -249,7 +257,11 @@ impl TypedValueOperations<TypedValue> for TypedValue {
             }
             Type::NamedTuple(n_ts) => {
                 if n_ts.len() != vec_val.len() {
-                    return Err(runtime_error!("Inconsistent number of elements!"));
+                    return Err(runtime_error!(
+                        "Inconsistent number of elements: {} vs {}",
+                        n_ts.len(),
+                        vec_val.len()
+                    ));
                 }
                 for (n_t, value) in n_ts.iter().zip(vec_val.iter()) {
                     res.push(TypedValue::new_named(
@@ -260,7 +272,7 @@ impl TypedValueOperations<TypedValue> for TypedValue {
                 }
                 Ok(res)
             }
-            _ => Err(runtime_error!("Not a vector!")),
+            _ => Err(runtime_error!("Not a vector: {:?}", self.t)),
         }
     }
 
@@ -594,11 +606,13 @@ impl TypedValue {
         match type_check {
             Ok(flag) => {
                 if !flag {
-                    return Err(runtime_error!("Value doesn't match type"));
+                    return Err(runtime_error!(
+                        "Value doesn't match type. Type is: {t:?}, value is: {value:?}"
+                    ));
                 }
             }
             Err(_) => {
-                return Err(runtime_error!("Cannot check type: {:?}", type_check));
+                return Err(runtime_error!("Cannot check type: {type_check:?}"));
             }
         };
         Ok(TypedValue {
@@ -636,11 +650,13 @@ impl TypedValue {
         match type_check {
             Ok(flag) => {
                 if !flag {
-                    return Err(runtime_error!("Value doesn't match type"));
+                    return Err(runtime_error!(
+                        "Value doesn't match type. Type is: {t:?}, value is: {value:?}"
+                    ));
                 }
             }
             Err(_) => {
-                return Err(runtime_error!("Cannot check type: {:?}", type_check));
+                return Err(runtime_error!("Cannot check type: {type_check:?}"));
             }
         };
         Ok(TypedValue {
@@ -858,7 +874,7 @@ impl TypedValue {
                     };
                     Ok(TypedValue::new(result_type, Value::from_vector(values))?)
                 }
-                _ => Err(runtime_error!("Unknown kind: {}", kind)),
+                _ => Err(runtime_error!("Unknown kind: {kind}")),
             }
         } else {
             Err(runtime_error!("JSON object expected"))

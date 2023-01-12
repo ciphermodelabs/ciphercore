@@ -156,7 +156,7 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for AtomicRefCellWrapper<T> {
 /// [Clone] trait duplicates the pointer, not the underlying value (see [Value::deep_clone] for deep cloning).
 ///
 /// [PartialEq] trait performs the deep recursive comparison.
-#[derive(PartialEq, Eq, Clone, Debug)]
+#[derive(PartialEq, Eq, Clone)]
 #[cfg_attr(feature = "py-binding", struct_wrapper)]
 pub struct Value {
     body: Arc<AtomicRefCellWrapper<ValueBody>>,
@@ -200,6 +200,44 @@ impl fmt::Display for Value {
             Ok(s) => write!(f, "{s}"),
             Err(_err) => Err(fmt::Error::default()),
         }
+    }
+}
+
+fn recursively_pretty_print_value(
+    val: &Value,
+    f: &mut fmt::Formatter,
+    indent: &str,
+) -> fmt::Result {
+    match &*val.body.0.borrow() {
+        ValueBody::Bytes(bytes) => {
+            write!(f, "{indent}[")?;
+            let l = bytes.len();
+            for byte in &bytes[..usize::min(l, 256)] {
+                write!(f, "{byte:02x}")?;
+            }
+            if l > 256 {
+                write!(f, "...")?;
+            }
+            writeln!(f, "],")?;
+        }
+        ValueBody::Vector(vals) => {
+            writeln!(f, "{indent}[")?;
+            let l = vals.len();
+            for val in &vals[..usize::min(l, 8)] {
+                recursively_pretty_print_value(val, f, &format!("{indent}  "))?;
+            }
+            if l > 8 {
+                writeln!(f, "{indent}...")?;
+            }
+            writeln!(f, "{indent}],")?;
+        }
+    }
+    Ok(())
+}
+
+impl Debug for Value {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        recursively_pretty_print_value(self, f, "")
     }
 }
 
