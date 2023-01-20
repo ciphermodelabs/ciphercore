@@ -429,7 +429,8 @@ fn get_number_of_node_dependencies(operation: Operation) -> Option<u64> {
         | Operation::Repeat(_)
         | Operation::ArrayToVector
         | Operation::VectorToArray
-        | Operation::DecomposeSwitchingMap(_) => Some(1),
+        | Operation::DecomposeSwitchingMap(_)
+        | Operation::Print(_) => Some(1),
         Operation::Add
         | Operation::Subtract
         | Operation::Multiply
@@ -441,7 +442,8 @@ fn get_number_of_node_dependencies(operation: Operation) -> Option<u64> {
         | Operation::Iterate
         | Operation::CuckooHash
         | Operation::SetIntersection(_)
-        | Operation::Gemm(_, _) => Some(2),
+        | Operation::Gemm(_, _)
+        | Operation::Assert(_) => Some(2),
         Operation::SegmentCumSum => Some(3),
         Operation::Stack(_)
         | Operation::Concatenate(_)
@@ -1437,6 +1439,22 @@ impl TypeInferenceWorker {
 
                 self.register_result(node, result_t.clone())?;
                 Ok(result_t)
+            }
+            Operation::Print(_) => {
+                let input_t = node_dependencies_types[0].clone();
+                self.register_result(node, input_t.clone())?;
+                Ok(input_t)
+            }
+            Operation::Assert(_) => {
+                let condition_t = node_dependencies_types[0].clone();
+                if !condition_t.is_scalar() || condition_t.get_scalar_type() != BIT {
+                    return Err(runtime_error!(
+                        "Assertion condition must be a scalar bit: {condition_t:?}"
+                    ));
+                }
+                let input_t = node_dependencies_types[1].clone();
+                self.register_result(node, input_t.clone())?;
+                Ok(input_t)
             }
             // Here we can end up in an infinite loop due
             // to circular dependencies between instantiations.
@@ -3908,5 +3926,53 @@ mod tests {
             Ok(())
         }()
         .unwrap();
+    }
+
+    fn test_print_worker(t: Type) {
+        let context = create_unchecked_context().unwrap();
+        let graph = context.create_graph().unwrap();
+        let mut worker = create_type_inference_worker(context.clone());
+        let i = graph.input(t.clone()).unwrap();
+        let o = graph.print("I:".into(), i).unwrap();
+        let ot = worker.process_node(o).unwrap();
+        assert_eq!(ot, t);
+    }
+
+    #[test]
+    fn test_print() {
+        test_print_worker(array_type(vec![10, 3, 8], BIT));
+        test_print_worker(scalar_type(INT32));
+        test_print_worker(tuple_type(vec![]));
+    }
+
+    fn test_assert_worker(t0: Type, t1: Type) {
+        let context = create_unchecked_context().unwrap();
+        let graph = context.create_graph().unwrap();
+        let mut worker = create_type_inference_worker(context.clone());
+        let i0 = graph.input(t0).unwrap();
+        let i1 = graph.input(t1.clone()).unwrap();
+        let o = graph.assert("i0 is true".into(), i0, i1).unwrap();
+        let t = worker.process_node(o).unwrap();
+        assert_eq!(t, t1);
+    }
+
+    fn test_assert_worker_fail(t0: Type, t1: Type) {
+        let context = create_unchecked_context().unwrap();
+        let graph = context.create_graph().unwrap();
+        let mut worker = create_type_inference_worker(context.clone());
+        let i0 = graph.input(t0).unwrap();
+        let i1 = graph.input(t1.clone()).unwrap();
+        let o = graph.assert("i0 is true".into(), i0, i1).unwrap();
+        let res = worker.process_node(o);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_assert() {
+        test_assert_worker(scalar_type(BIT), array_type(vec![10, 3, 8], BIT));
+        test_assert_worker(scalar_type(BIT), scalar_type(INT32));
+        test_assert_worker(scalar_type(BIT), tuple_type(vec![]));
+        test_assert_worker_fail(scalar_type(INT32), tuple_type(vec![]));
+        test_assert_worker_fail(array_type(vec![10], BIT), tuple_type(vec![]));
     }
 }

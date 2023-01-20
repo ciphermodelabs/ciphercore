@@ -108,6 +108,9 @@ pub enum Operation {
     SetIntersection(HashMap<String, String>),
     Gemm(bool, bool),
     Custom(CustomOperation),
+    // Operations used for debugging graphs.
+    Print(String),
+    Assert(String),
 }
 
 impl fmt::Display for Operation {
@@ -888,6 +891,11 @@ impl Node {
     #[doc(hidden)]
     pub fn cuckoo_to_permutation(&self) -> Result<Node> {
         self.get_graph().cuckoo_to_permutation(self.clone())
+    }
+
+    /// Adds an operation which logs the value of the node at runtime.
+    pub fn print(&self, message: String) -> Result<Node> {
+        self.get_graph().print(message, self.clone())
     }
 
     /// Applies [Graph::set_output_node] to the parent graph and `this` node.
@@ -2590,6 +2598,64 @@ impl Graph {
     /// ```
     pub fn custom_op(&self, op: CustomOperation, arguments: Vec<Node>) -> Result<Node> {
         self.add_node(arguments, vec![], Operation::Custom(op))
+    }
+
+    /// Adds a node which logs its input at runtime, and returns the input.
+    /// This is intended to be used for debugging.
+    ///
+    /// # Arguments
+    ///
+    /// * `message` - Informational message to be printed
+    /// * `input` - Node to be printed
+    ///
+    /// # Returns
+    ///
+    /// The value of the node.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{array_type, BIT};
+    /// # use ciphercore_base::custom_ops::{CustomOperation, Not};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = array_type(vec![3, 2], BIT);
+    /// let n1 = g.input(t).unwrap();
+    /// let n2 = g.print("n1:".into(), n1).unwrap();
+    /// ```
+    pub fn print(&self, message: String, input: Node) -> Result<Node> {
+        self.add_node(vec![input], vec![], Operation::Print(message))
+    }
+
+    /// Adds a node which fails the execution at runtime if `condition` is false, and returns the `input` otherwise.
+    /// This is intended to be used for debugging.
+    ///
+    /// # Arguments
+    ///
+    /// * `message` - message to be returned for the failed assertion.
+    /// * `condition` - BIT to be checked in the assertion.
+    /// * `input` - Node to be returned for pass-through.
+    ///
+    /// # Returns
+    ///
+    /// The value of the node.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{array_type, scalar_type, BIT};
+    /// # use ciphercore_base::custom_ops::{CustomOperation, Not};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let cond = g.input(scalar_type(BIT)).unwrap();
+    /// let t = array_type(vec![3, 2], BIT);
+    /// let n1 = g.input(t).unwrap();
+    /// let n2 = g.assert("Condition".into(), cond, n1).unwrap();
+    /// ```
+    pub fn assert(&self, message: String, condition: Node, input: Node) -> Result<Node> {
+        self.add_node(vec![condition, input], vec![], Operation::Assert(message))
     }
 }
 

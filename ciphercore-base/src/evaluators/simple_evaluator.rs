@@ -12,6 +12,7 @@ use crate::graphs::{Node, Operation};
 use crate::random::{Prf, PRNG, SEED_SIZE};
 use crate::slices::slice_index;
 use crate::type_inference::{transpose_shape, NULL_HEADER};
+use crate::typed_value::TypedValue;
 
 use std::cmp::min;
 use std::collections::hash_map::Entry;
@@ -1392,6 +1393,29 @@ impl Evaluator for SimpleEvaluator {
 
                 Value::from_flattened_array(&result_array, result_t.get_scalar_type())
             }
+            Operation::Print(message) => {
+                if dependencies_values.len() != 1 {
+                    return Err(runtime_error!(
+                        "Inconsistency with type checker, Print should have 1 dependency, got {}",
+                        dependencies_values.len()
+                    ));
+                }
+                let t = node.get_node_dependencies()[0].get_type()?;
+                let val = dependencies_values[0].clone();
+                let tv = TypedValue::new(t, val.clone())?;
+                eprintln!("{message}: {tv:?}");
+                Ok(val)
+            }
+            Operation::Assert(message) => {
+                if dependencies_values.len() != 2 {
+                    return Err(runtime_error!("Inconsistency with type checker, Assert should have 2 dependencies, got {}", dependencies_values.len()));
+                }
+                let bit_val = dependencies_values[0].clone();
+                if !bit_val.to_bit()? {
+                    return Err(runtime_error!("Assertion failed: {message}"));
+                }
+                Ok(dependencies_values[1].clone())
+            }
             _ => Err(runtime_error!("Not implemented")),
         }
     }
@@ -1409,6 +1433,7 @@ mod tests {
         evaluators::{evaluate_simple_evaluator, random_evaluate},
         graphs::create_context,
         random::chi_statistics,
+        typed_value_operations::{FromVectorMode, TypedValueArrayOperations, TypedValueOperations},
     };
 
     use super::*;
@@ -2723,6 +2748,80 @@ mod tests {
                 ],
             )?;
 
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    fn print_helper(input: TypedValue) -> Result<()> {
+        let c = create_context()?;
+        let g = c.create_graph()?;
+        let inp = g.input(input.t.clone())?;
+        let o = g.print("Input".into(), inp)?;
+        g.set_output_node(o)?;
+        g.finalize()?;
+        c.set_main_graph(g.clone())?;
+        c.finalize()?;
+
+        let result_value = evaluate_simple_evaluator(g, vec![input.value.clone()], None)?;
+        assert_eq!(result_value, input.value);
+        Ok(())
+    }
+
+    #[test]
+    fn test_print() {
+        || -> Result<()> {
+            print_helper(TypedValue::from_scalar(42, INT32)?)?;
+            print_helper(TypedValue::from_vector(vec![], FromVectorMode::Tuple)?)?;
+            print_helper(TypedValue::from_ndarray(
+                array![true, false, true].into_dyn(),
+                BIT,
+            )?)?;
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    fn assert_helper(flag: TypedValue, input: TypedValue, expect_success: bool) -> Result<()> {
+        let c = create_context()?;
+        let g = c.create_graph()?;
+        let inp0 = g.input(flag.t.clone())?;
+        let inp1 = g.input(input.t.clone())?;
+        let o = g.assert("Flag".into(), inp0, inp1)?;
+        g.set_output_node(o)?;
+        g.finalize()?;
+        c.set_main_graph(g.clone())?;
+        c.finalize()?;
+
+        let result =
+            evaluate_simple_evaluator(g, vec![flag.value.clone(), input.value.clone()], None);
+        if expect_success {
+            assert!(result.is_ok());
+            assert_eq!(result?, input.value);
+        } else {
+            assert!(result.is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_assert() {
+        || -> Result<()> {
+            assert_helper(
+                TypedValue::from_scalar(true, BIT)?,
+                TypedValue::from_scalar(42, INT32)?,
+                true,
+            )?;
+            assert_helper(
+                TypedValue::from_scalar(false, BIT)?,
+                TypedValue::from_vector(vec![], FromVectorMode::Tuple)?,
+                false,
+            )?;
+            assert_helper(
+                TypedValue::from_scalar(true, BIT)?,
+                TypedValue::from_ndarray(array![true, false, true].into_dyn(), BIT)?,
+                true,
+            )?;
             Ok(())
         }()
         .unwrap();
