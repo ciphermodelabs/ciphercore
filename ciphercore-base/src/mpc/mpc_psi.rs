@@ -18,7 +18,9 @@ use serde::{Deserialize, Serialize};
 
 use super::low_mc::{LowMC, LowMCBlockSize, LOW_MC_KEY_SIZE};
 use super::mpc_arithmetic::{AddMPC, GemmMPC, MixedMultiplyMPC, MultiplyMPC, SubtractMPC};
-use super::mpc_compiler::{check_private_tuple, compile_to_mpc_graph, KEY_LENGTH, PARTIES};
+use super::mpc_compiler::{
+    check_private_tuple, compile_to_mpc_graph, get_zero_shares, KEY_LENGTH, PARTIES,
+};
 use super::utils::select_node;
 
 type ColumnHeaderTypes = Vec<(String, Type)>;
@@ -144,18 +146,6 @@ fn sum_named_columns(a: Node, b: Node) -> Result<Node> {
         let c = a
             .named_tuple_get(header.clone())?
             .add(b.named_tuple_get(header.clone())?)?;
-        result_columns.push((header, c));
-    }
-    a.get_graph().create_named_tuple(result_columns)
-}
-
-fn subtract_named_columns(a: Node, b: Node) -> Result<Node> {
-    let header_types = get_named_types(a.get_type()?);
-    let mut result_columns = vec![];
-    for (header, _) in header_types {
-        let c = a
-            .named_tuple_get(header.clone())?
-            .subtract(b.named_tuple_get(header.clone())?)?;
         result_columns.push((header, c));
     }
     a.get_graph().create_named_tuple(result_columns)
@@ -832,21 +822,23 @@ impl CustomOperationBody for SetIntersectionMPC {
             // One named tuple corresponding to one 2-out-of-2 share
             let share_2outof2_t = (*get_types_vector(y_h_t)?[0]).clone();
             for y_h in all_y_h {
-                // Parties 0 and 2 generate common randomness R_h to mask the second share of Y_h known to Party 0. The first PRF key is used since it's owned by both parties.
-                let r_h = prf_keys_vec[0].prf(0, share_2outof2_t.clone())?;
-                // Party 0 computes (share 1 of Y_h - R_h) and sends it to Party 1.
-                // This is the first share of 2-out-of-3 shares of Y_h.
-                let dif = subtract_named_columns(y_h.tuple_get(1)?, r_h.clone())?
-                    .nop()?
-                    .add_annotation(NodeAnnotation::Send(0, 1))?;
-                // Party 2 sends its 2-out-of-2 share to Party 1.
-                // This is the third share of 2-out-of-3 shares of Y_h.
-                let last_share = y_h
-                    .tuple_get(0)?
+                // Parties generate a 3-out-of-3 sharing of zero
+                let zero_shares =
+                    get_zero_shares(g.clone(), prf_keys.clone(), share_2outof2_t.clone())?;
+                // Party 2 adds its input share (share 0 of Y_h) to the zero share and sends the result to Party 1
+                let third_share = sum_named_columns(y_h.tuple_get(0)?, zero_shares[2].clone())?
                     .nop()?
                     .add_annotation(NodeAnnotation::Send(2, 1))?;
+                // Party 0 adds its input share ((share 1 of Y_h)) to the zero share and sends the result to Party 2
+                let first_share = sum_named_columns(y_h.tuple_get(1)?, zero_shares[0].clone())?
+                    .nop()?
+                    .add_annotation(NodeAnnotation::Send(0, 2))?;
+                // Party 1 sends its share of zero to Party 0
+                let second_share = zero_shares[1]
+                    .nop()?
+                    .add_annotation(NodeAnnotation::Send(1, 0))?;
                 // Create 2-out-of-3 shares of one Y_h
-                let y_h_share = g.create_tuple(vec![r_h, dif, last_share])?;
+                let y_h_share = g.create_tuple(vec![first_share, second_share, third_share])?;
                 res.push(y_h_share);
             }
             res
