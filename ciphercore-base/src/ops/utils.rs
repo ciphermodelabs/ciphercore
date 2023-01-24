@@ -3,7 +3,7 @@ use std::ops::Not;
 use crate::data_types::{array_type, scalar_type, ScalarType, Type, BIT, UINT64};
 use crate::data_values::Value;
 use crate::errors::Result;
-use crate::graphs::{Context, Graph, GraphAnnotation, Node};
+use crate::graphs::{Context, Graph, GraphAnnotation, Node, SliceElement};
 use crate::typed_value::TypedValue;
 
 /// This function tests that two given inputs containing arrays or scalars of bitstrings
@@ -242,4 +242,41 @@ pub fn unsqueeze(x: Node, axis: i64) -> Result<Node> {
     };
     shape.insert(pos as usize, 1);
     x.reshape(array_type(shape, sc))
+}
+
+/// Similar to `Sum`, but for multiplication. Reduces over the last dimension.
+/// The use-case where it makes the most sense is when the type is BIT.
+pub fn reduce_mul(node: Node) -> Result<Node> {
+    let dims = match node.get_type()? {
+        Type::Array(shape, _) => shape,
+        _ => return Err(runtime_error!("Expected array")),
+    };
+    let mut dim = dims[dims.len() - 1];
+    let mut trans_node = pull_out_bits(node)?;
+    let mut stray_bits = vec![];
+    while dim > 1 {
+        if dim % 2 == 1 {
+            stray_bits.push(trans_node.get(vec![0])?);
+            trans_node = trans_node.get_slice(vec![SliceElement::SubArray(Some(1), None, None)])?;
+            dim -= 1;
+        } else {
+            let half1 = trans_node.get_slice(vec![SliceElement::SubArray(
+                Some(0),
+                Some((dim / 2) as i64),
+                None,
+            )])?;
+            let half2 = trans_node.get_slice(vec![SliceElement::SubArray(
+                Some((dim / 2) as i64),
+                None,
+                None,
+            )])?;
+            trans_node = half1.multiply(half2)?;
+            dim /= 2;
+        }
+    }
+    trans_node = trans_node.get(vec![0])?;
+    for bit in stray_bits {
+        trans_node = trans_node.multiply(bit)?;
+    }
+    Ok(trans_node)
 }
