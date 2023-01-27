@@ -57,6 +57,31 @@ pub enum SliceElement {
 /// It is a vector of slice elements that describes the indices of a sub-array in any appropriate array.
 pub type Slice = Vec<SliceElement>;
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "py-binding", enum_to_struct_wrapper)]
+pub enum JoinType {
+    Inner,
+    Left,
+}
+
+#[doc(hidden)]
+#[cfg(feature = "py-binding")]
+#[pyo3::pymethods]
+impl PyBindingJoinType {
+    #[staticmethod]
+    pub fn from_inner() -> Self {
+        PyBindingJoinType {
+            inner: JoinType::Inner,
+        }
+    }
+    #[staticmethod]
+    pub fn from_left() -> Self {
+        PyBindingJoinType {
+            inner: JoinType::Left,
+        }
+    }
+}
+
 #[doc(hidden)]
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Operation {
@@ -105,7 +130,7 @@ pub enum Operation {
     CuckooToPermutation,
     DecomposeSwitchingMap(u64),
     SegmentCumSum,
-    SetIntersection(HashMap<String, String>),
+    Join(JoinType, HashMap<String, String>),
     Gemm(bool, bool),
     Custom(CustomOperation),
     // Operations used for debugging graphs.
@@ -491,14 +516,15 @@ impl Node {
             .gemm(self.clone(), b, transpose_a, transpose_b)
     }
 
-    /// Adds a node that computes the intersection of two named tuples along given key headers.
+    /// Adds a node that computes a join of a given type on two named tuples along given key headers.
+    /// More detailed documentation can be found in [Graph::join].
     ///
-    /// Applies [Graph::set_intersection] to the parent graph, `this` node and the `b` node.
+    /// Applies [Graph::join] to the parent graph, `this` node and the `b` node.
     ///
     /// # Example
     ///
     /// ```
-    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::graphs::{create_context, JoinType};
     /// # use ciphercore_base::data_types::{INT32, INT64, UINT8, BIT, array_type, named_tuple_type};
     /// # use ciphercore_base::type_inference::NULL_HEADER;
     /// # use std::collections::HashMap;
@@ -526,13 +552,13 @@ impl Node {
     /// ]);
     /// let n1 = g.input(t1).unwrap();
     /// let n2 = g.input(t2).unwrap();
-    /// let n3 = n1.set_intersection(n2, HashMap::from([
+    /// let n3 = n1.join(n2, JoinType::Inner, HashMap::from([
     ///     ("ID".to_owned(), "ID".to_owned()),
     ///     ("Occupation".to_owned(), "Job".to_owned()),
     /// ])).unwrap();
     /// ```
-    pub fn set_intersection(&self, b: Node, headers: HashMap<String, String>) -> Result<Node> {
-        self.get_graph().set_intersection(self.clone(), b, headers)
+    pub fn join(&self, b: Node, t: JoinType, headers: HashMap<String, String>) -> Result<Node> {
+        self.get_graph().join(self.clone(), b, t, headers)
     }
 
     /// Adds a node to the parent graph that divides a scalar or each entry of the array associated with the node by a positive constant integer `scale`.
@@ -1405,15 +1431,18 @@ impl Graph {
         )
     }
 
-    /// Adds a node that computes the intersection of two named tuples along given key headers.
+    /// Adds a node that computes a join of a given type on two named tuples along given key headers.
     ///
     /// Each tuple should consist of arrays having the same number of rows, i.e. the first dimensions of these arrays should be equal.
-    /// The rows consisiting of only columns with given key headers (key columns) should be unique.
+    /// **WARNING**: The rows consisiting of only columns with given key headers (key columns) should be unique.
     ///  
     /// In addition, each named tuple should have a binary array named with NULL_HEADER that contains zeros in rows void of content; otherwise, it contains ones.
     /// This column is called the null column.
     ///
-    /// This operation returns a named tuple that contains rows whose content is equal in the key columns named by given key headers.
+    /// This operation returns:
+    /// - Inner join: a named tuple containing rows whose content is equal in the key columns named by given key headers.
+    /// - Left join: a named tuple containing rows of the first named tuple and the rows of the second named tuple whose content is equal to the one of the first named tuple in the key columns named by given key headers.
+    ///
     /// The content of non-key columns is merged.
     /// The order of these rows is the same as in the first named tuple.
     /// The content of other rows is set to zero including the null column.
@@ -1425,12 +1454,12 @@ impl Graph {
     ///
     /// # Returns
     ///
-    /// New set intersection node
+    /// New join node
     ///
     /// # Example
     ///
     /// ```
-    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::graphs::{create_context, JoinType};
     /// # use ciphercore_base::data_types::{INT32, INT64, UINT8, BIT, array_type, named_tuple_type};
     /// # use ciphercore_base::type_inference::NULL_HEADER;
     /// # use std::collections::HashMap;
@@ -1458,18 +1487,19 @@ impl Graph {
     /// ]);
     /// let n1 = g.input(t1).unwrap();
     /// let n2 = g.input(t2).unwrap();
-    /// let n3 = g.set_intersection(n1, n2, HashMap::from([
+    /// let n3 = g.join(n1, n2, JoinType::Inner, HashMap::from([
     ///     ("ID".to_owned(), "ID".to_owned()),
     ///     ("Occupation".to_owned(), "Job".to_owned()),
     /// ])).unwrap();
     /// ```
-    pub fn set_intersection(
+    pub fn join(
         &self,
         a: Node,
         b: Node,
+        t: JoinType,
         headers: HashMap<String, String>,
     ) -> Result<Node> {
-        self.add_node(vec![a, b], vec![], Operation::SetIntersection(headers))
+        self.add_node(vec![a, b], vec![], Operation::Join(t, headers))
     }
 
     /// Adds a node that divides a scalar or each entry of an array by a positive constant integer `scale`.

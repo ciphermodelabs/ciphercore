@@ -9,7 +9,7 @@ use ciphercore_base::data_types::{
 };
 use ciphercore_base::data_values::PyBindingValue;
 use ciphercore_base::graphs::{
-    py_binding_create_context, PyBindingContext, PyBindingGraph, PyBindingNode,
+    py_binding_create_context, PyBindingContext, PyBindingGraph, PyBindingJoinType, PyBindingNode,
     PyBindingSliceElement,
 };
 use ciphercore_base::typed_value::PyBindingTypedValue;
@@ -63,6 +63,7 @@ fn ciphercore_internal(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyBindingCustomOperation>()?;
     m.add_class::<PyBindingSliceElement>()?;
     m.add_class::<PyBindingValue>()?;
+    m.add_class::<PyBindingJoinType>()?;
     Ok(())
 }
 

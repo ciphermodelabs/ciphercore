@@ -4,7 +4,7 @@ use crate::data_values::Value;
 use crate::errors::Result;
 use crate::evaluators::Evaluator;
 use crate::graphs::{
-    copy_node_name, create_context, Context, Graph, Node, NodeAnnotation, Operation,
+    copy_node_name, create_context, Context, Graph, JoinType, Node, NodeAnnotation, Operation,
 };
 use crate::inline::inline_ops::{inline_operations, InlineConfig};
 use crate::mpc::mpc_arithmetic::{
@@ -228,7 +228,7 @@ fn propagate_private_annotations(
             | Operation::Dot
             | Operation::Matmul
             | Operation::Gemm(_, _)
-            | Operation::SetIntersection(_)
+            | Operation::Join(_, _)
             | Operation::A2B
             | Operation::B2A(_)
             | Operation::PermuteAxes(_)
@@ -250,7 +250,7 @@ fn propagate_private_annotations(
                 let dependencies = node.get_node_dependencies();
                 if is_one_node_private(&dependencies, &private_nodes) {
                     private_nodes.insert(node.clone());
-                    if matches!(op, Operation::SetIntersection(_)) {
+                    if matches!(op, Operation::Join(_, _)) {
                         use_prf_for_mul = true;
                     }
                 }
@@ -508,7 +508,7 @@ pub(super) fn compile_to_mpc_graph(
                     out_graph.custom_op(custom_op, vec![new_input0.clone(), new_input1.clone()])?
                 }
             }
-            Operation::SetIntersection(headers) => {
+            Operation::Join(join_t, headers) => {
                 let dependencies = node.get_node_dependencies();
                 let input0 = dependencies[0].clone();
                 let input1 = dependencies[1].clone();
@@ -518,9 +518,14 @@ pub(super) fn compile_to_mpc_graph(
                 for headers_pair in headers {
                     headers_vec.push(headers_pair);
                 }
-                let custom_op = CustomOperation::new(SetIntersectionMPC {
-                    headers: headers_vec,
-                });
+                let custom_op = match join_t {
+                    JoinType::Inner => CustomOperation::new(SetIntersectionMPC {
+                        headers: headers_vec,
+                    }),
+                    _ => {
+                        return Err(runtime_error!("Not implemented"));
+                    }
+                };
 
                 if private_nodes.contains(&node) {
                     // If one input set is private, the MPC protocol requires invoking PRFs.

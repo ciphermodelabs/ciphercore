@@ -280,11 +280,7 @@ fn b2a_type_inference(t: Type, st: ScalarType) -> Result<Type> {
 /// If the "null" bit is zero, the row is empty.
 pub const NULL_HEADER: &str = "null";
 
-fn set_intersection_inference(
-    t0: Type,
-    t1: Type,
-    headers: HashMap<String, String>,
-) -> Result<Type> {
+fn join_inference(t0: Type, t1: Type, headers: HashMap<String, String>) -> Result<Type> {
     if headers.is_empty() {
         return Err(runtime_error!("No column headers provided"));
     }
@@ -441,7 +437,7 @@ fn get_number_of_node_dependencies(operation: Operation) -> Option<u64> {
         | Operation::Gather(_)
         | Operation::Iterate
         | Operation::CuckooHash
-        | Operation::SetIntersection(_)
+        | Operation::Join(_, _)
         | Operation::Gemm(_, _)
         | Operation::Assert(_) => Some(2),
         Operation::SegmentCumSum => Some(3),
@@ -665,8 +661,8 @@ impl TypeInferenceWorker {
                 self.register_result(node, result.clone())?;
                 Ok(result)
             }
-            Operation::SetIntersection(headers) => {
-                let result = set_intersection_inference(
+            Operation::Join(_, headers) => {
+                let result = join_inference(
                     node_dependencies_types[0].clone(),
                     node_dependencies_types[1].clone(),
                     headers,
@@ -1491,7 +1487,7 @@ mod tests {
         create_scalar_type, ArrayShape, Type, BIT, INT32, INT8, UINT32, UINT8,
     };
     use crate::data_values::Value;
-    use crate::graphs::{create_unchecked_context, Graph, Slice, SliceElement};
+    use crate::graphs::{create_unchecked_context, Graph, JoinType, Slice, SliceElement};
 
     #[test]
     fn test_malformed() {
@@ -3279,285 +3275,336 @@ mod tests {
         .unwrap();
     }
 
-    fn test_set_intersection_worker(
-        t0: Type,
-        t1: Type,
-        headers: HashMap<String, String>,
-        expected_t: Type,
-    ) -> Result<()> {
+    fn join_worker(t0: Type, t1: Type, op: Operation, expected_t: Type) -> Result<()> {
         let context = create_unchecked_context()?;
         let graph = context.create_graph()?;
         let mut worker = create_type_inference_worker(context.clone());
         let i0 = graph.input(t0.clone())?;
         let i1 = graph.input(t1.clone())?;
-        let o = i0.set_intersection(i1, headers)?;
+        let o = graph.add_node(vec![i0, i1], vec![], op)?;
         let res_t = worker.process_node(o)?;
         assert_eq!(res_t, expected_t);
         Ok(())
     }
 
-    fn test_set_intersection_fail(
-        t0: Type,
-        t1: Type,
-        headers: HashMap<String, String>,
-    ) -> Result<()> {
+    fn join_fail(t0: Type, t1: Type, op: Operation) -> Result<()> {
         let context = create_unchecked_context()?;
         let graph = context.create_graph()?;
         let mut worker = create_type_inference_worker(context.clone());
         let i0 = graph.input(t0.clone())?;
         let i1 = graph.input(t1.clone())?;
-        let o = i0.set_intersection(i1, headers)?;
+        let o = graph.add_node(vec![i0, i1], vec![], op)?;
         let res_t = worker.process_node(o);
         assert!(res_t.is_err());
         Ok(())
     }
 
-    #[test]
-    fn test_set_intersection() {
-        || -> Result<()> {
-            test_set_intersection_worker(
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                    ("ID".to_owned(), array_type(vec![1], UINT64)),
-                    ("Country".to_owned(), array_type(vec![1], UINT8)),
-                    ("Name".to_owned(), array_type(vec![1, 128], BIT)),
-                ]),
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                    ("ID".to_owned(), array_type(vec![1], UINT64)),
-                    ("Country".to_owned(), array_type(vec![1], UINT8)),
-                    ("Name".to_owned(), array_type(vec![1, 128], BIT)),
-                ]),
+    fn set_intersection_left_join_helper(join_t: JoinType) -> Result<()> {
+        join_worker(
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("ID".to_owned(), array_type(vec![1], UINT64)),
+                ("Country".to_owned(), array_type(vec![1], UINT8)),
+                ("Name".to_owned(), array_type(vec![1, 128], BIT)),
+            ]),
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("ID".to_owned(), array_type(vec![1], UINT64)),
+                ("Country".to_owned(), array_type(vec![1], UINT8)),
+                ("Name".to_owned(), array_type(vec![1, 128], BIT)),
+            ]),
+            Operation::Join(
+                join_t.clone(),
                 HashMap::from([
                     ("ID".to_owned(), "ID".to_owned()),
                     ("Country".to_owned(), "Country".to_owned()),
                     ("Name".to_owned(), "Name".to_owned()),
                 ]),
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                    ("ID".to_owned(), array_type(vec![1], UINT64)),
-                    ("Country".to_owned(), array_type(vec![1], UINT8)),
-                    ("Name".to_owned(), array_type(vec![1, 128], BIT)),
-                ]),
-            )?;
-            test_set_intersection_worker(
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
-                    ("ID".to_owned(), array_type(vec![50], UINT64)),
-                    ("Country".to_owned(), array_type(vec![50], UINT8)),
-                    ("First Name".to_owned(), array_type(vec![50, 128], BIT)),
-                ]),
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
-                    ("UID".to_owned(), array_type(vec![30], UINT64)),
-                    ("Origin".to_owned(), array_type(vec![30], UINT8)),
-                    ("Second Name".to_owned(), array_type(vec![30, 128], BIT)),
-                ]),
+            ),
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("ID".to_owned(), array_type(vec![1], UINT64)),
+                ("Country".to_owned(), array_type(vec![1], UINT8)),
+                ("Name".to_owned(), array_type(vec![1, 128], BIT)),
+            ]),
+        )?;
+        join_worker(
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
+                ("ID".to_owned(), array_type(vec![50], UINT64)),
+                ("Country".to_owned(), array_type(vec![50], UINT8)),
+                ("First Name".to_owned(), array_type(vec![50, 128], BIT)),
+            ]),
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
+                ("UID".to_owned(), array_type(vec![30], UINT64)),
+                ("Origin".to_owned(), array_type(vec![30], UINT8)),
+                ("Second Name".to_owned(), array_type(vec![30, 128], BIT)),
+            ]),
+            Operation::Join(
+                join_t.clone(),
                 HashMap::from([
                     ("ID".to_owned(), "UID".to_owned()),
                     ("Country".to_owned(), "Origin".to_owned()),
                 ]),
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
-                    ("ID".to_owned(), array_type(vec![50], UINT64)),
-                    ("Country".to_owned(), array_type(vec![50], UINT8)),
-                    ("First Name".to_owned(), array_type(vec![50, 128], BIT)),
-                    ("Second Name".to_owned(), array_type(vec![50, 128], BIT)),
-                ]),
-            )?;
-            test_set_intersection_worker(
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
-                    ("ID1".to_owned(), array_type(vec![50], UINT64)),
-                ]),
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
-                    ("ID2".to_owned(), array_type(vec![30], UINT64)),
-                ]),
+            ),
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
+                ("ID".to_owned(), array_type(vec![50], UINT64)),
+                ("Country".to_owned(), array_type(vec![50], UINT8)),
+                ("First Name".to_owned(), array_type(vec![50, 128], BIT)),
+                ("Second Name".to_owned(), array_type(vec![50, 128], BIT)),
+            ]),
+        )?;
+        join_worker(
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
+                ("ID1".to_owned(), array_type(vec![50], UINT64)),
+            ]),
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
+                ("ID2".to_owned(), array_type(vec![30], UINT64)),
+            ]),
+            Operation::Join(
+                join_t.clone(),
                 HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
-                    ("ID1".to_owned(), array_type(vec![50], UINT64)),
-                ]),
-            )?;
+            ),
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
+                ("ID1".to_owned(), array_type(vec![50], UINT64)),
+            ]),
+        )?;
 
-            test_set_intersection_fail(
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
-                    ("ID1".to_owned(), array_type(vec![50], UINT64)),
-                ]),
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
-                    ("ID2".to_owned(), array_type(vec![30], UINT64)),
-                ]),
-                HashMap::new(),
-            )?;
-            test_set_intersection_fail(
-                named_tuple_type(vec![("ID1".to_owned(), array_type(vec![50], UINT64))]),
-                named_tuple_type(vec![("ID2".to_owned(), array_type(vec![30], UINT64))]),
+        join_fail(
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
+                ("ID1".to_owned(), array_type(vec![50], UINT64)),
+            ]),
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
+                ("ID2".to_owned(), array_type(vec![30], UINT64)),
+            ]),
+            Operation::Join(join_t.clone(), HashMap::new()),
+        )?;
+        join_fail(
+            named_tuple_type(vec![("ID1".to_owned(), array_type(vec![50], UINT64))]),
+            named_tuple_type(vec![("ID2".to_owned(), array_type(vec![30], UINT64))]),
+            Operation::Join(
+                join_t.clone(),
                 HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
-            )?;
-            test_set_intersection_fail(
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![50], UINT64)),
-                    ("ID1".to_owned(), array_type(vec![50], UINT64)),
-                ]),
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
-                    ("ID2".to_owned(), array_type(vec![30], UINT64)),
-                ]),
+            ),
+        )?;
+        join_fail(
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![50], UINT64)),
+                ("ID1".to_owned(), array_type(vec![50], UINT64)),
+            ]),
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
+                ("ID2".to_owned(), array_type(vec![30], UINT64)),
+            ]),
+            Operation::Join(
+                join_t.clone(),
                 HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
-            )?;
-            test_set_intersection_fail(
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
-                    ("ID1".to_owned(), array_type(vec![50], UINT64)),
-                ]),
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![30], UINT64)),
-                    ("ID2".to_owned(), array_type(vec![30], UINT64)),
-                ]),
+            ),
+        )?;
+        join_fail(
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
+                ("ID1".to_owned(), array_type(vec![50], UINT64)),
+            ]),
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![30], UINT64)),
+                ("ID2".to_owned(), array_type(vec![30], UINT64)),
+            ]),
+            Operation::Join(
+                join_t.clone(),
                 HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
-            )?;
-            test_set_intersection_fail(
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![50, 1], BIT)),
-                    ("ID1".to_owned(), array_type(vec![50], UINT64)),
-                ]),
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
-                    ("ID2".to_owned(), array_type(vec![30], UINT64)),
-                ]),
+            ),
+        )?;
+        join_fail(
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![50, 1], BIT)),
+                ("ID1".to_owned(), array_type(vec![50], UINT64)),
+            ]),
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
+                ("ID2".to_owned(), array_type(vec![30], UINT64)),
+            ]),
+            Operation::Join(
+                join_t.clone(),
                 HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
-            )?;
-            test_set_intersection_fail(
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
-                    ("ID1".to_owned(), array_type(vec![50], UINT64)),
-                ]),
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
-                    ("ID2".to_owned(), array_type(vec![30], UINT64)),
-                ]),
+            ),
+        )?;
+        join_fail(
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
+                ("ID1".to_owned(), array_type(vec![50], UINT64)),
+            ]),
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
+                ("ID2".to_owned(), array_type(vec![30], UINT64)),
+            ]),
+            Operation::Join(
+                join_t.clone(),
                 HashMap::from([("ID1".to_owned(), "ID".to_owned())]),
-            )?;
-            test_set_intersection_fail(
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
-                    ("ID1".to_owned(), array_type(vec![50], UINT64)),
-                ]),
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
-                    ("ID2".to_owned(), array_type(vec![30], UINT64)),
-                ]),
+            ),
+        )?;
+        join_fail(
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
+                ("ID1".to_owned(), array_type(vec![50], UINT64)),
+            ]),
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
+                ("ID2".to_owned(), array_type(vec![30], UINT64)),
+            ]),
+            Operation::Join(
+                join_t.clone(),
                 HashMap::from([("ID".to_owned(), "ID2".to_owned())]),
-            )?;
-            test_set_intersection_fail(
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
-                    ("ID1".to_owned(), array_type(vec![30], UINT64)),
-                ]),
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
-                    ("ID2".to_owned(), array_type(vec![30], UINT64)),
-                ]),
+            ),
+        )?;
+        join_fail(
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
+                ("ID1".to_owned(), array_type(vec![30], UINT64)),
+            ]),
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
+                ("ID2".to_owned(), array_type(vec![30], UINT64)),
+            ]),
+            Operation::Join(
+                join_t.clone(),
                 HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
-            )?;
-            test_set_intersection_fail(
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
-                    ("ID1".to_owned(), array_type(vec![50], UINT64)),
-                ]),
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
-                    ("ID2".to_owned(), array_type(vec![50], UINT64)),
-                ]),
+            ),
+        )?;
+        join_fail(
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
+                ("ID1".to_owned(), array_type(vec![50], UINT64)),
+            ]),
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
+                ("ID2".to_owned(), array_type(vec![50], UINT64)),
+            ]),
+            Operation::Join(
+                join_t.clone(),
                 HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
-            )?;
-            test_set_intersection_fail(
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
-                    ("ID1".to_owned(), array_type(vec![50], UINT32)),
-                ]),
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
-                    ("ID2".to_owned(), array_type(vec![30], UINT64)),
-                ]),
+            ),
+        )?;
+        join_fail(
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
+                ("ID1".to_owned(), array_type(vec![50], UINT32)),
+            ]),
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
+                ("ID2".to_owned(), array_type(vec![30], UINT64)),
+            ]),
+            Operation::Join(
+                join_t.clone(),
                 HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
-            )?;
-            test_set_intersection_fail(
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
-                    ("ID1".to_owned(), array_type(vec![50, 1], UINT64)),
-                ]),
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
-                    ("ID2".to_owned(), array_type(vec![50], UINT64)),
-                ]),
+            ),
+        )?;
+        join_fail(
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
+                ("ID1".to_owned(), array_type(vec![50, 1], UINT64)),
+            ]),
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
+                ("ID2".to_owned(), array_type(vec![50], UINT64)),
+            ]),
+            Operation::Join(
+                join_t.clone(),
                 HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
-            )?;
-            test_set_intersection_fail(
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
-                    ("ID1".to_owned(), array_type(vec![30], UINT64)),
-                    ("Name".to_owned(), array_type(vec![30], UINT64)),
-                ]),
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
-                    ("ID2".to_owned(), array_type(vec![50], UINT64)),
-                    ("Name".to_owned(), array_type(vec![50], UINT64)),
-                ]),
+            ),
+        )?;
+        join_fail(
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
+                ("ID1".to_owned(), array_type(vec![30], UINT64)),
+                ("Name".to_owned(), array_type(vec![30], UINT64)),
+            ]),
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
+                ("ID2".to_owned(), array_type(vec![50], UINT64)),
+                ("Name".to_owned(), array_type(vec![50], UINT64)),
+            ]),
+            Operation::Join(
+                join_t.clone(),
                 HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
-            )?;
-            test_set_intersection_fail(
-                scalar_type(BIT),
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
-                    ("ID2".to_owned(), array_type(vec![50], UINT64)),
-                    ("Name".to_owned(), array_type(vec![50], UINT64)),
-                ]),
+            ),
+        )?;
+        join_fail(
+            scalar_type(BIT),
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
+                ("ID2".to_owned(), array_type(vec![50], UINT64)),
+                ("Name".to_owned(), array_type(vec![50], UINT64)),
+            ]),
+            Operation::Join(
+                join_t.clone(),
                 HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
-            )?;
-            test_set_intersection_fail(
-                named_tuple_type(vec![
-                    ("ID1".to_owned(), array_type(vec![50], UINT64)),
-                    ("Name1".to_owned(), array_type(vec![50], UINT64)),
-                ]),
-                named_tuple_type(vec![
-                    ("ID2".to_owned(), array_type(vec![30], UINT64)),
-                    ("Name2".to_owned(), array_type(vec![30], UINT64)),
-                ]),
+            ),
+        )?;
+        join_fail(
+            named_tuple_type(vec![
+                ("ID1".to_owned(), array_type(vec![50], UINT64)),
+                ("Name1".to_owned(), array_type(vec![50], UINT64)),
+            ]),
+            named_tuple_type(vec![
+                ("ID2".to_owned(), array_type(vec![30], UINT64)),
+                ("Name2".to_owned(), array_type(vec![30], UINT64)),
+            ]),
+            Operation::Join(
+                join_t.clone(),
                 HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
-            )?;
-            test_set_intersection_fail(
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
-                    ("ID1".to_owned(), array_type(vec![30], UINT64)),
-                    ("Name1".to_owned(), scalar_type(UINT64)),
-                ]),
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
-                    ("ID2".to_owned(), array_type(vec![30], UINT64)),
-                    ("Name2".to_owned(), array_type(vec![30], UINT64)),
-                ]),
+            ),
+        )?;
+        join_fail(
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
+                ("ID1".to_owned(), array_type(vec![30], UINT64)),
+                ("Name1".to_owned(), scalar_type(UINT64)),
+            ]),
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
+                ("ID2".to_owned(), array_type(vec![30], UINT64)),
+                ("Name2".to_owned(), array_type(vec![30], UINT64)),
+            ]),
+            Operation::Join(
+                join_t.clone(),
                 HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
-            )?;
-            test_set_intersection_fail(
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
-                    ("ID1".to_owned(), array_type(vec![30], UINT64)),
-                    ("Name1".to_owned(), array_type(vec![30], UINT64)),
-                ]),
-                named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
-                    ("ID2".to_owned(), array_type(vec![50], UINT64)),
-                    ("Name2".to_owned(), array_type(vec![50], UINT64)),
-                ]),
+            ),
+        )?;
+        join_fail(
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
+                ("ID1".to_owned(), array_type(vec![30], UINT64)),
+                ("Name1".to_owned(), array_type(vec![30], UINT64)),
+            ]),
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
+                ("ID2".to_owned(), array_type(vec![50], UINT64)),
+                ("Name2".to_owned(), array_type(vec![50], UINT64)),
+            ]),
+            Operation::Join(
+                join_t.clone(),
                 HashMap::from([(NULL_HEADER.to_owned(), NULL_HEADER.to_owned())]),
-            )?;
-            Ok(())
-        }()
-        .unwrap();
+            ),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_intersection() -> Result<()> {
+        set_intersection_left_join_helper(JoinType::Inner)
+    }
+
+    #[test]
+    fn test_left_join() -> Result<()> {
+        set_intersection_left_join_helper(JoinType::Left)
     }
 
     fn test_concatenate_worker(ts: Vec<Type>, axis: u64, expected_t: Type) -> Result<()> {

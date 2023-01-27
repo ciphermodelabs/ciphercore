@@ -11,14 +11,15 @@ use crate::evaluators::Evaluator;
 use crate::graphs::{Node, Operation};
 use crate::random::{Prf, PRNG, SEED_SIZE};
 use crate::slices::slice_index;
-use crate::type_inference::{transpose_shape, NULL_HEADER};
+use crate::type_inference::transpose_shape;
 use crate::typed_value::TypedValue;
 
 use std::cmp::min;
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::iter::repeat;
-use std::sync::Arc;
+
+use super::join::evaluate_join;
 
 /// It is assumed that shape can be broadcast to shape_res
 fn broadcast_to_shape(arr: &[u64], shape: &[u64], shape_res: &[u64]) -> Vec<u64> {
@@ -593,14 +594,6 @@ fn evaluate_sum(node: Node, input_value: Value, axes: ArrayShape) -> Result<Valu
     }
 }
 
-fn get_named_types(t: Type) -> Vec<(String, Arc<Type>)> {
-    if let Type::NamedTuple(v) = t {
-        v
-    } else {
-        panic!("Can't get named types. Input type must be NamedTuple.")
-    }
-}
-
 // Choose `a` if `c = 1` and `b` if `c=0` in constant time.
 //
 // `c` must be equal to `0` or `1`.
@@ -658,131 +651,15 @@ impl Evaluator for SimpleEvaluator {
                 };
                 Ok(result_value)
             }
-            Operation::SetIntersection(headers) => {
+            Operation::Join(join_t, headers) => {
                 let dependencies = node.get_node_dependencies();
                 let set0 = dependencies_values[0].clone();
                 let set1 = dependencies_values[1].clone();
                 let set0_t = dependencies[0].get_type()?;
                 let set1_t = dependencies[1].get_type()?;
-
-                let mut key_headers0 = vec![];
-                let mut key_headers1 = vec![];
-                for (h0, h1) in &headers {
-                    key_headers0.push((*h0).clone());
-                    key_headers1.push((*h1).clone());
-                }
-                let headers_types1 = get_named_types(set1_t);
-                // Extract columns of the second set
-                let mut headers_values1 = HashMap::new();
-                let set1_columns = set1.to_vector()?;
-                for (i, (header, column_t)) in headers_types1.iter().enumerate() {
-                    let column_array =
-                        set1_columns[i].to_flattened_array_u64((**column_t).clone())?;
-                    let column_shape = column_t.get_shape();
-                    let elements_per_row = column_shape.iter().skip(1).product::<u64>();
-                    headers_values1.insert((*header).clone(), (column_array, elements_per_row));
-                }
-                // Extract the null column of the second set
-                let null_column1 = headers_values1.get(NULL_HEADER).unwrap().0.clone();
-                // Key columns of the second set are merged and added to the hash map along with the corresponding rows
-                let mut key_data_hashmap1 = HashMap::new();
-                for (i, null_bit) in null_column1.iter().enumerate() {
-                    if *null_bit == 0 {
-                        continue;
-                    }
-                    let mut row_key = vec![];
-                    for header1 in headers.values() {
-                        let row_data = headers_values1.get(header1).unwrap();
-                        let row_size = row_data.1 as usize;
-                        row_key.extend(row_data.0[i * row_size..(i + 1) * row_size].to_vec());
-                    }
-                    let mut row = vec![];
-                    for (header, _) in &headers_types1 {
-                        if !key_headers1.contains(header) && header != NULL_HEADER {
-                            let row_data = headers_values1.get(header).unwrap();
-                            let row_size = row_data.1 as usize;
-                            row.push(row_data.0[i * row_size..(i + 1) * row_size].to_vec());
-                        }
-                    }
-                    key_data_hashmap1.insert(row_key, row);
-                }
-
-                let headers_types0 = get_named_types(set0_t);
-                // Extract columns of the first set
-                let mut headers_values0 = HashMap::new();
-                let set0_columns = set0.to_vector()?;
-                for (i, (header, column_t)) in headers_types0.iter().enumerate() {
-                    let column_array =
-                        set0_columns[i].to_flattened_array_u64((**column_t).clone())?;
-                    let column_shape = column_t.get_shape();
-                    let elements_per_row = column_shape.iter().skip(1).product::<u64>();
-                    headers_values0.insert((*header).clone(), (column_array, elements_per_row));
-                }
-                // The resulting null column is derived from the null column of the first set
-                let mut res_null_column = headers_values0.get(NULL_HEADER).unwrap().0.clone();
-                // Merge key columns of the first set and check if the corresponding rows belong to the second set
                 let res_t = node.get_type()?;
-                let res_headers_types = get_named_types(res_t);
-                let num_res_columns = res_headers_types.len();
-                let mut res_columns = vec![vec![]; num_res_columns];
 
-                let append_zero_row = |columns: &mut [Vec<u64>]| {
-                    // Add columns of the first set
-                    for (col_i, (header0, _)) in headers_types0.iter().enumerate() {
-                        let row_data = headers_values0.get(header0).unwrap();
-                        let row_size = row_data.1 as usize;
-                        columns[col_i].extend(vec![0; row_size]);
-                    }
-                    // Add remaining columns of the second set
-                    for col_i in headers_types0.len()..num_res_columns {
-                        let header = res_headers_types[col_i].0.clone();
-                        let row_size = headers_values1.get(&header).unwrap().1;
-                        columns[col_i].extend(vec![0; row_size as usize]);
-                    }
-                };
-
-                // Check row by row that the content of key columns of the first set intersects with the second set
-                for (i, null_bit) in res_null_column.iter_mut().enumerate() {
-                    // If the null bit is zero, just insert zero row
-                    if *null_bit == 0 {
-                        append_zero_row(&mut res_columns);
-                        continue;
-                    }
-                    // Merge key columns of the first set
-                    let mut row = vec![];
-                    for header0 in headers.keys() {
-                        let row_data = headers_values0.get(header0).unwrap();
-                        let row_size = row_data.1 as usize;
-                        row.extend(row_data.0[i * row_size..(i + 1) * row_size].to_vec());
-                    }
-                    if key_data_hashmap1.contains_key(&row) {
-                        // Add columns of the first set first
-                        for (col_i, (header0, _)) in headers_types0.iter().enumerate() {
-                            let row_data = headers_values0.get(header0).unwrap();
-                            let row_size = row_data.1 as usize;
-                            res_columns[col_i]
-                                .extend(row_data.0[i * row_size..(i + 1) * row_size].to_vec());
-                        }
-                        // Extract the corresponding row of the second set
-                        let row_data1 = key_data_hashmap1.get(&row).unwrap();
-                        for col_i in 0..row_data1.len() {
-                            res_columns[headers_types0.len() + col_i]
-                                .extend(row_data1[col_i].clone());
-                        }
-                    } else {
-                        *null_bit = 0;
-                        append_zero_row(&mut res_columns);
-                    }
-                }
-                // Collect all columns
-                let mut res_value_vec = vec![];
-                for (i, (_, t)) in res_headers_types.iter().enumerate() {
-                    res_value_vec.push(Value::from_flattened_array(
-                        &res_columns[i],
-                        t.get_scalar_type(),
-                    )?);
-                }
-                Ok(Value::from_vector(res_value_vec))
+                evaluate_join(join_t, set0, set1, set0_t, set1_t, &headers, res_t)
             }
             Operation::CreateTuple
             | Operation::CreateNamedTuple(_)
@@ -1431,8 +1308,9 @@ mod tests {
             INT32, UINT32, UINT64, UINT8,
         },
         evaluators::{evaluate_simple_evaluator, random_evaluate},
-        graphs::create_context,
+        graphs::{create_context, JoinType},
         random::chi_statistics,
+        type_inference::NULL_HEADER,
         typed_value_operations::{FromVectorMode, TypedValueArrayOperations, TypedValueOperations},
     };
 
@@ -2223,7 +2101,7 @@ mod tests {
         let g = c.create_graph()?;
         let i0 = g.input(t0.clone())?;
         let i1 = g.input(t1.clone())?;
-        let o = i0.set_intersection(i1, headers)?;
+        let o = i0.join(i1, JoinType::Inner, headers)?;
         g.set_output_node(o.clone())?;
         g.finalize()?;
         c.set_main_graph(g.clone())?;
@@ -2232,256 +2110,541 @@ mod tests {
         let result = random_evaluate(g, vec![set0, set1])?.to_vector()?;
         let result_t = o.get_type()?;
         if let Type::NamedTuple(headers_types) = result_t {
-            for (i, (h, t)) in headers_types.iter().enumerate() {
-                assert_eq!(*h, expected[i].0);
+            for (i, (expected_header, expected_column)) in expected.iter().enumerate() {
+                assert_eq!(*expected_header, headers_types[i].0);
                 assert_eq!(
-                    result[i].to_flattened_array_u64((**t).clone())?,
-                    expected[i].1
-                );
+                    result[i].to_flattened_array_u64((*headers_types[i].1).clone())?,
+                    *expected_column
+                )
             }
+        } else {
+            panic!("Inconsistency with type checker");
         }
         Ok(())
     }
 
     #[test]
-    fn test_set_intersection() {
-        || -> Result<()> {
-            {
-                let t0 = named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
-                    ("ID".to_owned(), array_type(vec![6], UINT64)),
-                    ("Income".to_owned(), array_type(vec![6], UINT64)),
-                ]);
-                let t1 = named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![10], BIT)),
-                    ("ID".to_owned(), array_type(vec![10], UINT64)),
-                    ("Outcome".to_owned(), array_type(vec![10], UINT64)),
-                ]);
-                let set0 = Value::from_vector(vec![
-                    Value::from_flattened_array(&[1, 1, 1, 1, 1, 1], BIT)?,
-                    Value::from_flattened_array(&[5, 3, 0, 4, 1, 2], UINT64)?,
-                    Value::from_flattened_array(&[500, 300, 0, 400, 100, 200], UINT64)?,
-                ]);
-                let set1 = Value::from_vector(vec![
-                    Value::from_flattened_array(&[1, 1, 1, 1, 1, 1, 1, 1, 1, 1], BIT)?,
-                    Value::from_flattened_array(&[4, 7, 8, 9, 10, 11, 12, 2, 3, 13], UINT64)?,
-                    Value::from_flattened_array(
-                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
-                        UINT64,
-                    )?,
-                ]);
-                let headers = HashMap::from([("ID".to_owned(), "ID".to_owned())]);
-                let expected = vec![
-                    (NULL_HEADER.to_owned(), vec![0, 1, 0, 1, 0, 1]),
-                    ("ID".to_owned(), vec![0, 3, 0, 4, 0, 2]),
-                    ("Income".to_owned(), vec![0, 300, 0, 400, 0, 200]),
-                    ("Outcome".to_owned(), vec![0, 30, 0, 40, 0, 20]),
-                ];
-                set_intersection_helper(t0, t1, set0, set1, headers, expected)?;
-            }
-            {
-                let t0 = named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
-                    ("ID".to_owned(), array_type(vec![6], UINT64)),
-                    ("Income1".to_owned(), array_type(vec![6], UINT64)),
-                ]);
-                let t1 = named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![10], BIT)),
-                    ("ID".to_owned(), array_type(vec![10], UINT64)),
-                    ("Income2".to_owned(), array_type(vec![10], UINT64)),
-                ]);
-                let set0 = Value::from_vector(vec![
-                    Value::from_flattened_array(&[1, 1, 1, 1, 1, 1], BIT)?,
-                    Value::from_flattened_array(&[5, 3, 0, 4, 1, 2], UINT64)?,
-                    Value::from_flattened_array(&[50, 30, 0, 40, 10, 20], UINT64)?,
-                ]);
-                let set1 = Value::from_vector(vec![
-                    Value::from_flattened_array(&[1, 1, 1, 1, 1, 1, 1, 1, 1, 1], BIT)?,
-                    Value::from_flattened_array(&[4, 7, 8, 9, 10, 11, 12, 2, 3, 13], UINT64)?,
-                    Value::from_flattened_array(
-                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
-                        UINT64,
-                    )?,
-                ]);
-                let headers = HashMap::from([
-                    ("ID".to_owned(), "ID".to_owned()),
-                    ("Income1".to_owned(), "Income2".to_owned()),
-                ]);
-                let expected = vec![
-                    (NULL_HEADER.to_owned(), vec![0, 1, 0, 1, 0, 1]),
-                    ("ID".to_owned(), vec![0, 3, 0, 4, 0, 2]),
-                    ("Income1".to_owned(), vec![0, 30, 0, 40, 0, 20]),
-                ];
-                set_intersection_helper(t0, t1, set0, set1, headers, expected)?;
-            }
-            {
-                let t0 = named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
-                    ("ID".to_owned(), array_type(vec![6], UINT64)),
-                    ("Income1".to_owned(), array_type(vec![6], UINT64)),
-                    ("Outcome1".to_owned(), array_type(vec![6], UINT64)),
-                ]);
-                let t1 = named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![10], BIT)),
-                    ("ID".to_owned(), array_type(vec![10], UINT64)),
-                    ("Income2".to_owned(), array_type(vec![10], UINT64)),
-                    ("Outcome2".to_owned(), array_type(vec![10], UINT64)),
-                ]);
-                let set0 = Value::from_vector(vec![
-                    Value::from_flattened_array(&[1, 1, 1, 1, 1, 0], BIT)?,
-                    Value::from_flattened_array(&[5, 3, 0, 4, 1, 2], UINT64)?,
-                    Value::from_flattened_array(&[50, 30, 0, 40, 10, 20], UINT64)?,
-                    Value::from_flattened_array(&[500, 300, 0, 400, 100, 200], UINT64)?,
-                ]);
-                let set1 = Value::from_vector(vec![
-                    Value::from_flattened_array(&[1, 1, 1, 1, 1, 1, 1, 0, 1, 1], BIT)?,
-                    Value::from_flattened_array(&[4, 7, 8, 9, 10, 11, 12, 2, 3, 13], UINT64)?,
-                    Value::from_flattened_array(
-                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
-                        UINT64,
-                    )?,
-                    Value::from_flattened_array(
-                        &[400, 700, 800, 900, 1000, 1100, 1200, 200, 300, 1300],
-                        UINT64,
-                    )?,
-                ]);
-                let headers = HashMap::from([
-                    ("ID".to_owned(), "ID".to_owned()),
-                    ("Income1".to_owned(), "Income2".to_owned()),
-                ]);
-                let expected = vec![
-                    (NULL_HEADER.to_owned(), vec![0, 1, 0, 1, 0, 0]),
-                    ("ID".to_owned(), vec![0, 3, 0, 4, 0, 0]),
-                    ("Income1".to_owned(), vec![0, 30, 0, 40, 0, 0]),
-                    ("Outcome1".to_owned(), vec![0, 300, 0, 400, 0, 0]),
-                    ("Outcome2".to_owned(), vec![0, 300, 0, 400, 0, 0]),
-                ];
-                set_intersection_helper(t0, t1, set0, set1, headers, expected)?;
-            }
-            {
-                let t0 = named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
-                    ("Income1".to_owned(), array_type(vec![6], UINT64)),
-                    ("ID".to_owned(), array_type(vec![6], UINT64)),
-                    ("Outcome1".to_owned(), array_type(vec![6], UINT64)),
-                ]);
-                let t1 = named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![10], BIT)),
-                    ("ID".to_owned(), array_type(vec![10], UINT64)),
-                    ("Income2".to_owned(), array_type(vec![10], UINT64)),
-                    ("Outcome2".to_owned(), array_type(vec![10], UINT64)),
-                ]);
-                let set0 = Value::from_vector(vec![
-                    Value::from_flattened_array(&[1, 0, 1, 0, 1, 1], BIT)?,
-                    Value::from_flattened_array(&[5, 3, 0, 4, 1, 2], UINT64)?,
-                    Value::from_flattened_array(&[50, 30, 0, 40, 10, 20], UINT64)?,
-                    Value::from_flattened_array(&[500, 300, 0, 400, 100, 200], UINT64)?,
-                ]);
-                let set1 = Value::from_vector(vec![
-                    Value::from_flattened_array(&[1, 1, 1, 1, 1, 1, 1, 0, 1, 1], BIT)?,
-                    Value::from_flattened_array(&[4, 7, 8, 9, 10, 11, 12, 2, 3, 13], UINT64)?,
-                    Value::from_flattened_array(
-                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
-                        UINT64,
-                    )?,
-                    Value::from_flattened_array(
-                        &[400, 700, 800, 900, 1000, 1100, 1200, 200, 300, 1300],
-                        UINT64,
-                    )?,
-                ]);
-                let headers = HashMap::from([
-                    ("ID".to_owned(), "ID".to_owned()),
-                    ("Income1".to_owned(), "Income2".to_owned()),
-                ]);
-                let expected = vec![
-                    (NULL_HEADER.to_owned(), vec![0, 0, 0, 0, 0, 0]),
-                    ("Income1".to_owned(), vec![0, 0, 0, 0, 0, 0]),
-                    ("ID".to_owned(), vec![0, 0, 0, 0, 0, 0]),
-                    ("Outcome1".to_owned(), vec![0, 0, 0, 0, 0, 0]),
-                    ("Outcome2".to_owned(), vec![0, 0, 0, 0, 0, 0]),
-                ];
-                set_intersection_helper(t0, t1, set0, set1, headers, expected)?;
-            }
-            {
-                let t0 = named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                    ("ID".to_owned(), array_type(vec![1], UINT64)),
-                    ("Income1".to_owned(), array_type(vec![1], UINT64)),
-                    ("Outcome1".to_owned(), array_type(vec![1], UINT64)),
-                ]);
-                let t1 = named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                    ("ID".to_owned(), array_type(vec![1], UINT64)),
-                    ("Income2".to_owned(), array_type(vec![1], UINT64)),
-                    ("Outcome2".to_owned(), array_type(vec![1], UINT64)),
-                ]);
-                let set0 = Value::from_vector(vec![
-                    Value::from_flattened_array(&[1], BIT)?,
-                    Value::from_flattened_array(&[5], UINT64)?,
-                    Value::from_flattened_array(&[50], UINT64)?,
-                    Value::from_flattened_array(&[500], UINT64)?,
-                ]);
-                let set1 = Value::from_vector(vec![
-                    Value::from_flattened_array(&[1], BIT)?,
-                    Value::from_flattened_array(&[5], UINT64)?,
-                    Value::from_flattened_array(&[50], UINT64)?,
-                    Value::from_flattened_array(&[51], UINT64)?,
-                ]);
-                let headers = HashMap::from([
-                    ("ID".to_owned(), "ID".to_owned()),
-                    ("Income1".to_owned(), "Income2".to_owned()),
-                ]);
-                let expected = vec![
-                    (NULL_HEADER.to_owned(), vec![1]),
-                    ("ID".to_owned(), vec![5]),
-                    ("Income1".to_owned(), vec![50]),
-                    ("Outcome1".to_owned(), vec![500]),
-                    ("Outcome2".to_owned(), vec![51]),
-                ];
-                set_intersection_helper(t0, t1, set0, set1, headers, expected)?;
-            }
-            {
-                let t0 = named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                    ("Income1".to_owned(), array_type(vec![1], UINT64)),
-                    ("Outcome1".to_owned(), array_type(vec![1], UINT64)),
-                    ("ID".to_owned(), array_type(vec![1], UINT64)),
-                ]);
-                let t1 = named_tuple_type(vec![
-                    (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                    ("ID".to_owned(), array_type(vec![1], UINT64)),
-                    ("Income2".to_owned(), array_type(vec![1], UINT64)),
-                    ("Outcome2".to_owned(), array_type(vec![1], UINT64)),
-                ]);
-                let set0 = Value::from_vector(vec![
-                    Value::from_flattened_array(&[1], BIT)?,
-                    Value::from_flattened_array(&[50], UINT64)?,
-                    Value::from_flattened_array(&[500], UINT64)?,
-                    Value::from_flattened_array(&[5], UINT64)?,
-                ]);
-                let set1 = Value::from_vector(vec![
-                    Value::from_flattened_array(&[1], BIT)?,
-                    Value::from_flattened_array(&[5], UINT64)?,
-                    Value::from_flattened_array(&[50], UINT64)?,
-                    Value::from_flattened_array(&[51], UINT64)?,
-                ]);
-                let headers = HashMap::from([
-                    ("ID".to_owned(), "ID".to_owned()),
-                    ("Income1".to_owned(), "Income2".to_owned()),
-                ]);
-                let expected = vec![
-                    (NULL_HEADER.to_owned(), vec![1]),
-                    ("Income1".to_owned(), vec![50]),
-                    ("Outcome1".to_owned(), vec![500]),
-                    ("ID".to_owned(), vec![5]),
-                    ("Outcome2".to_owned(), vec![51]),
-                ];
-                set_intersection_helper(t0, t1, set0, set1, headers, expected)?;
-            }
+    fn test_set_intersection() -> Result<()> {
+        {
+            let t0 = named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("ID".to_owned(), array_type(vec![6], UINT64)),
+                ("Income".to_owned(), array_type(vec![6], UINT64)),
+            ]);
+            let t1 = named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![10], BIT)),
+                ("ID".to_owned(), array_type(vec![10], UINT64)),
+                ("Outcome".to_owned(), array_type(vec![10], UINT64)),
+            ]);
+            let set0 = Value::from_vector(vec![
+                Value::from_flattened_array(&[1, 1, 1, 1, 1, 1], BIT)?,
+                Value::from_flattened_array(&[5, 3, 0, 4, 1, 2], UINT64)?,
+                Value::from_flattened_array(&[500, 300, 0, 400, 100, 200], UINT64)?,
+            ]);
+            let set1 = Value::from_vector(vec![
+                Value::from_flattened_array(&[1, 1, 1, 1, 1, 1, 1, 1, 1, 1], BIT)?,
+                Value::from_flattened_array(&[4, 7, 8, 9, 10, 11, 12, 2, 3, 13], UINT64)?,
+                Value::from_flattened_array(&[40, 70, 80, 90, 100, 110, 120, 20, 30, 130], UINT64)?,
+            ]);
+            let headers = HashMap::from([("ID".to_owned(), "ID".to_owned())]);
+            let expected = vec![
+                (NULL_HEADER.to_owned(), vec![0, 1, 0, 1, 0, 1]),
+                ("ID".to_owned(), vec![0, 3, 0, 4, 0, 2]),
+                ("Income".to_owned(), vec![0, 300, 0, 400, 0, 200]),
+                ("Outcome".to_owned(), vec![0, 30, 0, 40, 0, 20]),
+            ];
+            set_intersection_helper(t0, t1, set0, set1, headers, expected)?;
+        }
+        {
+            let t0 = named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("ID".to_owned(), array_type(vec![6], UINT64)),
+                ("Income1".to_owned(), array_type(vec![6], UINT64)),
+            ]);
+            let t1 = named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![10], BIT)),
+                ("ID".to_owned(), array_type(vec![10], UINT64)),
+                ("Income2".to_owned(), array_type(vec![10], UINT64)),
+            ]);
+            let set0 = Value::from_vector(vec![
+                Value::from_flattened_array(&[1, 1, 1, 1, 1, 1], BIT)?,
+                Value::from_flattened_array(&[5, 3, 0, 4, 1, 2], UINT64)?,
+                Value::from_flattened_array(&[50, 30, 0, 40, 10, 20], UINT64)?,
+            ]);
+            let set1 = Value::from_vector(vec![
+                Value::from_flattened_array(&[1, 1, 1, 1, 1, 1, 1, 1, 1, 1], BIT)?,
+                Value::from_flattened_array(&[4, 7, 8, 9, 10, 11, 12, 2, 3, 13], UINT64)?,
+                Value::from_flattened_array(&[40, 70, 80, 90, 100, 110, 120, 20, 30, 130], UINT64)?,
+            ]);
+            let headers = HashMap::from([
+                ("ID".to_owned(), "ID".to_owned()),
+                ("Income1".to_owned(), "Income2".to_owned()),
+            ]);
+            let expected = vec![
+                (NULL_HEADER.to_owned(), vec![0, 1, 0, 1, 0, 1]),
+                ("ID".to_owned(), vec![0, 3, 0, 4, 0, 2]),
+                ("Income1".to_owned(), vec![0, 30, 0, 40, 0, 20]),
+            ];
+            set_intersection_helper(t0, t1, set0, set1, headers, expected)?;
+        }
+        {
+            let t0 = named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("ID".to_owned(), array_type(vec![6], UINT64)),
+                ("Income1".to_owned(), array_type(vec![6], UINT64)),
+                ("Outcome1".to_owned(), array_type(vec![6], UINT64)),
+            ]);
+            let t1 = named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![10], BIT)),
+                ("ID".to_owned(), array_type(vec![10], UINT64)),
+                ("Income2".to_owned(), array_type(vec![10], UINT64)),
+                ("Outcome2".to_owned(), array_type(vec![10], UINT64)),
+            ]);
+            let set0 = Value::from_vector(vec![
+                Value::from_flattened_array(&[1, 1, 1, 1, 1, 0], BIT)?,
+                Value::from_flattened_array(&[5, 3, 0, 4, 1, 2], UINT64)?,
+                Value::from_flattened_array(&[50, 30, 0, 40, 10, 20], UINT64)?,
+                Value::from_flattened_array(&[500, 300, 0, 400, 100, 200], UINT64)?,
+            ]);
+            let set1 = Value::from_vector(vec![
+                Value::from_flattened_array(&[1, 1, 1, 1, 1, 1, 1, 0, 1, 1], BIT)?,
+                Value::from_flattened_array(&[4, 7, 8, 9, 10, 11, 12, 2, 3, 13], UINT64)?,
+                Value::from_flattened_array(&[40, 70, 80, 90, 100, 110, 120, 20, 30, 130], UINT64)?,
+                Value::from_flattened_array(
+                    &[400, 700, 800, 900, 1000, 1100, 1200, 200, 300, 1300],
+                    UINT64,
+                )?,
+            ]);
+            let headers = HashMap::from([
+                ("ID".to_owned(), "ID".to_owned()),
+                ("Income1".to_owned(), "Income2".to_owned()),
+            ]);
+            let expected = vec![
+                (NULL_HEADER.to_owned(), vec![0, 1, 0, 1, 0, 0]),
+                ("ID".to_owned(), vec![0, 3, 0, 4, 0, 0]),
+                ("Income1".to_owned(), vec![0, 30, 0, 40, 0, 0]),
+                ("Outcome1".to_owned(), vec![0, 300, 0, 400, 0, 0]),
+                ("Outcome2".to_owned(), vec![0, 300, 0, 400, 0, 0]),
+            ];
+            set_intersection_helper(t0, t1, set0, set1, headers, expected)?;
+        }
+        {
+            let t0 = named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("Income1".to_owned(), array_type(vec![6], UINT64)),
+                ("ID".to_owned(), array_type(vec![6], UINT64)),
+                ("Outcome1".to_owned(), array_type(vec![6], UINT64)),
+            ]);
+            let t1 = named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![10], BIT)),
+                ("ID".to_owned(), array_type(vec![10], UINT64)),
+                ("Income2".to_owned(), array_type(vec![10], UINT64)),
+                ("Outcome2".to_owned(), array_type(vec![10], UINT64)),
+            ]);
+            let set0 = Value::from_vector(vec![
+                Value::from_flattened_array(&[1, 0, 1, 0, 1, 1], BIT)?,
+                Value::from_flattened_array(&[5, 3, 0, 4, 1, 2], UINT64)?,
+                Value::from_flattened_array(&[50, 30, 0, 40, 10, 20], UINT64)?,
+                Value::from_flattened_array(&[500, 300, 0, 400, 100, 200], UINT64)?,
+            ]);
+            let set1 = Value::from_vector(vec![
+                Value::from_flattened_array(&[1, 1, 1, 1, 1, 1, 1, 0, 1, 1], BIT)?,
+                Value::from_flattened_array(&[4, 7, 8, 9, 10, 11, 12, 2, 3, 13], UINT64)?,
+                Value::from_flattened_array(&[40, 70, 80, 90, 100, 110, 120, 20, 30, 130], UINT64)?,
+                Value::from_flattened_array(
+                    &[400, 700, 800, 900, 1000, 1100, 1200, 200, 300, 1300],
+                    UINT64,
+                )?,
+            ]);
+            let headers = HashMap::from([
+                ("ID".to_owned(), "ID".to_owned()),
+                ("Income1".to_owned(), "Income2".to_owned()),
+            ]);
+            let expected = vec![
+                (NULL_HEADER.to_owned(), vec![0, 0, 0, 0, 0, 0]),
+                ("Income1".to_owned(), vec![0, 0, 0, 0, 0, 0]),
+                ("ID".to_owned(), vec![0, 0, 0, 0, 0, 0]),
+                ("Outcome1".to_owned(), vec![0, 0, 0, 0, 0, 0]),
+                ("Outcome2".to_owned(), vec![0, 0, 0, 0, 0, 0]),
+            ];
+            set_intersection_helper(t0, t1, set0, set1, headers, expected)?;
+        }
+        {
+            let t0 = named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("ID".to_owned(), array_type(vec![1], UINT64)),
+                ("Income1".to_owned(), array_type(vec![1], UINT64)),
+                ("Outcome1".to_owned(), array_type(vec![1], UINT64)),
+            ]);
+            let t1 = named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("ID".to_owned(), array_type(vec![1], UINT64)),
+                ("Income2".to_owned(), array_type(vec![1], UINT64)),
+                ("Outcome2".to_owned(), array_type(vec![1], UINT64)),
+            ]);
+            let set0 = Value::from_vector(vec![
+                Value::from_flattened_array(&[1], BIT)?,
+                Value::from_flattened_array(&[5], UINT64)?,
+                Value::from_flattened_array(&[50], UINT64)?,
+                Value::from_flattened_array(&[500], UINT64)?,
+            ]);
+            let set1 = Value::from_vector(vec![
+                Value::from_flattened_array(&[1], BIT)?,
+                Value::from_flattened_array(&[5], UINT64)?,
+                Value::from_flattened_array(&[50], UINT64)?,
+                Value::from_flattened_array(&[51], UINT64)?,
+            ]);
+            let headers = HashMap::from([
+                ("ID".to_owned(), "ID".to_owned()),
+                ("Income1".to_owned(), "Income2".to_owned()),
+            ]);
+            let expected = vec![
+                (NULL_HEADER.to_owned(), vec![1]),
+                ("ID".to_owned(), vec![5]),
+                ("Income1".to_owned(), vec![50]),
+                ("Outcome1".to_owned(), vec![500]),
+                ("Outcome2".to_owned(), vec![51]),
+            ];
+            set_intersection_helper(t0, t1, set0, set1, headers, expected)?;
+        }
+        {
+            let t0 = named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("Income1".to_owned(), array_type(vec![1], UINT64)),
+                ("Outcome1".to_owned(), array_type(vec![1], UINT64)),
+                ("ID".to_owned(), array_type(vec![1], UINT64)),
+            ]);
+            let t1 = named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("ID".to_owned(), array_type(vec![1], UINT64)),
+                ("Income2".to_owned(), array_type(vec![1], UINT64)),
+                ("Outcome2".to_owned(), array_type(vec![1], UINT64)),
+            ]);
+            let set0 = Value::from_vector(vec![
+                Value::from_flattened_array(&[1], BIT)?,
+                Value::from_flattened_array(&[50], UINT64)?,
+                Value::from_flattened_array(&[500], UINT64)?,
+                Value::from_flattened_array(&[5], UINT64)?,
+            ]);
+            let set1 = Value::from_vector(vec![
+                Value::from_flattened_array(&[1], BIT)?,
+                Value::from_flattened_array(&[5], UINT64)?,
+                Value::from_flattened_array(&[50], UINT64)?,
+                Value::from_flattened_array(&[51], UINT64)?,
+            ]);
+            let headers = HashMap::from([
+                ("ID".to_owned(), "ID".to_owned()),
+                ("Income1".to_owned(), "Income2".to_owned()),
+            ]);
+            let expected = vec![
+                (NULL_HEADER.to_owned(), vec![1]),
+                ("Income1".to_owned(), vec![50]),
+                ("Outcome1".to_owned(), vec![500]),
+                ("ID".to_owned(), vec![5]),
+                ("Outcome2".to_owned(), vec![51]),
+            ];
+            set_intersection_helper(t0, t1, set0, set1, headers, expected)?;
+        }
 
-            Ok(())
-        }()
-        .unwrap();
+        Ok(())
+    }
+
+    fn left_join_helper(
+        t0: Type,
+        t1: Type,
+        set0: Value,
+        set1: Value,
+        headers: HashMap<String, String>,
+        expected: Vec<(String, Vec<u64>)>,
+    ) -> Result<()> {
+        let c = create_context()?;
+        let g = c.create_graph()?;
+        let i0 = g.input(t0.clone())?;
+        let i1 = g.input(t1.clone())?;
+        let o = i0.join(i1, JoinType::Left, headers)?;
+        g.set_output_node(o.clone())?;
+        g.finalize()?;
+        c.set_main_graph(g.clone())?;
+        c.finalize()?;
+
+        let result = random_evaluate(g, vec![set0, set1])?.to_vector()?;
+        let result_t = o.get_type()?;
+        if let Type::NamedTuple(headers_types) = result_t {
+            for (i, (expected_header, expected_column)) in expected.iter().enumerate() {
+                assert_eq!(*expected_header, headers_types[i].0);
+                assert_eq!(
+                    result[i].to_flattened_array_u64((*headers_types[i].1).clone())?,
+                    *expected_column
+                )
+            }
+        } else {
+            panic!("Inconsistency with type checker");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_left_join() -> Result<()> {
+        {
+            let t0 = named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("ID".to_owned(), array_type(vec![6], UINT64)),
+                ("Income".to_owned(), array_type(vec![6], UINT64)),
+            ]);
+            let t1 = named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![10], BIT)),
+                ("ID".to_owned(), array_type(vec![10], UINT64)),
+                ("Outcome".to_owned(), array_type(vec![10], UINT64)),
+            ]);
+            let set0 = Value::from_vector(vec![
+                Value::from_flattened_array(&[1, 1, 1, 1, 1, 1], BIT)?,
+                Value::from_flattened_array(&[5, 3, 0, 4, 1, 2], UINT64)?,
+                Value::from_flattened_array(&[500, 300, 0, 400, 100, 200], UINT64)?,
+            ]);
+            let set1 = Value::from_vector(vec![
+                Value::from_flattened_array(&[1, 1, 1, 1, 1, 1, 1, 1, 1, 1], BIT)?,
+                Value::from_flattened_array(&[4, 7, 8, 9, 10, 11, 12, 2, 3, 13], UINT64)?,
+                Value::from_flattened_array(&[40, 70, 80, 90, 100, 110, 120, 20, 30, 130], UINT64)?,
+            ]);
+            let headers = HashMap::from([("ID".to_owned(), "ID".to_owned())]);
+            let expected = vec![
+                (NULL_HEADER.to_owned(), vec![1, 1, 1, 1, 1, 1]),
+                ("ID".to_owned(), vec![5, 3, 0, 4, 1, 2]),
+                ("Income".to_owned(), vec![500, 300, 0, 400, 100, 200]),
+                ("Outcome".to_owned(), vec![0, 30, 0, 40, 0, 20]),
+            ];
+            left_join_helper(t0, t1, set0, set1, headers, expected)?;
+        }
+        {
+            let t0 = named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("ID".to_owned(), array_type(vec![6], UINT64)),
+                ("Income1".to_owned(), array_type(vec![6], UINT64)),
+            ]);
+            let t1 = named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![10], BIT)),
+                ("ID".to_owned(), array_type(vec![10], UINT64)),
+                ("Income2".to_owned(), array_type(vec![10], UINT64)),
+            ]);
+            let set0 = Value::from_vector(vec![
+                Value::from_flattened_array(&[1, 1, 1, 1, 1, 1], BIT)?,
+                Value::from_flattened_array(&[5, 3, 0, 4, 1, 2], UINT64)?,
+                Value::from_flattened_array(&[50, 30, 0, 40, 10, 20], UINT64)?,
+            ]);
+            let set1 = Value::from_vector(vec![
+                Value::from_flattened_array(&[1, 1, 1, 1, 1, 1, 1, 1, 1, 1], BIT)?,
+                Value::from_flattened_array(&[4, 7, 8, 9, 10, 11, 12, 2, 3, 13], UINT64)?,
+                Value::from_flattened_array(&[40, 70, 80, 90, 100, 110, 120, 20, 30, 130], UINT64)?,
+            ]);
+            let headers = HashMap::from([
+                ("ID".to_owned(), "ID".to_owned()),
+                ("Income1".to_owned(), "Income2".to_owned()),
+            ]);
+            let expected = vec![
+                (NULL_HEADER.to_owned(), vec![1, 1, 1, 1, 1, 1]),
+                ("ID".to_owned(), vec![5, 3, 0, 4, 1, 2]),
+                ("Income1".to_owned(), vec![50, 30, 0, 40, 10, 20]),
+            ];
+            left_join_helper(t0, t1, set0, set1, headers, expected)?;
+        }
+        {
+            let t0 = named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("ID".to_owned(), array_type(vec![6], UINT64)),
+                ("Income1".to_owned(), array_type(vec![6], UINT64)),
+                ("Outcome1".to_owned(), array_type(vec![6], UINT64)),
+            ]);
+            let t1 = named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![10], BIT)),
+                ("ID".to_owned(), array_type(vec![10], UINT64)),
+                ("Income2".to_owned(), array_type(vec![10], UINT64)),
+                ("Outcome2".to_owned(), array_type(vec![10], UINT64)),
+            ]);
+            let set0 = Value::from_vector(vec![
+                Value::from_flattened_array(&[1, 1, 1, 1, 1, 0], BIT)?,
+                Value::from_flattened_array(&[5, 3, 0, 4, 1, 2], UINT64)?,
+                Value::from_flattened_array(&[50, 30, 0, 40, 10, 20], UINT64)?,
+                Value::from_flattened_array(&[500, 300, 0, 400, 100, 200], UINT64)?,
+            ]);
+            let set1 = Value::from_vector(vec![
+                Value::from_flattened_array(&[1, 1, 1, 1, 1, 1, 1, 0, 1, 1], BIT)?,
+                Value::from_flattened_array(&[4, 7, 8, 9, 10, 11, 12, 2, 3, 13], UINT64)?,
+                Value::from_flattened_array(&[40, 70, 80, 90, 100, 110, 120, 20, 30, 130], UINT64)?,
+                Value::from_flattened_array(
+                    &[400, 700, 800, 900, 1000, 1100, 1200, 200, 300, 1300],
+                    UINT64,
+                )?,
+            ]);
+            let headers = HashMap::from([
+                ("ID".to_owned(), "ID".to_owned()),
+                ("Income1".to_owned(), "Income2".to_owned()),
+            ]);
+            let expected = vec![
+                (NULL_HEADER.to_owned(), vec![1, 1, 1, 1, 1, 0]),
+                ("ID".to_owned(), vec![5, 3, 0, 4, 1, 0]),
+                ("Income1".to_owned(), vec![50, 30, 0, 40, 10, 0]),
+                ("Outcome1".to_owned(), vec![500, 300, 0, 400, 100, 0]),
+                ("Outcome2".to_owned(), vec![0, 300, 0, 400, 0, 0]),
+            ];
+            left_join_helper(t0, t1, set0, set1, headers, expected)?;
+        }
+        {
+            let t0 = named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("Income1".to_owned(), array_type(vec![6], UINT64)),
+                ("ID".to_owned(), array_type(vec![6], UINT64)),
+                ("Outcome1".to_owned(), array_type(vec![6], UINT64)),
+            ]);
+            let t1 = named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![10], BIT)),
+                ("ID".to_owned(), array_type(vec![10], UINT64)),
+                ("Income2".to_owned(), array_type(vec![10], UINT64)),
+                ("Outcome2".to_owned(), array_type(vec![10], UINT64)),
+            ]);
+            let set0 = Value::from_vector(vec![
+                Value::from_flattened_array(&[1, 0, 1, 0, 1, 1], BIT)?,
+                Value::from_flattened_array(&[5, 3, 0, 4, 1, 2], UINT64)?,
+                Value::from_flattened_array(&[50, 30, 0, 40, 10, 20], UINT64)?,
+                Value::from_flattened_array(&[500, 300, 0, 400, 100, 200], UINT64)?,
+            ]);
+            let set1 = Value::from_vector(vec![
+                Value::from_flattened_array(&[1, 1, 1, 1, 1, 1, 1, 0, 1, 1], BIT)?,
+                Value::from_flattened_array(&[4, 7, 8, 9, 10, 11, 12, 2, 3, 13], UINT64)?,
+                Value::from_flattened_array(&[40, 70, 80, 90, 100, 110, 120, 20, 30, 130], UINT64)?,
+                Value::from_flattened_array(
+                    &[400, 700, 800, 900, 1000, 1100, 1200, 200, 300, 1300],
+                    UINT64,
+                )?,
+            ]);
+            let headers = HashMap::from([
+                ("ID".to_owned(), "ID".to_owned()),
+                ("Income1".to_owned(), "Income2".to_owned()),
+            ]);
+            let expected = vec![
+                (NULL_HEADER.to_owned(), vec![1, 0, 1, 0, 1, 1]),
+                ("Income1".to_owned(), vec![5, 0, 0, 0, 1, 2]),
+                ("ID".to_owned(), vec![50, 0, 0, 0, 10, 20]),
+                ("Outcome1".to_owned(), vec![500, 0, 0, 0, 100, 200]),
+                ("Outcome2".to_owned(), vec![0, 0, 0, 0, 0, 0]),
+            ];
+            left_join_helper(t0, t1, set0, set1, headers, expected)?;
+        }
+        {
+            let t0 = named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("ID".to_owned(), array_type(vec![1], UINT64)),
+                ("Income1".to_owned(), array_type(vec![1], UINT64)),
+                ("Outcome1".to_owned(), array_type(vec![1], UINT64)),
+            ]);
+            let t1 = named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("ID".to_owned(), array_type(vec![1], UINT64)),
+                ("Income2".to_owned(), array_type(vec![1], UINT64)),
+                ("Outcome2".to_owned(), array_type(vec![1], UINT64)),
+            ]);
+            let set0 = Value::from_vector(vec![
+                Value::from_flattened_array(&[1], BIT)?,
+                Value::from_flattened_array(&[5], UINT64)?,
+                Value::from_flattened_array(&[50], UINT64)?,
+                Value::from_flattened_array(&[500], UINT64)?,
+            ]);
+            let set1 = Value::from_vector(vec![
+                Value::from_flattened_array(&[1], BIT)?,
+                Value::from_flattened_array(&[5], UINT64)?,
+                Value::from_flattened_array(&[50], UINT64)?,
+                Value::from_flattened_array(&[51], UINT64)?,
+            ]);
+            let headers = HashMap::from([
+                ("ID".to_owned(), "ID".to_owned()),
+                ("Income1".to_owned(), "Income2".to_owned()),
+            ]);
+            let expected = vec![
+                (NULL_HEADER.to_owned(), vec![1]),
+                ("ID".to_owned(), vec![5]),
+                ("Income1".to_owned(), vec![50]),
+                ("Outcome1".to_owned(), vec![500]),
+                ("Outcome2".to_owned(), vec![51]),
+            ];
+            left_join_helper(t0, t1, set0, set1, headers, expected)?;
+        }
+        {
+            let t0 = named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("Income1".to_owned(), array_type(vec![1], UINT64)),
+                ("Outcome1".to_owned(), array_type(vec![1], UINT64)),
+                ("ID".to_owned(), array_type(vec![1], UINT64)),
+            ]);
+            let t1 = named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("ID".to_owned(), array_type(vec![1], UINT64)),
+                ("Income2".to_owned(), array_type(vec![1], UINT64)),
+                ("Outcome2".to_owned(), array_type(vec![1], UINT64)),
+            ]);
+            let set0 = Value::from_vector(vec![
+                Value::from_flattened_array(&[1], BIT)?,
+                Value::from_flattened_array(&[50], UINT64)?,
+                Value::from_flattened_array(&[500], UINT64)?,
+                Value::from_flattened_array(&[5], UINT64)?,
+            ]);
+            let set1 = Value::from_vector(vec![
+                Value::from_flattened_array(&[1], BIT)?,
+                Value::from_flattened_array(&[5], UINT64)?,
+                Value::from_flattened_array(&[50], UINT64)?,
+                Value::from_flattened_array(&[51], UINT64)?,
+            ]);
+            let headers = HashMap::from([
+                ("ID".to_owned(), "ID".to_owned()),
+                ("Income1".to_owned(), "Income2".to_owned()),
+            ]);
+            let expected = vec![
+                (NULL_HEADER.to_owned(), vec![1]),
+                ("Income1".to_owned(), vec![50]),
+                ("Outcome1".to_owned(), vec![500]),
+                ("ID".to_owned(), vec![5]),
+                ("Outcome2".to_owned(), vec![51]),
+            ];
+            left_join_helper(t0, t1, set0, set1, headers, expected)?;
+        }
+        {
+            let t0 = named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![2], BIT)),
+                ("Income1".to_owned(), array_type(vec![2], UINT64)),
+                ("Outcome1".to_owned(), array_type(vec![2], UINT64)),
+                ("ID".to_owned(), array_type(vec![2], UINT64)),
+            ]);
+            let t1 = named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![2], BIT)),
+                ("ID".to_owned(), array_type(vec![2], UINT64)),
+                ("Income2".to_owned(), array_type(vec![2], UINT64)),
+                ("Outcome2".to_owned(), array_type(vec![2, 2], UINT64)),
+            ]);
+            let set0 = Value::from_vector(vec![
+                Value::from_flattened_array(&[1, 1], BIT)?,
+                Value::from_flattened_array(&[40, 50], UINT64)?,
+                Value::from_flattened_array(&[400, 500], UINT64)?,
+                Value::from_flattened_array(&[4, 5], UINT64)?,
+            ]);
+            let set1 = Value::from_vector(vec![
+                Value::from_flattened_array(&[1, 1], BIT)?,
+                Value::from_flattened_array(&[4, 3], UINT64)?,
+                Value::from_flattened_array(&[40, 30], UINT64)?,
+                Value::from_flattened_array(&[40, 41, 30, 31], UINT64)?,
+            ]);
+            let headers = HashMap::from([
+                ("ID".to_owned(), "ID".to_owned()),
+                ("Income1".to_owned(), "Income2".to_owned()),
+            ]);
+            let expected = vec![
+                (NULL_HEADER.to_owned(), vec![1, 1]),
+                ("Income1".to_owned(), vec![40, 50]),
+                ("Outcome1".to_owned(), vec![400, 500]),
+                ("ID".to_owned(), vec![4, 5]),
+                ("Outcome2".to_owned(), vec![40, 41, 0, 0]),
+            ];
+            left_join_helper(t0, t1, set0, set1, headers, expected)?;
+        }
+
+        Ok(())
     }
 
     fn gemm_helper(

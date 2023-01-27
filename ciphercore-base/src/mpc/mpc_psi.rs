@@ -7,7 +7,7 @@ use crate::data_types::{
     array_type, get_size_in_bits, get_types_vector, named_tuple_type, tuple_type, Type, BIT, UINT64,
 };
 use crate::errors::Result;
-use crate::graphs::{create_context, Context, Graph, Node, NodeAnnotation, SliceElement};
+use crate::graphs::{create_context, Context, Graph, JoinType, Node, NodeAnnotation, SliceElement};
 use crate::inline::inline_common::DepthOptimizationLevel;
 use crate::inline::inline_ops::{inline_operations, InlineConfig, InlineMode};
 use crate::ops::comparisons::Equal;
@@ -484,7 +484,7 @@ impl CustomOperationBody for SetIntersectionMPC {
                 for (h0, h1) in &self.headers {
                     headers.insert((*h0).clone(), (*h1).clone());
                 }
-                set0.set_intersection(set1, headers)?.set_as_output()?;
+                set0.join(set1, JoinType::Inner, headers)?.set_as_output()?;
                 g.finalize()?;
                 return Ok(g);
             } else {
@@ -2684,7 +2684,7 @@ mod tests {
         for (h0, h1) in headers {
             headers_map.insert(h0, h1);
         }
-        let psi = data_x.set_intersection(data_y, headers_map)?;
+        let psi = data_x.join(data_y, JoinType::Inner, headers_map)?;
 
         psi.set_as_output()?;
         g.finalize()?;
