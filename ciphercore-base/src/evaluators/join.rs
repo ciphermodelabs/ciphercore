@@ -16,8 +16,6 @@ fn get_named_types(t: Type) -> HeadersTypes {
     }
 }
 
-// column header -> (column array, number of scalar elements per row)
-//type ColumnsMap = HashMap<String, (Vec<u64>, usize)>;
 struct ColumnsMap {
     // column header -> column array
     header_index_map: HashMap<String, usize>,

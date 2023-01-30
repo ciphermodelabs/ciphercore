@@ -57,7 +57,7 @@ pub enum SliceElement {
 /// It is a vector of slice elements that describes the indices of a sub-array in any appropriate array.
 pub type Slice = Vec<SliceElement>;
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Copy)]
 #[cfg_attr(feature = "py-binding", enum_to_struct_wrapper)]
 pub enum JoinType {
     Inner,

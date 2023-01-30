@@ -4,7 +4,7 @@ use crate::data_values::Value;
 use crate::errors::Result;
 use crate::evaluators::Evaluator;
 use crate::graphs::{
-    copy_node_name, create_context, Context, Graph, JoinType, Node, NodeAnnotation, Operation,
+    copy_node_name, create_context, Context, Graph, Node, NodeAnnotation, Operation,
 };
 use crate::inline::inline_ops::{inline_operations, InlineConfig};
 use crate::mpc::mpc_arithmetic::{
@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 use super::mpc_arithmetic::GemmMPC;
-use super::mpc_psi::SetIntersectionMPC;
+use super::mpc_psi::JoinMPC;
 
 // We implement the ABY3 protocol, which has 3 parties involved
 pub const PARTIES: usize = 3;
@@ -97,9 +97,20 @@ fn recursively_generate_node_shares(
                 let alpha = g.subtract(random_shares[i].clone(), random_shares[ip1].clone())?;
                 node_shares.push(alpha);
             }
-            // add node_to_share
-            if let Some((node, IOStatus::Party(id))) = node_to_share {
-                node_shares[id as usize] = node_shares[id as usize].add(node)?;
+
+            match node_to_share {
+                Some((node, IOStatus::Party(id))) => {
+                    node_shares[id as usize] = node_shares[id as usize].add(node)?;
+                }
+                Some((node, IOStatus::Public)) => {
+                    node_shares[0] = node_shares[0].add(node)?;
+                }
+                Some((_, IOStatus::Shared)) => {
+                    return Err(runtime_error!(
+                        "Given node must belong to a party or be public"
+                    ));
+                }
+                None => (),
             }
             Ok(node_shares)
         }
@@ -182,7 +193,7 @@ fn recursively_generate_node_shares(
     }
 }
 
-fn get_node_shares(
+pub(crate) fn get_node_shares(
     g: Graph,
     prf_keys: Node,
     t: Type,
@@ -518,17 +529,13 @@ pub(super) fn compile_to_mpc_graph(
                 for headers_pair in headers {
                     headers_vec.push(headers_pair);
                 }
-                let custom_op = match join_t {
-                    JoinType::Inner => CustomOperation::new(SetIntersectionMPC {
-                        headers: headers_vec,
-                    }),
-                    _ => {
-                        return Err(runtime_error!("Not implemented"));
-                    }
-                };
+                let custom_op = CustomOperation::new(JoinMPC {
+                    join_t,
+                    headers: headers_vec,
+                });
 
                 if private_nodes.contains(&node) {
-                    // If one input set is private, the MPC protocol requires invoking PRFs.
+                    // If one input set is private, MPC protocols requires invoking PRFs.
                     // Thus, PRF keys must be provided.
                     let keys = match prf_keys_mul {
                         Some(ref k) => k.clone(),
