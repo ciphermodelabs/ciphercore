@@ -1,9 +1,9 @@
 use std::ops::Not;
 
-use crate::data_types::{array_type, scalar_type, ScalarType, Type, BIT, UINT64};
+use crate::data_types::{array_type, ScalarType, Type, BIT};
 use crate::data_values::Value;
 use crate::errors::Result;
-use crate::graphs::{Context, Graph, GraphAnnotation, Node, SliceElement};
+use crate::graphs::{Context, Graph, Node, SliceElement};
 use crate::typed_value::TypedValue;
 
 /// This function tests that two given inputs containing arrays or scalars of bitstrings
@@ -108,16 +108,9 @@ pub fn multiply_fixed_point(node1: Node, node2: Node, precision: u64) -> Result<
 
 /// Converts (individual) bits to 0/1 in arithmetic form.
 pub fn single_bit_to_arithmetic(node: Node, st: ScalarType) -> Result<Node> {
-    let ones = if node.get_type()?.is_array() {
-        zeros(
-            &node.get_graph(),
-            array_type(node.get_type()?.get_shape(), st.clone()),
-        )?
-    } else {
-        zeros(&node.get_graph(), scalar_type(st.clone()))?
-    }
-    .add(constant_scalar(&node.get_graph(), 1, st)?)?;
-    ones.mixed_multiply(node)
+    let g = node.get_graph();
+    let one = constant_scalar(&g, 1, st)?;
+    one.mixed_multiply(node)
 }
 
 /// Similar to `numpy.expand_dims` `<https://numpy.org/doc/stable/reference/generated/numpy.expand_dims.html>`.
@@ -148,7 +141,54 @@ pub fn expand_dims(node: Node, axis: &[usize]) -> Result<Node> {
         .reshape(node, Type::Array(new_shape, scalar))
 }
 
-// Another apporach to approximate the inital value is proposed here:
+// Computes cumulative OR (from the highest index to the lowest) on the n (from n-1 to 0) first elements of the array.
+// In this method it's assumed that there are no bits set in the array after the n-th element.
+// The result of the function is an array looking like this: 11..1100..0.
+// After i steps of the loop in j-th element there is `or` of all elements data[j:j+2^i].
+// To compute the step i+1 we need to shift the array by 2^i elements and `or` it to the current.
+fn cumulative_or(data: Node, n: u64) -> Result<Node> {
+    let (shape, sc) = match data.get_type()? {
+        Type::Array(shape, sc) => (shape, sc),
+        _ => return Err(runtime_error!("Expected array type")),
+    };
+    let g = data.get_graph();
+    let pow2 = n.next_power_of_two();
+    let k = pow2.trailing_zeros();
+    let mut pad_shape = shape.clone();
+    // pad_shape[0] = 2^k-(shape[0] - n)
+    if n > shape[0] {
+        pad_shape[0] = n - shape[0] + pow2;
+    } else {
+        let extra_bits = shape[0] - n;
+        if pow2 > extra_bits {
+            pad_shape[0] = pow2 - extra_bits;
+        } else {
+            pad_shape[0] = 0;
+        }
+    }
+    let data = if pad_shape[0] != 0 {
+        let pad = zeros(&g, array_type(pad_shape, sc))?;
+        g.concatenate(vec![data, pad], 0)?
+    } else {
+        data
+    };
+    let data = data.add(constant_scalar(&g, 1, BIT)?)?;
+    let mut suffix_or = data;
+    for i in 0..k {
+        let shift = 2_i64.pow(i);
+        suffix_or = g.multiply(
+            suffix_or.get_slice(vec![SliceElement::SubArray(None, Some(-shift), None)])?,
+            suffix_or.get_slice(vec![SliceElement::SubArray(Some(shift), None, None)])?,
+        )?;
+    }
+    suffix_or.add(constant_scalar(&g, 1, BIT)?)
+}
+
+// Works only on positive integers from (0; 2^denominator_cap_2k).
+// For the initial approximation of 1/n, we use would like to compute x that is different form 1/n no more than twice.
+// We compute the highest bit of n and than return 1 / 2^(highest_bit + 1).
+// Idea from: https://codeforces.com/blog/entry/10330?#comment-157145
+// Another approach to approximate the initial value is proposed here:
 // https://www.ifca.ai/pub/fc10/31_47.pdf section 3.4
 // However, the current approach seems to work fine for Goldschmidt's as well as Newton's method.
 pub fn inverse_initial_approximation(
@@ -157,60 +197,34 @@ pub fn inverse_initial_approximation(
     denominator_cap_2k: u64,
 ) -> Result<Graph> {
     let sc = t.get_scalar_type();
-
-    let bit_type = if t.is_scalar() {
-        scalar_type(BIT)
-    } else {
-        array_type(t.get_shape(), BIT)
-    };
-    // Graph for identifying highest one bit.
-    let g_highest_one_bit = context.create_graph()?;
-    {
-        let input_state = g_highest_one_bit.input(bit_type.clone())?;
-        let input_bit = g_highest_one_bit.input(bit_type.clone())?;
-
-        let one = constant_scalar(&g_highest_one_bit, 1, BIT)?;
-        let not_input_state = one.add(input_state.clone())?;
-        // If input state is 1, then the highest bit has been already encountered.
-        // All other bits can be set to zero.
-        let output = not_input_state.multiply(input_bit)?;
-        // new_state is equal to input_state OR input_bit
-        // Hence, input state becomes and stays 1 once the highest bit has been encountered.
-        let new_state = input_state.add(output.clone())?;
-        let output_tuple = g_highest_one_bit.create_tuple(vec![new_state, output])?;
-        output_tuple.set_as_output()?;
-    }
-    g_highest_one_bit.add_annotation(GraphAnnotation::AssociativeOperation)?;
-    g_highest_one_bit.finalize()?;
-
     let g = context.create_graph()?;
     let divisor = g.input(t)?;
-    let divisor_bits = pull_out_bits(divisor.a2b()?)?.array_to_vector()?;
-    let mut divisor_bits_reversed = vec![];
-    for i in 0..denominator_cap_2k {
-        let index = constant_scalar(&g, denominator_cap_2k - i - 1, UINT64)?;
-        divisor_bits_reversed.push(divisor_bits.vector_get(index)?);
-    }
-    let zero = zeros(&g, bit_type.clone())?;
-    let highest_one_bit_binary = g
-        .iterate(
-            g_highest_one_bit,
-            zero,
-            g.create_vector(bit_type, divisor_bits_reversed)?,
-        )?
-        .tuple_get(1)?
-        .vector_to_array()?;
-    let highest_one_bit = single_bit_to_arithmetic(highest_one_bit_binary, sc.clone())?;
-    let first_approximation_bits = put_in_bits(highest_one_bit)?;
-    let mut powers_of_two = vec![];
-    for i in 0..denominator_cap_2k {
-        powers_of_two.push(1u64 << i);
-    }
-    let powers_of_two_node = g.constant(
-        array_type(vec![denominator_cap_2k], sc.clone()),
-        Value::from_flattened_array(&powers_of_two, sc)?,
+    let divisor_bits = pull_out_bits(divisor.a2b()?)?;
+    let cum_or = cumulative_or(divisor_bits, denominator_cap_2k)?;
+    let highest_one_bit_binary = g.add(
+        cum_or.get_slice(vec![SliceElement::SubArray(
+            None,
+            Some(denominator_cap_2k as i64),
+            None,
+        )])?,
+        cum_or.get_slice(vec![SliceElement::SubArray(
+            Some(1),
+            Some(denominator_cap_2k as i64 + 1),
+            None,
+        )])?,
     )?;
-    let approximation = first_approximation_bits.dot(powers_of_two_node)?;
+    let mut result = vec![];
+    for i in 0..denominator_cap_2k {
+        result.push(highest_one_bit_binary.get(vec![denominator_cap_2k - i - 1])?);
+    }
+    for _ in denominator_cap_2k..sc.size_in_bits() {
+        result.push(zeros_like(result[0].clone())?);
+    }
+    let approximation = g
+        .create_vector(result[0].get_type()?, result)?
+        .vector_to_array()?;
+    let approximation = put_in_bits(approximation)?.b2a(sc)?;
+
     approximation.set_as_output()?;
     g.finalize()
 }
@@ -279,4 +293,38 @@ pub fn reduce_mul(node: Node) -> Result<Node> {
         trans_node = trans_node.multiply(bit)?;
     }
     Ok(trans_node)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        custom_ops::run_instantiation_pass,
+        data_types::{scalar_type, INT64},
+        evaluators::random_evaluate,
+        graphs::create_context,
+    };
+
+    #[test]
+    fn test_inverse_initial_approximation() -> Result<()> {
+        let context = create_context()?;
+        let t = scalar_type(INT64);
+        let denominator_cap_2k = 15;
+        let g = inverse_initial_approximation(&context, t.clone(), denominator_cap_2k)?;
+        g.set_as_main()?;
+        context.finalize()?;
+        let context = run_instantiation_pass(context)?;
+        for &val in [1, 2, 4, 5, 7, 123, 12343].iter() {
+            let result = random_evaluate(
+                context.get_context().get_main_graph()?,
+                vec![Value::from_scalar(val, t.get_scalar_type())?],
+            )?
+            .to_i64(t.get_scalar_type())?;
+            let expected = (val as f64).recip();
+            let lower_bound = (result as f64) / (1 << denominator_cap_2k) as f64;
+            let upper_bound = 2.0 * lower_bound;
+            assert!(lower_bound <= expected && expected <= upper_bound);
+        }
+        Ok(())
+    }
 }

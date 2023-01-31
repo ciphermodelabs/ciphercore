@@ -608,6 +608,7 @@ fn constant_time_select(a: u64, b: u64, c: u64) -> u64 {
     c_per_bit & (a ^ b) ^ b
 }
 
+// TODO: consider pre-broadcasting constants where it is possible.
 pub struct SimpleEvaluator {
     prng: PRNG,
     prfs: HashMap<Vec<u8>, Prf>,

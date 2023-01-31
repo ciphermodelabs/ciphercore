@@ -1,13 +1,17 @@
 //! Various comparison functions for signed and unsigned integers including greater-than, less-than, greater-than-equal-to, less-than-equal-to, equal, not-equal.
 use crate::custom_ops::{CustomOperation, CustomOperationBody, Not};
-use crate::data_types::{Type, BIT};
+use crate::data_types::{ArrayShape, Type, BIT};
 use crate::errors::Result;
 use crate::graphs::*;
 use crate::ops::utils::{constant_scalar, pull_out_bits};
 use crate::ops::utils::{expand_dims, validate_arguments_in_broadcast_bit_ops};
+use crate::typed_value::TypedValue;
+use crate::typed_value_operations::TypedValueArrayOperations;
 use std::cmp::max;
 
 use serde::{Deserialize, Serialize};
+
+use super::utils::unsqueeze;
 
 /// All comparison operations are built on top of a general comparison graph.
 ///
@@ -321,29 +325,31 @@ fn expand_to_same_dims(a: Node, b: Node) -> Result<(Node, Node)> {
 /// Let `a` be a signed integer with the following binary representations
 /// `a = | sign_bit | a_(n-1) | ... | a_0 | = A - sign_bit * 2^n`.
 /// Flipping the sign bit and recasting to unsigned results in a shift by `2^n`, i.e.
-/// `flib_msb(a) = A + (1 - sign_bit) * 2^n = a + 2^n`.
+/// `flip_msb(a) = A + (1 - sign_bit) * 2^n = a + 2^n`.
+///
+/// Here we xor the MSB bit with 1 to flip it. It is more efficient than do slice + concat.
+/// We rely on broadcasting to avoid the huge constants in graph.
 fn flip_msb(ip: Node) -> Result<Node> {
-    let bit_len = ip.get_type()?.get_shape()[0] as i64;
+    ip.add(get_msb_flip_constant(
+        ip.get_type()?.get_shape(),
+        &ip.get_graph(),
+    )?)
+}
 
-    let magnitude_slice = vec![SliceElement::SubArray(None, Some(-1), Some(1))];
-    let graph = ip.get_graph();
-    // we want `sign_bit` to be an array, so we can use it in `concatenate` later
-    let sign_bit = graph.get_slice(
-        ip.clone(),
-        vec![SliceElement::SubArray(
-            Some(bit_len - 1),
-            Some(bit_len),
-            None,
-        )],
-    )?;
+fn get_msb_flip_constant(shape: ArrayShape, g: &Graph) -> Result<Node> {
+    let mut msb_mask = vec![0; shape[0] as usize];
+    msb_mask[shape[0] as usize - 1] = 1;
+    let tv = TypedValue::from_ndarray(ndarray::Array::from_vec(msb_mask).into_dyn(), BIT)?;
 
-    let magnitude_bits = graph.get_slice(ip, magnitude_slice)?;
-    let flipped_bit = graph.custom_op(CustomOperation::new(Not {}), vec![sign_bit])?;
-    graph.concatenate(vec![magnitude_bits, flipped_bit], 0)
+    let mut msb_mask = g.constant(tv.t, tv.value)?;
+    while msb_mask.get_type()?.get_shape().len() < shape.len() {
+        msb_mask = unsqueeze(msb_mask, -1)?;
+    }
+    Ok(msb_mask)
 }
 
 /// This function pulls out bits to outermost dimension, and flips MSB for
-/// signed comparsions.
+/// signed comparisons.
 ///
 /// See [`flip_msb`] and [`ComparisonResult`] for details.
 fn preprocess_input(signed_comparison: bool, node: Node) -> Result<Node> {
