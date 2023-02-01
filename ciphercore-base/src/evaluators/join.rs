@@ -21,7 +21,7 @@ struct ColumnsMap {
     header_index_map: HashMap<String, usize>,
     // arrays containing data of all columns
     columns_data: Vec<Vec<u64>>,
-    // numer of scalar elements per row of each column
+    // number of scalar elements per row of each column
     elements_per_row: Vec<usize>,
 }
 
@@ -84,6 +84,18 @@ fn flatten_row(row_index: usize, headers: &[String], headers_values: &ColumnsMap
     row
 }
 
+// Add new elements from a column with a given header to another
+fn extend_column(
+    target_column: &mut Vec<u64>,
+    source_header: &str,
+    columns: &ColumnsMap,
+    row_index: usize,
+) {
+    let source_column = columns.get_data(source_header);
+    let row_size = columns.get_row_size(source_header);
+    target_column.extend(source_column[row_index * row_size..(row_index + 1) * row_size].to_vec());
+}
+
 type KeyColumnsMap = HashMap<Vec<u64>, Vec<Vec<u64>>>;
 
 // Creates a hashmap of the input rows with keys corresponding to the content of key columns
@@ -114,6 +126,8 @@ fn get_hashmap_from_key_columns(
     Ok(key_data_hashmap)
 }
 
+// Computes the inner join of given sets.
+// These sets and necessary precomputations should be contained in the join input.
 fn get_inner_join_columns(join_input: &JoinInput) -> Vec<Vec<u64>> {
     // The resulting null column is derived from the null column of the first set
     let mut res_null_column = join_input.columns0.get_data(NULL_HEADER);
@@ -134,9 +148,7 @@ fn get_inner_join_columns(join_input: &JoinInput) -> Vec<Vec<u64>> {
         if join_input.key_data_hashmap1.contains_key(&row_key) {
             // Add the columns of the first set first
             for (col_i, (header0, _)) in join_input.headers_types0.iter().enumerate() {
-                let row_data = join_input.columns0.get_data(header0);
-                let row_size = join_input.columns0.get_row_size(header0);
-                res_columns[col_i].extend(row_data[i * row_size..(i + 1) * row_size].to_vec());
+                extend_column(&mut res_columns[col_i], header0, &join_input.columns0, i);
             }
             // Extract the corresponding row of the second set
             let row_data1 = join_input.key_data_hashmap1[&row_key].clone();
@@ -163,16 +175,16 @@ struct JoinInput {
     headers_types0: HeadersTypes,
     // Key headers of the first set
     key_headers0: Vec<String>,
+    // Map of key headers: first set header -> second set header
+    key_headers_map: HashMap<String, String>,
     // Keys of the second set with the corresponding rows kept in a hashmap
     key_data_hashmap1: HashMap<Vec<u64>, Vec<Vec<u64>>>,
     // Headers and types of the result
     result_headers_types: HeadersTypes,
 }
 
-// Computes the left join of given sets given in headers_values0 and headers_value1.
-// Needs pairs (header, type) of the first set along with its key headers.
-// The keys of the second set are already hashed to key_data_hashmap1.
-// The resulting type is needed to correctly append the outcome with zero rows.
+// Computes the left join of given sets.
+// These sets and necessary precomputations should be contained in the join input.
 fn get_left_join_columns(join_input: &JoinInput) -> Vec<Vec<u64>> {
     // The resulting null column is derived from the null column of the first set
     let mut res_null_column = join_input.columns0.get_data(NULL_HEADER);
@@ -191,9 +203,7 @@ fn get_left_join_columns(join_input: &JoinInput) -> Vec<Vec<u64>> {
         }
         // Add the columns of the first set first
         for (col_i, (header0, _)) in join_input.headers_types0.iter().enumerate() {
-            let row_data = join_input.columns0.get_data(header0);
-            let row_size = join_input.columns0.get_row_size(header0);
-            res_columns[col_i].extend(row_data[i * row_size..(i + 1) * row_size].to_vec());
+            extend_column(&mut res_columns[col_i], header0, &join_input.columns0, i);
         }
         // Merge the key columns of the first set
         let row_key = flatten_row(i, &join_input.key_headers0, &join_input.columns0);
@@ -210,12 +220,85 @@ fn get_left_join_columns(join_input: &JoinInput) -> Vec<Vec<u64>> {
             for (col_i, column) in res_columns
                 .iter_mut()
                 .enumerate()
-                .take(num_res_columns)
                 .skip(join_input.headers_types0.len())
             {
                 let header = &join_input.result_headers_types[col_i].0;
                 let row_size = join_input.columns1.get_row_size(header);
                 column.extend(vec![0; row_size]);
+            }
+        }
+    }
+    res_columns
+}
+
+// Computes the union join of given sets.
+// These sets and necessary precomputations should be contained in the join input.
+// In contrast to the SQL union, this operation does not require that input datasets have respective columns of the same type.
+// This means that columns of both datasets are included and filled with zeros where no data can be retrieved.
+// Namely, the rows of the second set in the union join will contain zeros in non-key columns of the first set and vice versa.
+fn get_union_columns(join_input: &JoinInput) -> Vec<Vec<u64>> {
+    // The first part of the resulting null column is derived from the null column of the first set
+    let mut x_null_column = join_input.columns0.get_data(NULL_HEADER);
+    // Merge key columns of the first set and check if the corresponding rows belong to the second set
+    let num_res_columns = join_input.result_headers_types.len();
+    let mut res_columns = vec![vec![]; num_res_columns];
+
+    // Add all the rows of the first set that don't belong to the inner join
+    for (i, null_bit) in x_null_column.iter_mut().enumerate() {
+        // If the null bit is zero, just insert a zero row
+        if *null_bit == 0 {
+            append_zero_row(&mut res_columns, join_input);
+            continue;
+        }
+        // Merge the key columns of the first set
+        let row_key = flatten_row(i, &join_input.key_headers0, &join_input.columns0);
+        // Check that the row key of the first set is contained in the second set
+        if join_input.key_data_hashmap1.contains_key(&row_key) {
+            // Fill the current row with zeros
+            *null_bit = 0;
+            append_zero_row(&mut res_columns, join_input);
+        } else {
+            // Extract the rows of the first set
+            for (col_i, (header0, _)) in join_input.headers_types0.iter().enumerate() {
+                extend_column(&mut res_columns[col_i], header0, &join_input.columns0, i);
+            }
+            // Append the current row with zeros in the remaining columns of the second set
+            for (col_i, column) in res_columns
+                .iter_mut()
+                .enumerate()
+                .skip(join_input.headers_types0.len())
+            {
+                let header = &join_input.result_headers_types[col_i].0;
+                let row_size = join_input.columns1.get_row_size(header);
+                column.extend(vec![0; row_size]);
+            }
+        }
+    }
+
+    // The second part of the resulting null column is derived from the null column of the second set
+    let y_null_column = join_input.columns1.get_data(NULL_HEADER);
+    // Add all the rows of the second set
+    for (i, null_bit) in y_null_column.iter().enumerate() {
+        if *null_bit == 0 {
+            append_zero_row(&mut res_columns, join_input);
+            continue;
+        }
+        for (col_i, column) in res_columns.iter_mut().enumerate() {
+            let header = &join_input.result_headers_types[col_i].0;
+            if header == NULL_HEADER {
+                // the null bit will be always 1 here
+                column.push(*null_bit);
+            } else if join_input.key_headers0.contains(header) {
+                // extract the content of a key column of the second set
+                let y_header = &join_input.key_headers_map[header];
+                extend_column(column, y_header, &join_input.columns1, i);
+            } else if col_i < join_input.headers_types0.len() {
+                // non-key columns of the first set. Fill them with zeros.
+                let row_size = join_input.columns0.get_row_size(header);
+                column.extend(vec![0; row_size]);
+            } else {
+                // non-key columns of the second set
+                extend_column(column, header, &join_input.columns1, i);
             }
         }
     }
@@ -251,6 +334,7 @@ pub(crate) fn evaluate_join(
         columns1,
         headers_types0,
         key_headers0,
+        key_headers_map: headers.clone(),
         key_data_hashmap1,
         result_headers_types,
     };
@@ -258,6 +342,7 @@ pub(crate) fn evaluate_join(
     let res_columns = match join_t {
         JoinType::Inner => get_inner_join_columns(&join_input),
         JoinType::Left => get_left_join_columns(&join_input),
+        JoinType::Union => get_union_columns(&join_input),
     };
     // Collect all columns
     let mut res_value_vec = vec![];

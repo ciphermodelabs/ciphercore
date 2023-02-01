@@ -931,6 +931,7 @@ impl CustomOperationBody for JoinMPC {
                     g.create_tuple(null_x_shares)?
                 }
             }
+            _ => panic!("Not implemented"),
         };
         // Multiply columns of X by the intersection null column
         for (header, t) in &column_header_types_x {

@@ -62,6 +62,7 @@ pub type Slice = Vec<SliceElement>;
 pub enum JoinType {
     Inner,
     Left,
+    Union,
 }
 
 #[doc(hidden)]
@@ -78,6 +79,12 @@ impl PyBindingJoinType {
     pub fn from_left() -> Self {
         PyBindingJoinType {
             inner: JoinType::Left,
+        }
+    }
+    #[staticmethod]
+    pub fn from_union() -> Self {
+        PyBindingJoinType {
+            inner: JoinType::Union,
         }
     }
 }
@@ -1442,6 +1449,10 @@ impl Graph {
     /// This operation returns:
     /// - Inner join: a named tuple containing rows whose content is equal in the key columns named by given key headers.
     /// - Left join: a named tuple containing rows of the first named tuple and the rows of the second named tuple whose content is equal to the one of the first named tuple in the key columns named by given key headers.
+    /// - Union join: a named tuple containing rows of the first named tuple that are not in the inner join and all the rows of the second set.
+    /// In contrast to the SQL union, this operation does not require that input datasets have respective columns of the same type.
+    /// This means that columns of both datasets are included and filled with zeros where no data can be retrieved.
+    /// Namely, the rows of the second set in the union join will contain zeros in non-key columns of the first set and vice versa.
     ///
     /// The content of non-key columns is merged.
     /// The order of these rows is the same as in the first named tuple.

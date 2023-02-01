@@ -2090,560 +2090,742 @@ mod tests {
         .unwrap();
     }
 
-    fn set_intersection_helper(
-        t0: Type,
-        t1: Type,
-        set0: Value,
-        set1: Value,
-        headers: HashMap<String, String>,
-        expected: Vec<(String, Vec<u64>)>,
-    ) -> Result<()> {
-        let c = create_context()?;
-        let g = c.create_graph()?;
-        let i0 = g.input(t0.clone())?;
-        let i1 = g.input(t1.clone())?;
-        let o = i0.join(i1, JoinType::Inner, headers)?;
-        g.set_output_node(o.clone())?;
-        g.finalize()?;
-        c.set_main_graph(g.clone())?;
-        c.finalize()?;
+    fn join_helper(test_info: Vec<JoinTestInfo>, join_t: JoinType) -> Result<()> {
+        for test_i in test_info {
+            let c = create_context()?;
+            let g = c.create_graph()?;
+            let i0 = g.input(test_i.set0.get_type())?;
+            let i1 = g.input(test_i.set1.get_type())?;
+            let o = i0.join(i1, join_t, test_i.headers)?;
+            g.set_output_node(o.clone())?;
+            g.finalize()?;
+            c.set_main_graph(g.clone())?;
+            c.finalize()?;
 
-        let result = random_evaluate(g, vec![set0, set1])?.to_vector()?;
-        let result_t = o.get_type()?;
-        if let Type::NamedTuple(headers_types) = result_t {
-            for (i, (expected_header, expected_column)) in expected.iter().enumerate() {
-                assert_eq!(*expected_header, headers_types[i].0);
-                assert_eq!(
-                    result[i].to_flattened_array_u64((*headers_types[i].1).clone())?,
-                    *expected_column
-                )
+            let result =
+                random_evaluate(g, vec![test_i.set0.get_value()?, test_i.set1.get_value()?])?
+                    .to_vector()?;
+            let result_t = o.get_type()?;
+            if let Type::NamedTuple(headers_types) = result_t {
+                assert_eq!(test_i.expected.len(), headers_types.len());
+                for (i, (expected_header, expected_column)) in test_i.expected.iter().enumerate() {
+                    assert_eq!(*expected_header, headers_types[i].0);
+                    assert_eq!(
+                        result[i].to_flattened_array_u64((*headers_types[i].1).clone())?,
+                        *expected_column
+                    )
+                }
+            } else {
+                panic!("Inconsistency with type checker");
             }
-        } else {
-            panic!("Inconsistency with type checker");
         }
         Ok(())
+    }
+
+    struct ColumnInfo {
+        header: String,
+        shape: Vec<u64>,
+        st: ScalarType,
+        data: Vec<u64>,
+    }
+
+    fn column_info(header: &str, shape: &[u64], st: ScalarType, data: &[u64]) -> ColumnInfo {
+        ColumnInfo {
+            header: header.to_owned(),
+            shape: shape.to_vec(),
+            st,
+            data: data.to_vec(),
+        }
+    }
+
+    type SetInfo = Vec<ColumnInfo>;
+
+    trait SetHelpers {
+        fn get_type(&self) -> Type;
+        fn get_value(&self) -> Result<Value>;
+    }
+
+    impl SetHelpers for SetInfo {
+        fn get_type(&self) -> Type {
+            let mut v = vec![];
+            for col in self.iter() {
+                v.push((
+                    col.header.clone(),
+                    array_type(col.shape.clone(), col.st.clone()),
+                ));
+            }
+            named_tuple_type(v)
+        }
+        fn get_value(&self) -> Result<Value> {
+            let mut v = vec![];
+            for col in self.iter() {
+                v.push(Value::from_flattened_array(&col.data, col.st.clone())?);
+            }
+            Ok(Value::from_vector(v))
+        }
+    }
+
+    type ExpectedInfo = Vec<(String, Vec<u64>)>;
+
+    fn expected_info(expected_columns: Vec<(&str, &[u64])>) -> ExpectedInfo {
+        let mut v = vec![];
+        for (header, data) in expected_columns {
+            v.push((header.to_owned(), data.to_vec()));
+        }
+        v
+    }
+
+    struct JoinTestInfo {
+        set0: SetInfo,
+        set1: SetInfo,
+        headers: HashMap<String, String>,
+        expected: ExpectedInfo,
+    }
+
+    fn join_info(
+        set0: SetInfo,
+        set1: SetInfo,
+        headers: Vec<(&str, &str)>,
+        expected: ExpectedInfo,
+    ) -> JoinTestInfo {
+        let mut hmap = HashMap::new();
+        for (h0, h1) in headers {
+            hmap.insert(h0.to_owned(), h1.to_owned());
+        }
+        JoinTestInfo {
+            set0,
+            set1,
+            headers: hmap,
+            expected,
+        }
     }
 
     #[test]
     fn test_set_intersection() -> Result<()> {
-        {
-            let t0 = named_tuple_type(vec![
-                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
-                ("ID".to_owned(), array_type(vec![6], UINT64)),
-                ("Income".to_owned(), array_type(vec![6], UINT64)),
-            ]);
-            let t1 = named_tuple_type(vec![
-                (NULL_HEADER.to_owned(), array_type(vec![10], BIT)),
-                ("ID".to_owned(), array_type(vec![10], UINT64)),
-                ("Outcome".to_owned(), array_type(vec![10], UINT64)),
-            ]);
-            let set0 = Value::from_vector(vec![
-                Value::from_flattened_array(&[1, 1, 1, 1, 1, 1], BIT)?,
-                Value::from_flattened_array(&[5, 3, 0, 4, 1, 2], UINT64)?,
-                Value::from_flattened_array(&[500, 300, 0, 400, 100, 200], UINT64)?,
-            ]);
-            let set1 = Value::from_vector(vec![
-                Value::from_flattened_array(&[1, 1, 1, 1, 1, 1, 1, 1, 1, 1], BIT)?,
-                Value::from_flattened_array(&[4, 7, 8, 9, 10, 11, 12, 2, 3, 13], UINT64)?,
-                Value::from_flattened_array(&[40, 70, 80, 90, 100, 110, 120, 20, 30, 130], UINT64)?,
-            ]);
-            let headers = HashMap::from([("ID".to_owned(), "ID".to_owned())]);
-            let expected = vec![
-                (NULL_HEADER.to_owned(), vec![0, 1, 0, 1, 0, 1]),
-                ("ID".to_owned(), vec![0, 3, 0, 4, 0, 2]),
-                ("Income".to_owned(), vec![0, 300, 0, 400, 0, 200]),
-                ("Outcome".to_owned(), vec![0, 30, 0, 40, 0, 20]),
-            ];
-            set_intersection_helper(t0, t1, set0, set1, headers, expected)?;
-        }
-        {
-            let t0 = named_tuple_type(vec![
-                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
-                ("ID".to_owned(), array_type(vec![6], UINT64)),
-                ("Income1".to_owned(), array_type(vec![6], UINT64)),
-            ]);
-            let t1 = named_tuple_type(vec![
-                (NULL_HEADER.to_owned(), array_type(vec![10], BIT)),
-                ("ID".to_owned(), array_type(vec![10], UINT64)),
-                ("Income2".to_owned(), array_type(vec![10], UINT64)),
-            ]);
-            let set0 = Value::from_vector(vec![
-                Value::from_flattened_array(&[1, 1, 1, 1, 1, 1], BIT)?,
-                Value::from_flattened_array(&[5, 3, 0, 4, 1, 2], UINT64)?,
-                Value::from_flattened_array(&[50, 30, 0, 40, 10, 20], UINT64)?,
-            ]);
-            let set1 = Value::from_vector(vec![
-                Value::from_flattened_array(&[1, 1, 1, 1, 1, 1, 1, 1, 1, 1], BIT)?,
-                Value::from_flattened_array(&[4, 7, 8, 9, 10, 11, 12, 2, 3, 13], UINT64)?,
-                Value::from_flattened_array(&[40, 70, 80, 90, 100, 110, 120, 20, 30, 130], UINT64)?,
-            ]);
-            let headers = HashMap::from([
-                ("ID".to_owned(), "ID".to_owned()),
-                ("Income1".to_owned(), "Income2".to_owned()),
-            ]);
-            let expected = vec![
-                (NULL_HEADER.to_owned(), vec![0, 1, 0, 1, 0, 1]),
-                ("ID".to_owned(), vec![0, 3, 0, 4, 0, 2]),
-                ("Income1".to_owned(), vec![0, 30, 0, 40, 0, 20]),
-            ];
-            set_intersection_helper(t0, t1, set0, set1, headers, expected)?;
-        }
-        {
-            let t0 = named_tuple_type(vec![
-                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
-                ("ID".to_owned(), array_type(vec![6], UINT64)),
-                ("Income1".to_owned(), array_type(vec![6], UINT64)),
-                ("Outcome1".to_owned(), array_type(vec![6], UINT64)),
-            ]);
-            let t1 = named_tuple_type(vec![
-                (NULL_HEADER.to_owned(), array_type(vec![10], BIT)),
-                ("ID".to_owned(), array_type(vec![10], UINT64)),
-                ("Income2".to_owned(), array_type(vec![10], UINT64)),
-                ("Outcome2".to_owned(), array_type(vec![10], UINT64)),
-            ]);
-            let set0 = Value::from_vector(vec![
-                Value::from_flattened_array(&[1, 1, 1, 1, 1, 0], BIT)?,
-                Value::from_flattened_array(&[5, 3, 0, 4, 1, 2], UINT64)?,
-                Value::from_flattened_array(&[50, 30, 0, 40, 10, 20], UINT64)?,
-                Value::from_flattened_array(&[500, 300, 0, 400, 100, 200], UINT64)?,
-            ]);
-            let set1 = Value::from_vector(vec![
-                Value::from_flattened_array(&[1, 1, 1, 1, 1, 1, 1, 0, 1, 1], BIT)?,
-                Value::from_flattened_array(&[4, 7, 8, 9, 10, 11, 12, 2, 3, 13], UINT64)?,
-                Value::from_flattened_array(&[40, 70, 80, 90, 100, 110, 120, 20, 30, 130], UINT64)?,
-                Value::from_flattened_array(
-                    &[400, 700, 800, 900, 1000, 1100, 1200, 200, 300, 1300],
-                    UINT64,
-                )?,
-            ]);
-            let headers = HashMap::from([
-                ("ID".to_owned(), "ID".to_owned()),
-                ("Income1".to_owned(), "Income2".to_owned()),
-            ]);
-            let expected = vec![
-                (NULL_HEADER.to_owned(), vec![0, 1, 0, 1, 0, 0]),
-                ("ID".to_owned(), vec![0, 3, 0, 4, 0, 0]),
-                ("Income1".to_owned(), vec![0, 30, 0, 40, 0, 0]),
-                ("Outcome1".to_owned(), vec![0, 300, 0, 400, 0, 0]),
-                ("Outcome2".to_owned(), vec![0, 300, 0, 400, 0, 0]),
-            ];
-            set_intersection_helper(t0, t1, set0, set1, headers, expected)?;
-        }
-        {
-            let t0 = named_tuple_type(vec![
-                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
-                ("Income1".to_owned(), array_type(vec![6], UINT64)),
-                ("ID".to_owned(), array_type(vec![6], UINT64)),
-                ("Outcome1".to_owned(), array_type(vec![6], UINT64)),
-            ]);
-            let t1 = named_tuple_type(vec![
-                (NULL_HEADER.to_owned(), array_type(vec![10], BIT)),
-                ("ID".to_owned(), array_type(vec![10], UINT64)),
-                ("Income2".to_owned(), array_type(vec![10], UINT64)),
-                ("Outcome2".to_owned(), array_type(vec![10], UINT64)),
-            ]);
-            let set0 = Value::from_vector(vec![
-                Value::from_flattened_array(&[1, 0, 1, 0, 1, 1], BIT)?,
-                Value::from_flattened_array(&[5, 3, 0, 4, 1, 2], UINT64)?,
-                Value::from_flattened_array(&[50, 30, 0, 40, 10, 20], UINT64)?,
-                Value::from_flattened_array(&[500, 300, 0, 400, 100, 200], UINT64)?,
-            ]);
-            let set1 = Value::from_vector(vec![
-                Value::from_flattened_array(&[1, 1, 1, 1, 1, 1, 1, 0, 1, 1], BIT)?,
-                Value::from_flattened_array(&[4, 7, 8, 9, 10, 11, 12, 2, 3, 13], UINT64)?,
-                Value::from_flattened_array(&[40, 70, 80, 90, 100, 110, 120, 20, 30, 130], UINT64)?,
-                Value::from_flattened_array(
-                    &[400, 700, 800, 900, 1000, 1100, 1200, 200, 300, 1300],
-                    UINT64,
-                )?,
-            ]);
-            let headers = HashMap::from([
-                ("ID".to_owned(), "ID".to_owned()),
-                ("Income1".to_owned(), "Income2".to_owned()),
-            ]);
-            let expected = vec![
-                (NULL_HEADER.to_owned(), vec![0, 0, 0, 0, 0, 0]),
-                ("Income1".to_owned(), vec![0, 0, 0, 0, 0, 0]),
-                ("ID".to_owned(), vec![0, 0, 0, 0, 0, 0]),
-                ("Outcome1".to_owned(), vec![0, 0, 0, 0, 0, 0]),
-                ("Outcome2".to_owned(), vec![0, 0, 0, 0, 0, 0]),
-            ];
-            set_intersection_helper(t0, t1, set0, set1, headers, expected)?;
-        }
-        {
-            let t0 = named_tuple_type(vec![
-                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                ("ID".to_owned(), array_type(vec![1], UINT64)),
-                ("Income1".to_owned(), array_type(vec![1], UINT64)),
-                ("Outcome1".to_owned(), array_type(vec![1], UINT64)),
-            ]);
-            let t1 = named_tuple_type(vec![
-                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                ("ID".to_owned(), array_type(vec![1], UINT64)),
-                ("Income2".to_owned(), array_type(vec![1], UINT64)),
-                ("Outcome2".to_owned(), array_type(vec![1], UINT64)),
-            ]);
-            let set0 = Value::from_vector(vec![
-                Value::from_flattened_array(&[1], BIT)?,
-                Value::from_flattened_array(&[5], UINT64)?,
-                Value::from_flattened_array(&[50], UINT64)?,
-                Value::from_flattened_array(&[500], UINT64)?,
-            ]);
-            let set1 = Value::from_vector(vec![
-                Value::from_flattened_array(&[1], BIT)?,
-                Value::from_flattened_array(&[5], UINT64)?,
-                Value::from_flattened_array(&[50], UINT64)?,
-                Value::from_flattened_array(&[51], UINT64)?,
-            ]);
-            let headers = HashMap::from([
-                ("ID".to_owned(), "ID".to_owned()),
-                ("Income1".to_owned(), "Income2".to_owned()),
-            ]);
-            let expected = vec![
-                (NULL_HEADER.to_owned(), vec![1]),
-                ("ID".to_owned(), vec![5]),
-                ("Income1".to_owned(), vec![50]),
-                ("Outcome1".to_owned(), vec![500]),
-                ("Outcome2".to_owned(), vec![51]),
-            ];
-            set_intersection_helper(t0, t1, set0, set1, headers, expected)?;
-        }
-        {
-            let t0 = named_tuple_type(vec![
-                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                ("Income1".to_owned(), array_type(vec![1], UINT64)),
-                ("Outcome1".to_owned(), array_type(vec![1], UINT64)),
-                ("ID".to_owned(), array_type(vec![1], UINT64)),
-            ]);
-            let t1 = named_tuple_type(vec![
-                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                ("ID".to_owned(), array_type(vec![1], UINT64)),
-                ("Income2".to_owned(), array_type(vec![1], UINT64)),
-                ("Outcome2".to_owned(), array_type(vec![1], UINT64)),
-            ]);
-            let set0 = Value::from_vector(vec![
-                Value::from_flattened_array(&[1], BIT)?,
-                Value::from_flattened_array(&[50], UINT64)?,
-                Value::from_flattened_array(&[500], UINT64)?,
-                Value::from_flattened_array(&[5], UINT64)?,
-            ]);
-            let set1 = Value::from_vector(vec![
-                Value::from_flattened_array(&[1], BIT)?,
-                Value::from_flattened_array(&[5], UINT64)?,
-                Value::from_flattened_array(&[50], UINT64)?,
-                Value::from_flattened_array(&[51], UINT64)?,
-            ]);
-            let headers = HashMap::from([
-                ("ID".to_owned(), "ID".to_owned()),
-                ("Income1".to_owned(), "Income2".to_owned()),
-            ]);
-            let expected = vec![
-                (NULL_HEADER.to_owned(), vec![1]),
-                ("Income1".to_owned(), vec![50]),
-                ("Outcome1".to_owned(), vec![500]),
-                ("ID".to_owned(), vec![5]),
-                ("Outcome2".to_owned(), vec![51]),
-            ];
-            set_intersection_helper(t0, t1, set0, set1, headers, expected)?;
-        }
+        let tests = vec![
+            join_info(
+                vec![
+                    column_info(NULL_HEADER, &[6], BIT, &[1, 1, 1, 1, 1, 1]),
+                    column_info("ID", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
+                    column_info("Income", &[6], UINT64, &[500, 300, 0, 400, 100, 200]),
+                ],
+                vec![
+                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
+                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                    column_info(
+                        "Outcome",
+                        &[10],
+                        UINT64,
+                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
+                    ),
+                ],
+                vec![("ID", "ID")],
+                expected_info(vec![
+                    (NULL_HEADER, &[0, 1, 0, 1, 0, 1]),
+                    ("ID", &[0, 3, 0, 4, 0, 2]),
+                    ("Income", &[0, 300, 0, 400, 0, 200]),
+                    ("Outcome", &[0, 30, 0, 40, 0, 20]),
+                ]),
+            ),
+            join_info(
+                vec![
+                    column_info(NULL_HEADER, &[6], BIT, &[1, 1, 1, 1, 1, 1]),
+                    column_info("ID", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
+                    column_info("Income1", &[6], UINT64, &[50, 30, 0, 40, 10, 20]),
+                ],
+                vec![
+                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
+                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                    column_info(
+                        "Income2",
+                        &[10],
+                        UINT64,
+                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
+                    ),
+                ],
+                vec![("ID", "ID"), ("Income1", "Income2")],
+                expected_info(vec![
+                    (NULL_HEADER, &[0, 1, 0, 1, 0, 1]),
+                    ("ID", &[0, 3, 0, 4, 0, 2]),
+                    ("Income1", &[0, 30, 0, 40, 0, 20]),
+                ]),
+            ),
+            join_info(
+                vec![
+                    column_info(NULL_HEADER, &[6], BIT, &[1, 1, 1, 1, 1, 0]),
+                    column_info("ID", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
+                    column_info("Income1", &[6], UINT64, &[50, 30, 0, 40, 10, 20]),
+                    column_info("Outcome1", &[6], UINT64, &[500, 300, 0, 400, 100, 200]),
+                ],
+                vec![
+                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
+                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                    column_info(
+                        "Income2",
+                        &[10],
+                        UINT64,
+                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
+                    ),
+                    column_info(
+                        "Outcome2",
+                        &[10],
+                        UINT64,
+                        &[400, 700, 800, 900, 1000, 1100, 1200, 200, 300, 1300],
+                    ),
+                ],
+                vec![("ID", "ID"), ("Income1", "Income2")],
+                expected_info(vec![
+                    (NULL_HEADER, &[0, 1, 0, 1, 0, 0]),
+                    ("ID", &[0, 3, 0, 4, 0, 0]),
+                    ("Income1", &[0, 30, 0, 40, 0, 0]),
+                    ("Outcome1", &[0, 300, 0, 400, 0, 0]),
+                    ("Outcome2", &[0, 300, 0, 400, 0, 0]),
+                ]),
+            ),
+            join_info(
+                vec![
+                    column_info(NULL_HEADER, &[6], BIT, &[1, 0, 1, 0, 1, 1]),
+                    column_info("Income1", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
+                    column_info("ID", &[6], UINT64, &[50, 30, 0, 40, 10, 20]),
+                    column_info("Outcome1", &[6], UINT64, &[500, 300, 0, 400, 100, 200]),
+                ],
+                vec![
+                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 0, 1, 1]),
+                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                    column_info(
+                        "Income2",
+                        &[10],
+                        UINT64,
+                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
+                    ),
+                    column_info(
+                        "Outcome2",
+                        &[10],
+                        UINT64,
+                        &[400, 700, 800, 900, 1000, 1100, 1200, 200, 300, 1300],
+                    ),
+                ],
+                vec![("ID", "ID"), ("Income1", "Income2")],
+                expected_info(vec![
+                    (NULL_HEADER, &[0, 0, 0, 0, 0, 0]),
+                    ("Income1", &[0, 0, 0, 0, 0, 0]),
+                    ("ID", &[0, 0, 0, 0, 0, 0]),
+                    ("Outcome1", &[0, 0, 0, 0, 0, 0]),
+                    ("Outcome2", &[0, 0, 0, 0, 0, 0]),
+                ]),
+            ),
+            join_info(
+                vec![
+                    column_info(NULL_HEADER, &[1], BIT, &[1]),
+                    column_info("ID", &[1], UINT64, &[5]),
+                    column_info("Income1", &[1], UINT64, &[50]),
+                    column_info("Outcome1", &[1], UINT64, &[500]),
+                ],
+                vec![
+                    column_info(NULL_HEADER, &[1], BIT, &[1]),
+                    column_info("ID", &[1], UINT64, &[5]),
+                    column_info("Income2", &[1], UINT64, &[50]),
+                    column_info("Outcome2", &[1], UINT64, &[51]),
+                ],
+                vec![("ID", "ID"), ("Income1", "Income2")],
+                expected_info(vec![
+                    (NULL_HEADER, &[1]),
+                    ("ID", &[5]),
+                    ("Income1", &[50]),
+                    ("Outcome1", &[500]),
+                    ("Outcome2", &[51]),
+                ]),
+            ),
+            join_info(
+                vec![
+                    column_info(NULL_HEADER, &[1], BIT, &[1]),
+                    column_info("Income1", &[1], UINT64, &[50]),
+                    column_info("Outcome1", &[1], UINT64, &[500]),
+                    column_info("ID", &[1], UINT64, &[5]),
+                ],
+                vec![
+                    column_info(NULL_HEADER, &[1], BIT, &[1]),
+                    column_info("ID", &[1], UINT64, &[5]),
+                    column_info("Income2", &[1], UINT64, &[50]),
+                    column_info("Outcome2", &[1], UINT64, &[51]),
+                ],
+                vec![("ID", "ID"), ("Income1", "Income2")],
+                expected_info(vec![
+                    (NULL_HEADER, &[1]),
+                    ("Income1", &[50]),
+                    ("Outcome1", &[500]),
+                    ("ID", &[5]),
+                    ("Outcome2", &[51]),
+                ]),
+            ),
+            join_info(
+                vec![
+                    column_info(NULL_HEADER, &[2], BIT, &[1, 1]),
+                    column_info("Income1", &[2], UINT64, &[40, 50]),
+                    column_info("Outcome1", &[2, 2], UINT64, &[400, 401, 500, 501]),
+                    column_info("ID", &[2], UINT64, &[4, 5]),
+                ],
+                vec![
+                    column_info(NULL_HEADER, &[2], BIT, &[1, 1]),
+                    column_info("ID", &[2], UINT64, &[5, 3]),
+                    column_info("Income2", &[2], UINT64, &[50, 30]),
+                    column_info("Outcome2", &[2, 2], UINT64, &[500, 501, 300, 301]),
+                ],
+                vec![("ID", "ID"), ("Income1", "Income2")],
+                expected_info(vec![
+                    (NULL_HEADER, &[0, 1]),
+                    ("Income1", &[0, 50]),
+                    ("Outcome1", &[0, 0, 500, 501]),
+                    ("ID", &[0, 5]),
+                    ("Outcome2", &[0, 0, 500, 501]),
+                ]),
+            ),
+        ];
+        join_helper(tests, JoinType::Inner)?;
 
-        Ok(())
-    }
-
-    fn left_join_helper(
-        t0: Type,
-        t1: Type,
-        set0: Value,
-        set1: Value,
-        headers: HashMap<String, String>,
-        expected: Vec<(String, Vec<u64>)>,
-    ) -> Result<()> {
-        let c = create_context()?;
-        let g = c.create_graph()?;
-        let i0 = g.input(t0.clone())?;
-        let i1 = g.input(t1.clone())?;
-        let o = i0.join(i1, JoinType::Left, headers)?;
-        g.set_output_node(o.clone())?;
-        g.finalize()?;
-        c.set_main_graph(g.clone())?;
-        c.finalize()?;
-
-        let result = random_evaluate(g, vec![set0, set1])?.to_vector()?;
-        let result_t = o.get_type()?;
-        if let Type::NamedTuple(headers_types) = result_t {
-            for (i, (expected_header, expected_column)) in expected.iter().enumerate() {
-                assert_eq!(*expected_header, headers_types[i].0);
-                assert_eq!(
-                    result[i].to_flattened_array_u64((*headers_types[i].1).clone())?,
-                    *expected_column
-                )
-            }
-        } else {
-            panic!("Inconsistency with type checker");
-        }
         Ok(())
     }
 
     #[test]
     fn test_left_join() -> Result<()> {
-        {
-            let t0 = named_tuple_type(vec![
-                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
-                ("ID".to_owned(), array_type(vec![6], UINT64)),
-                ("Income".to_owned(), array_type(vec![6], UINT64)),
-            ]);
-            let t1 = named_tuple_type(vec![
-                (NULL_HEADER.to_owned(), array_type(vec![10], BIT)),
-                ("ID".to_owned(), array_type(vec![10], UINT64)),
-                ("Outcome".to_owned(), array_type(vec![10], UINT64)),
-            ]);
-            let set0 = Value::from_vector(vec![
-                Value::from_flattened_array(&[1, 1, 1, 1, 1, 1], BIT)?,
-                Value::from_flattened_array(&[5, 3, 0, 4, 1, 2], UINT64)?,
-                Value::from_flattened_array(&[500, 300, 0, 400, 100, 200], UINT64)?,
-            ]);
-            let set1 = Value::from_vector(vec![
-                Value::from_flattened_array(&[1, 1, 1, 1, 1, 1, 1, 1, 1, 1], BIT)?,
-                Value::from_flattened_array(&[4, 7, 8, 9, 10, 11, 12, 2, 3, 13], UINT64)?,
-                Value::from_flattened_array(&[40, 70, 80, 90, 100, 110, 120, 20, 30, 130], UINT64)?,
-            ]);
-            let headers = HashMap::from([("ID".to_owned(), "ID".to_owned())]);
-            let expected = vec![
-                (NULL_HEADER.to_owned(), vec![1, 1, 1, 1, 1, 1]),
-                ("ID".to_owned(), vec![5, 3, 0, 4, 1, 2]),
-                ("Income".to_owned(), vec![500, 300, 0, 400, 100, 200]),
-                ("Outcome".to_owned(), vec![0, 30, 0, 40, 0, 20]),
-            ];
-            left_join_helper(t0, t1, set0, set1, headers, expected)?;
-        }
-        {
-            let t0 = named_tuple_type(vec![
-                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
-                ("ID".to_owned(), array_type(vec![6], UINT64)),
-                ("Income1".to_owned(), array_type(vec![6], UINT64)),
-            ]);
-            let t1 = named_tuple_type(vec![
-                (NULL_HEADER.to_owned(), array_type(vec![10], BIT)),
-                ("ID".to_owned(), array_type(vec![10], UINT64)),
-                ("Income2".to_owned(), array_type(vec![10], UINT64)),
-            ]);
-            let set0 = Value::from_vector(vec![
-                Value::from_flattened_array(&[1, 1, 1, 1, 1, 1], BIT)?,
-                Value::from_flattened_array(&[5, 3, 0, 4, 1, 2], UINT64)?,
-                Value::from_flattened_array(&[50, 30, 0, 40, 10, 20], UINT64)?,
-            ]);
-            let set1 = Value::from_vector(vec![
-                Value::from_flattened_array(&[1, 1, 1, 1, 1, 1, 1, 1, 1, 1], BIT)?,
-                Value::from_flattened_array(&[4, 7, 8, 9, 10, 11, 12, 2, 3, 13], UINT64)?,
-                Value::from_flattened_array(&[40, 70, 80, 90, 100, 110, 120, 20, 30, 130], UINT64)?,
-            ]);
-            let headers = HashMap::from([
-                ("ID".to_owned(), "ID".to_owned()),
-                ("Income1".to_owned(), "Income2".to_owned()),
-            ]);
-            let expected = vec![
-                (NULL_HEADER.to_owned(), vec![1, 1, 1, 1, 1, 1]),
-                ("ID".to_owned(), vec![5, 3, 0, 4, 1, 2]),
-                ("Income1".to_owned(), vec![50, 30, 0, 40, 10, 20]),
-            ];
-            left_join_helper(t0, t1, set0, set1, headers, expected)?;
-        }
-        {
-            let t0 = named_tuple_type(vec![
-                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
-                ("ID".to_owned(), array_type(vec![6], UINT64)),
-                ("Income1".to_owned(), array_type(vec![6], UINT64)),
-                ("Outcome1".to_owned(), array_type(vec![6], UINT64)),
-            ]);
-            let t1 = named_tuple_type(vec![
-                (NULL_HEADER.to_owned(), array_type(vec![10], BIT)),
-                ("ID".to_owned(), array_type(vec![10], UINT64)),
-                ("Income2".to_owned(), array_type(vec![10], UINT64)),
-                ("Outcome2".to_owned(), array_type(vec![10], UINT64)),
-            ]);
-            let set0 = Value::from_vector(vec![
-                Value::from_flattened_array(&[1, 1, 1, 1, 1, 0], BIT)?,
-                Value::from_flattened_array(&[5, 3, 0, 4, 1, 2], UINT64)?,
-                Value::from_flattened_array(&[50, 30, 0, 40, 10, 20], UINT64)?,
-                Value::from_flattened_array(&[500, 300, 0, 400, 100, 200], UINT64)?,
-            ]);
-            let set1 = Value::from_vector(vec![
-                Value::from_flattened_array(&[1, 1, 1, 1, 1, 1, 1, 0, 1, 1], BIT)?,
-                Value::from_flattened_array(&[4, 7, 8, 9, 10, 11, 12, 2, 3, 13], UINT64)?,
-                Value::from_flattened_array(&[40, 70, 80, 90, 100, 110, 120, 20, 30, 130], UINT64)?,
-                Value::from_flattened_array(
-                    &[400, 700, 800, 900, 1000, 1100, 1200, 200, 300, 1300],
-                    UINT64,
-                )?,
-            ]);
-            let headers = HashMap::from([
-                ("ID".to_owned(), "ID".to_owned()),
-                ("Income1".to_owned(), "Income2".to_owned()),
-            ]);
-            let expected = vec![
-                (NULL_HEADER.to_owned(), vec![1, 1, 1, 1, 1, 0]),
-                ("ID".to_owned(), vec![5, 3, 0, 4, 1, 0]),
-                ("Income1".to_owned(), vec![50, 30, 0, 40, 10, 0]),
-                ("Outcome1".to_owned(), vec![500, 300, 0, 400, 100, 0]),
-                ("Outcome2".to_owned(), vec![0, 300, 0, 400, 0, 0]),
-            ];
-            left_join_helper(t0, t1, set0, set1, headers, expected)?;
-        }
-        {
-            let t0 = named_tuple_type(vec![
-                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
-                ("Income1".to_owned(), array_type(vec![6], UINT64)),
-                ("ID".to_owned(), array_type(vec![6], UINT64)),
-                ("Outcome1".to_owned(), array_type(vec![6], UINT64)),
-            ]);
-            let t1 = named_tuple_type(vec![
-                (NULL_HEADER.to_owned(), array_type(vec![10], BIT)),
-                ("ID".to_owned(), array_type(vec![10], UINT64)),
-                ("Income2".to_owned(), array_type(vec![10], UINT64)),
-                ("Outcome2".to_owned(), array_type(vec![10], UINT64)),
-            ]);
-            let set0 = Value::from_vector(vec![
-                Value::from_flattened_array(&[1, 0, 1, 0, 1, 1], BIT)?,
-                Value::from_flattened_array(&[5, 3, 0, 4, 1, 2], UINT64)?,
-                Value::from_flattened_array(&[50, 30, 0, 40, 10, 20], UINT64)?,
-                Value::from_flattened_array(&[500, 300, 0, 400, 100, 200], UINT64)?,
-            ]);
-            let set1 = Value::from_vector(vec![
-                Value::from_flattened_array(&[1, 1, 1, 1, 1, 1, 1, 0, 1, 1], BIT)?,
-                Value::from_flattened_array(&[4, 7, 8, 9, 10, 11, 12, 2, 3, 13], UINT64)?,
-                Value::from_flattened_array(&[40, 70, 80, 90, 100, 110, 120, 20, 30, 130], UINT64)?,
-                Value::from_flattened_array(
-                    &[400, 700, 800, 900, 1000, 1100, 1200, 200, 300, 1300],
-                    UINT64,
-                )?,
-            ]);
-            let headers = HashMap::from([
-                ("ID".to_owned(), "ID".to_owned()),
-                ("Income1".to_owned(), "Income2".to_owned()),
-            ]);
-            let expected = vec![
-                (NULL_HEADER.to_owned(), vec![1, 0, 1, 0, 1, 1]),
-                ("Income1".to_owned(), vec![5, 0, 0, 0, 1, 2]),
-                ("ID".to_owned(), vec![50, 0, 0, 0, 10, 20]),
-                ("Outcome1".to_owned(), vec![500, 0, 0, 0, 100, 200]),
-                ("Outcome2".to_owned(), vec![0, 0, 0, 0, 0, 0]),
-            ];
-            left_join_helper(t0, t1, set0, set1, headers, expected)?;
-        }
-        {
-            let t0 = named_tuple_type(vec![
-                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                ("ID".to_owned(), array_type(vec![1], UINT64)),
-                ("Income1".to_owned(), array_type(vec![1], UINT64)),
-                ("Outcome1".to_owned(), array_type(vec![1], UINT64)),
-            ]);
-            let t1 = named_tuple_type(vec![
-                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                ("ID".to_owned(), array_type(vec![1], UINT64)),
-                ("Income2".to_owned(), array_type(vec![1], UINT64)),
-                ("Outcome2".to_owned(), array_type(vec![1], UINT64)),
-            ]);
-            let set0 = Value::from_vector(vec![
-                Value::from_flattened_array(&[1], BIT)?,
-                Value::from_flattened_array(&[5], UINT64)?,
-                Value::from_flattened_array(&[50], UINT64)?,
-                Value::from_flattened_array(&[500], UINT64)?,
-            ]);
-            let set1 = Value::from_vector(vec![
-                Value::from_flattened_array(&[1], BIT)?,
-                Value::from_flattened_array(&[5], UINT64)?,
-                Value::from_flattened_array(&[50], UINT64)?,
-                Value::from_flattened_array(&[51], UINT64)?,
-            ]);
-            let headers = HashMap::from([
-                ("ID".to_owned(), "ID".to_owned()),
-                ("Income1".to_owned(), "Income2".to_owned()),
-            ]);
-            let expected = vec![
-                (NULL_HEADER.to_owned(), vec![1]),
-                ("ID".to_owned(), vec![5]),
-                ("Income1".to_owned(), vec![50]),
-                ("Outcome1".to_owned(), vec![500]),
-                ("Outcome2".to_owned(), vec![51]),
-            ];
-            left_join_helper(t0, t1, set0, set1, headers, expected)?;
-        }
-        {
-            let t0 = named_tuple_type(vec![
-                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                ("Income1".to_owned(), array_type(vec![1], UINT64)),
-                ("Outcome1".to_owned(), array_type(vec![1], UINT64)),
-                ("ID".to_owned(), array_type(vec![1], UINT64)),
-            ]);
-            let t1 = named_tuple_type(vec![
-                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                ("ID".to_owned(), array_type(vec![1], UINT64)),
-                ("Income2".to_owned(), array_type(vec![1], UINT64)),
-                ("Outcome2".to_owned(), array_type(vec![1], UINT64)),
-            ]);
-            let set0 = Value::from_vector(vec![
-                Value::from_flattened_array(&[1], BIT)?,
-                Value::from_flattened_array(&[50], UINT64)?,
-                Value::from_flattened_array(&[500], UINT64)?,
-                Value::from_flattened_array(&[5], UINT64)?,
-            ]);
-            let set1 = Value::from_vector(vec![
-                Value::from_flattened_array(&[1], BIT)?,
-                Value::from_flattened_array(&[5], UINT64)?,
-                Value::from_flattened_array(&[50], UINT64)?,
-                Value::from_flattened_array(&[51], UINT64)?,
-            ]);
-            let headers = HashMap::from([
-                ("ID".to_owned(), "ID".to_owned()),
-                ("Income1".to_owned(), "Income2".to_owned()),
-            ]);
-            let expected = vec![
-                (NULL_HEADER.to_owned(), vec![1]),
-                ("Income1".to_owned(), vec![50]),
-                ("Outcome1".to_owned(), vec![500]),
-                ("ID".to_owned(), vec![5]),
-                ("Outcome2".to_owned(), vec![51]),
-            ];
-            left_join_helper(t0, t1, set0, set1, headers, expected)?;
-        }
-        {
-            let t0 = named_tuple_type(vec![
-                (NULL_HEADER.to_owned(), array_type(vec![2], BIT)),
-                ("Income1".to_owned(), array_type(vec![2], UINT64)),
-                ("Outcome1".to_owned(), array_type(vec![2], UINT64)),
-                ("ID".to_owned(), array_type(vec![2], UINT64)),
-            ]);
-            let t1 = named_tuple_type(vec![
-                (NULL_HEADER.to_owned(), array_type(vec![2], BIT)),
-                ("ID".to_owned(), array_type(vec![2], UINT64)),
-                ("Income2".to_owned(), array_type(vec![2], UINT64)),
-                ("Outcome2".to_owned(), array_type(vec![2, 2], UINT64)),
-            ]);
-            let set0 = Value::from_vector(vec![
-                Value::from_flattened_array(&[1, 1], BIT)?,
-                Value::from_flattened_array(&[40, 50], UINT64)?,
-                Value::from_flattened_array(&[400, 500], UINT64)?,
-                Value::from_flattened_array(&[4, 5], UINT64)?,
-            ]);
-            let set1 = Value::from_vector(vec![
-                Value::from_flattened_array(&[1, 1], BIT)?,
-                Value::from_flattened_array(&[4, 3], UINT64)?,
-                Value::from_flattened_array(&[40, 30], UINT64)?,
-                Value::from_flattened_array(&[40, 41, 30, 31], UINT64)?,
-            ]);
-            let headers = HashMap::from([
-                ("ID".to_owned(), "ID".to_owned()),
-                ("Income1".to_owned(), "Income2".to_owned()),
-            ]);
-            let expected = vec![
-                (NULL_HEADER.to_owned(), vec![1, 1]),
-                ("Income1".to_owned(), vec![40, 50]),
-                ("Outcome1".to_owned(), vec![400, 500]),
-                ("ID".to_owned(), vec![4, 5]),
-                ("Outcome2".to_owned(), vec![40, 41, 0, 0]),
-            ];
-            left_join_helper(t0, t1, set0, set1, headers, expected)?;
-        }
+        let tests = vec![
+            join_info(
+                vec![
+                    column_info(NULL_HEADER, &[6], BIT, &[1, 1, 1, 1, 1, 1]),
+                    column_info("ID", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
+                    column_info("Income", &[6], UINT64, &[500, 300, 0, 400, 100, 200]),
+                ],
+                vec![
+                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
+                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                    column_info(
+                        "Outcome",
+                        &[10],
+                        UINT64,
+                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
+                    ),
+                ],
+                vec![("ID", "ID")],
+                expected_info(vec![
+                    (NULL_HEADER, &[1, 1, 1, 1, 1, 1]),
+                    ("ID", &[5, 3, 0, 4, 1, 2]),
+                    ("Income", &[500, 300, 0, 400, 100, 200]),
+                    ("Outcome", &[0, 30, 0, 40, 0, 20]),
+                ]),
+            ),
+            join_info(
+                vec![
+                    column_info(NULL_HEADER, &[6], BIT, &[1, 1, 1, 1, 1, 1]),
+                    column_info("ID", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
+                    column_info("Income1", &[6], UINT64, &[50, 30, 0, 40, 10, 20]),
+                ],
+                vec![
+                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
+                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                    column_info(
+                        "Income2",
+                        &[10],
+                        UINT64,
+                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
+                    ),
+                ],
+                vec![("ID", "ID"), ("Income1", "Income2")],
+                expected_info(vec![
+                    (NULL_HEADER, &[1, 1, 1, 1, 1, 1]),
+                    ("ID", &[5, 3, 0, 4, 1, 2]),
+                    ("Income1", &[50, 30, 0, 40, 10, 20]),
+                ]),
+            ),
+            join_info(
+                vec![
+                    column_info(NULL_HEADER, &[6], BIT, &[1, 1, 1, 1, 1, 0]),
+                    column_info("ID", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
+                    column_info("Income1", &[6], UINT64, &[50, 30, 0, 40, 10, 20]),
+                    column_info("Outcome1", &[6], UINT64, &[500, 300, 0, 400, 100, 200]),
+                ],
+                vec![
+                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
+                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                    column_info(
+                        "Income2",
+                        &[10],
+                        UINT64,
+                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
+                    ),
+                    column_info(
+                        "Outcome2",
+                        &[10],
+                        UINT64,
+                        &[400, 700, 800, 900, 1000, 1100, 1200, 200, 300, 1300],
+                    ),
+                ],
+                vec![("ID", "ID"), ("Income1", "Income2")],
+                expected_info(vec![
+                    (NULL_HEADER, &[1, 1, 1, 1, 1, 0]),
+                    ("ID", &[5, 3, 0, 4, 1, 0]),
+                    ("Income1", &[50, 30, 0, 40, 10, 0]),
+                    ("Outcome1", &[500, 300, 0, 400, 100, 0]),
+                    ("Outcome2", &[0, 300, 0, 400, 0, 0]),
+                ]),
+            ),
+            join_info(
+                vec![
+                    column_info(NULL_HEADER, &[6], BIT, &[1, 0, 1, 0, 1, 1]),
+                    column_info("Income1", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
+                    column_info("ID", &[6], UINT64, &[50, 30, 0, 40, 10, 20]),
+                    column_info("Outcome1", &[6], UINT64, &[500, 300, 0, 400, 100, 200]),
+                ],
+                vec![
+                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 0, 1, 1]),
+                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                    column_info(
+                        "Income2",
+                        &[10],
+                        UINT64,
+                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
+                    ),
+                    column_info(
+                        "Outcome2",
+                        &[10],
+                        UINT64,
+                        &[400, 700, 800, 900, 1000, 1100, 1200, 200, 300, 1300],
+                    ),
+                ],
+                vec![("ID", "ID"), ("Income1", "Income2")],
+                expected_info(vec![
+                    (NULL_HEADER, &[1, 0, 1, 0, 1, 1]),
+                    ("Income1", &[5, 0, 0, 0, 1, 2]),
+                    ("ID", &[50, 0, 0, 0, 10, 20]),
+                    ("Outcome1", &[500, 0, 0, 0, 100, 200]),
+                    ("Outcome2", &[0, 0, 0, 0, 0, 0]),
+                ]),
+            ),
+            join_info(
+                vec![
+                    column_info(NULL_HEADER, &[1], BIT, &[1]),
+                    column_info("ID", &[1], UINT64, &[5]),
+                    column_info("Income1", &[1], UINT64, &[50]),
+                    column_info("Outcome1", &[1], UINT64, &[500]),
+                ],
+                vec![
+                    column_info(NULL_HEADER, &[1], BIT, &[1]),
+                    column_info("ID", &[1], UINT64, &[5]),
+                    column_info("Income2", &[1], UINT64, &[50]),
+                    column_info("Outcome2", &[1], UINT64, &[51]),
+                ],
+                vec![("ID", "ID"), ("Income1", "Income2")],
+                expected_info(vec![
+                    (NULL_HEADER, &[1]),
+                    ("ID", &[5]),
+                    ("Income1", &[50]),
+                    ("Outcome1", &[500]),
+                    ("Outcome2", &[51]),
+                ]),
+            ),
+            join_info(
+                vec![
+                    column_info(NULL_HEADER, &[1], BIT, &[1]),
+                    column_info("Income1", &[1], UINT64, &[50]),
+                    column_info("Outcome1", &[1], UINT64, &[500]),
+                    column_info("ID", &[1], UINT64, &[5]),
+                ],
+                vec![
+                    column_info(NULL_HEADER, &[1], BIT, &[1]),
+                    column_info("ID", &[1], UINT64, &[5]),
+                    column_info("Income2", &[1], UINT64, &[50]),
+                    column_info("Outcome2", &[1], UINT64, &[51]),
+                ],
+                vec![("ID", "ID"), ("Income1", "Income2")],
+                expected_info(vec![
+                    (NULL_HEADER, &[1]),
+                    ("Income1", &[50]),
+                    ("Outcome1", &[500]),
+                    ("ID", &[5]),
+                    ("Outcome2", &[51]),
+                ]),
+            ),
+            join_info(
+                vec![
+                    column_info(NULL_HEADER, &[2], BIT, &[1, 1]),
+                    column_info("Income1", &[2], UINT64, &[40, 50]),
+                    column_info("Outcome1", &[2, 2], UINT64, &[400, 401, 500, 501]),
+                    column_info("ID", &[2], UINT64, &[4, 5]),
+                ],
+                vec![
+                    column_info(NULL_HEADER, &[2], BIT, &[1, 1]),
+                    column_info("ID", &[2], UINT64, &[5, 3]),
+                    column_info("Income2", &[2], UINT64, &[50, 30]),
+                    column_info("Outcome2", &[2, 2], UINT64, &[500, 501, 300, 301]),
+                ],
+                vec![("ID", "ID"), ("Income1", "Income2")],
+                expected_info(vec![
+                    (NULL_HEADER, &[1, 1]),
+                    ("Income1", &[40, 50]),
+                    ("Outcome1", &[400, 401, 500, 501]),
+                    ("ID", &[4, 5]),
+                    ("Outcome2", &[0, 0, 500, 501]),
+                ]),
+            ),
+        ];
+        join_helper(tests, JoinType::Left)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_union_join() -> Result<()> {
+        let tests = vec![
+            join_info(
+                vec![
+                    column_info(NULL_HEADER, &[6], BIT, &[1, 1, 1, 1, 1, 1]),
+                    column_info("ID", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
+                    column_info("Income", &[6], UINT64, &[500, 300, 0, 400, 100, 200]),
+                ],
+                vec![
+                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
+                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                    column_info(
+                        "Outcome",
+                        &[10],
+                        UINT64,
+                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
+                    ),
+                ],
+                vec![("ID", "ID")],
+                expected_info(vec![
+                    (
+                        NULL_HEADER,
+                        &[1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                    ),
+                    ("ID", &[5, 0, 0, 0, 1, 0, 4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                    (
+                        "Income",
+                        &[500, 0, 0, 0, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                    ),
+                    (
+                        "Outcome",
+                        &[0, 0, 0, 0, 0, 0, 40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
+                    ),
+                ]),
+            ),
+            join_info(
+                vec![
+                    column_info(NULL_HEADER, &[6], BIT, &[1, 1, 1, 1, 1, 1]),
+                    column_info("ID", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
+                    column_info("Income1", &[6], UINT64, &[50, 30, 0, 40, 10, 20]),
+                ],
+                vec![
+                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
+                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                    column_info(
+                        "Income2",
+                        &[10],
+                        UINT64,
+                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
+                    ),
+                ],
+                vec![("ID", "ID"), ("Income1", "Income2")],
+                expected_info(vec![
+                    (
+                        NULL_HEADER,
+                        &[1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                    ),
+                    ("ID", &[5, 0, 0, 0, 1, 0, 4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                    (
+                        "Income1",
+                        &[
+                            50, 0, 0, 0, 10, 0, 40, 70, 80, 90, 100, 110, 120, 20, 30, 130,
+                        ],
+                    ),
+                ]),
+            ),
+            join_info(
+                vec![
+                    column_info(NULL_HEADER, &[6], BIT, &[1, 1, 1, 1, 1, 0]),
+                    column_info("ID", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
+                    column_info("Income1", &[6], UINT64, &[50, 30, 0, 40, 10, 20]),
+                    column_info("Outcome1", &[6], UINT64, &[500, 300, 0, 400, 100, 200]),
+                ],
+                vec![
+                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
+                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                    column_info(
+                        "Income2",
+                        &[10],
+                        UINT64,
+                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
+                    ),
+                    column_info(
+                        "Outcome2",
+                        &[10],
+                        UINT64,
+                        &[400, 700, 800, 900, 1000, 1100, 1200, 200, 300, 1300],
+                    ),
+                ],
+                vec![("ID", "ID"), ("Income1", "Income2")],
+                expected_info(vec![
+                    (
+                        NULL_HEADER,
+                        &[1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                    ),
+                    ("ID", &[5, 0, 0, 0, 1, 0, 4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                    (
+                        "Income1",
+                        &[
+                            50, 0, 0, 0, 10, 0, 40, 70, 80, 90, 100, 110, 120, 20, 30, 130,
+                        ],
+                    ),
+                    (
+                        "Outcome1",
+                        &[500, 0, 0, 0, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                    ),
+                    (
+                        "Outcome2",
+                        &[
+                            0, 0, 0, 0, 0, 0, 400, 700, 800, 900, 1000, 1100, 1200, 200, 300, 1300,
+                        ],
+                    ),
+                ]),
+            ),
+            join_info(
+                vec![
+                    column_info(NULL_HEADER, &[6], BIT, &[1, 0, 1, 0, 1, 1]),
+                    column_info("Income1", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
+                    column_info("ID", &[6], UINT64, &[50, 30, 0, 40, 10, 20]),
+                    column_info("Outcome1", &[6], UINT64, &[500, 300, 0, 400, 100, 200]),
+                ],
+                vec![
+                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 0, 1, 1]),
+                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                    column_info(
+                        "Income2",
+                        &[10],
+                        UINT64,
+                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
+                    ),
+                    column_info(
+                        "Outcome2",
+                        &[10],
+                        UINT64,
+                        &[400, 700, 800, 900, 1000, 1100, 1200, 200, 300, 1300],
+                    ),
+                ],
+                vec![("ID", "ID"), ("Income1", "Income2")],
+                expected_info(vec![
+                    (
+                        NULL_HEADER,
+                        &[1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1],
+                    ),
+                    (
+                        "Income1",
+                        &[5, 0, 0, 0, 1, 2, 40, 70, 80, 90, 100, 110, 120, 0, 30, 130],
+                    ),
+                    (
+                        "ID",
+                        &[50, 0, 0, 0, 10, 20, 4, 7, 8, 9, 10, 11, 12, 0, 3, 13],
+                    ),
+                    (
+                        "Outcome1",
+                        &[500, 0, 0, 0, 100, 200, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                    ),
+                    (
+                        "Outcome2",
+                        &[
+                            0, 0, 0, 0, 0, 0, 400, 700, 800, 900, 1000, 1100, 1200, 0, 300, 1300,
+                        ],
+                    ),
+                ]),
+            ),
+            join_info(
+                vec![
+                    column_info(NULL_HEADER, &[1], BIT, &[1]),
+                    column_info("ID", &[1], UINT64, &[5]),
+                    column_info("Income1", &[1], UINT64, &[50]),
+                    column_info("Outcome1", &[1], UINT64, &[500]),
+                ],
+                vec![
+                    column_info(NULL_HEADER, &[1], BIT, &[1]),
+                    column_info("ID", &[1], UINT64, &[5]),
+                    column_info("Income2", &[1], UINT64, &[50]),
+                    column_info("Outcome2", &[1], UINT64, &[51]),
+                ],
+                vec![("ID", "ID"), ("Income1", "Income2")],
+                expected_info(vec![
+                    (NULL_HEADER, &[0, 1]),
+                    ("ID", &[0, 5]),
+                    ("Income1", &[0, 50]),
+                    ("Outcome1", &[0, 0]),
+                    ("Outcome2", &[0, 51]),
+                ]),
+            ),
+            join_info(
+                vec![
+                    column_info(NULL_HEADER, &[1], BIT, &[1]),
+                    column_info("Income1", &[1], UINT64, &[50]),
+                    column_info("Outcome1", &[1], UINT64, &[500]),
+                    column_info("ID", &[1], UINT64, &[5]),
+                ],
+                vec![
+                    column_info(NULL_HEADER, &[1], BIT, &[1]),
+                    column_info("ID", &[1], UINT64, &[5]),
+                    column_info("Income2", &[1], UINT64, &[50]),
+                    column_info("Outcome2", &[1], UINT64, &[51]),
+                ],
+                vec![("ID", "ID"), ("Income1", "Income2")],
+                expected_info(vec![
+                    (NULL_HEADER, &[0, 1]),
+                    ("Income1", &[0, 50]),
+                    ("Outcome1", &[0, 0]),
+                    ("ID", &[0, 5]),
+                    ("Outcome2", &[0, 51]),
+                ]),
+            ),
+            join_info(
+                vec![
+                    column_info(NULL_HEADER, &[2], BIT, &[1, 1]),
+                    column_info("Income1", &[2], UINT64, &[40, 50]),
+                    column_info("Outcome1", &[2], UINT64, &[400, 500]),
+                    column_info("ID", &[2], UINT64, &[4, 5]),
+                ],
+                vec![
+                    column_info(NULL_HEADER, &[2], BIT, &[1, 1]),
+                    column_info("ID", &[2], UINT64, &[4, 3]),
+                    column_info("Income2", &[2], UINT64, &[40, 30]),
+                    column_info("Outcome2", &[2, 2], UINT64, &[40, 41, 30, 31]),
+                ],
+                vec![("ID", "ID"), ("Income1", "Income2")],
+                expected_info(vec![
+                    (NULL_HEADER, &[0, 1, 1, 1]),
+                    ("Income1", &[0, 50, 40, 30]),
+                    ("Outcome1", &[0, 500, 0, 0]),
+                    ("ID", &[0, 5, 4, 3]),
+                    ("Outcome2", &[0, 0, 0, 0, 40, 41, 30, 31]),
+                ]),
+            ),
+            join_info(
+                vec![
+                    column_info(NULL_HEADER, &[2], BIT, &[1, 1]),
+                    column_info("Income1", &[2], UINT64, &[40, 50]),
+                    column_info("Outcome1", &[2], UINT64, &[400, 500]),
+                    column_info("ID", &[2], UINT64, &[4, 5]),
+                ],
+                vec![
+                    column_info(NULL_HEADER, &[2], BIT, &[1, 1]),
+                    column_info("ID", &[2], UINT64, &[6, 7]),
+                    column_info("Income2", &[2], UINT64, &[60, 70]),
+                    column_info("Outcome2", &[2, 2], UINT64, &[60, 61, 70, 71]),
+                ],
+                vec![("ID", "ID"), ("Income1", "Income2")],
+                expected_info(vec![
+                    (NULL_HEADER, &[1, 1, 1, 1]),
+                    ("Income1", &[40, 50, 60, 70]),
+                    ("Outcome1", &[400, 500, 0, 0]),
+                    ("ID", &[4, 5, 6, 7]),
+                    ("Outcome2", &[0, 0, 0, 0, 60, 61, 70, 71]),
+                ]),
+            ),
+        ];
+        join_helper(tests, JoinType::Union)?;
 
         Ok(())
     }

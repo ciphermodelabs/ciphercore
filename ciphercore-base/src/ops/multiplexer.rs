@@ -59,7 +59,9 @@ impl CustomOperationBody for Mux {
             return Err(runtime_error!("Flag for Mux must consist of bits"));
         }
         if arguments_types[1].get_scalar_type() != arguments_types[2].get_scalar_type() {
-            return Err(runtime_error!("Choices for Mux must have the same scalar type"));
+            return Err(runtime_error!(
+                "Choices for Mux must have the same scalar type"
+            ));
         }
 
         let g = context.create_graph()?;
