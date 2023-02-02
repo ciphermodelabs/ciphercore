@@ -4,6 +4,7 @@ use log::error;
 #[cfg(feature = "nightly-features")]
 use log::info;
 use std::fmt::Display;
+use std::process;
 use std::result::Result;
 
 /// Executes CipherCore code such that all the internal errors are properly formatted and logged.
@@ -22,6 +23,7 @@ where
             error!("CipherCore Error: {}", e);
             #[cfg(feature = "nightly-features")]
             info!("error backtrace: \n{}", e.get_body().backtrace);
+            process::exit(1);
         }
     });
     process_result(result);
@@ -45,5 +47,6 @@ pub fn process_result<R>(result: std::thread::Result<R>) {
             Some(panic_msg) => error!("panic: {}", panic_msg),
             None => error!("panic of unknown type"),
         }
+        process::exit(1);
     }
 }
