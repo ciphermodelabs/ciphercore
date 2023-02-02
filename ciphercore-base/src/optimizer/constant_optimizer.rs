@@ -128,20 +128,17 @@ mod tests {
     use crate::evaluators::simple_evaluator::SimpleEvaluator;
     use crate::graphs::contexts_deep_equal;
     use crate::graphs::create_context;
+    use crate::graphs::util::simple_context;
 
     #[test]
     fn test_no_duplicates() {
         || -> Result<()> {
-            let c = create_context()?;
-            let g = c.create_graph()?;
-            let i1 = g.input(scalar_type(UINT64))?;
-            let i2 = g.input(scalar_type(UINT64))?;
-            let n = i1.add(i2)?;
-            let o = n.add(g.constant(scalar_type(UINT64), Value::from_scalar(1, UINT64)?)?)?;
-            o.set_as_output()?;
-            g.finalize()?;
-            g.set_as_main()?;
-            c.finalize()?;
+            let c = simple_context(|g| {
+                let i1 = g.input(scalar_type(UINT64))?;
+                let i2 = g.input(scalar_type(UINT64))?;
+                let n = i1.add(i2)?;
+                n.add(g.constant(scalar_type(UINT64), Value::from_scalar(1, UINT64)?)?)
+            })?;
 
             let mut evaluator = SimpleEvaluator::new(None)?;
             evaluator.preprocess(c.clone())?;
@@ -161,18 +158,14 @@ mod tests {
     #[test]
     fn test_random_is_not_removed() {
         || -> Result<()> {
-            let c = create_context()?;
-            let g = c.create_graph()?;
-            let i1 = g.input(scalar_type(UINT64))?;
-            let i2 = g.input(scalar_type(UINT64))?;
-            let n = i1.add(i2)?;
-            let r = g.random(scalar_type(UINT64))?;
-            let o1 = n.add(g.constant(scalar_type(UINT64), Value::from_scalar(1, UINT64)?)?)?;
-            let o = o1.add(r)?;
-            o.set_as_output()?;
-            g.finalize()?;
-            g.set_as_main()?;
-            c.finalize()?;
+            let c = simple_context(|g| {
+                let i1 = g.input(scalar_type(UINT64))?;
+                let i2 = g.input(scalar_type(UINT64))?;
+                let n = i1.add(i2)?;
+                let r = g.random(scalar_type(UINT64))?;
+                let o1 = n.add(g.constant(scalar_type(UINT64), Value::from_scalar(1, UINT64)?)?)?;
+                o1.add(r)
+            })?;
 
             let mut evaluator = SimpleEvaluator::new(None)?;
             evaluator.preprocess(c.clone())?;
@@ -192,22 +185,20 @@ mod tests {
     #[test]
     fn test_constants_simple_deduplication() {
         || -> Result<()> {
-            let c = create_context()?;
-            let g = c.create_graph()?;
-            let i = g.input(scalar_type(UINT64))?;
-            let const1 = g.constant(scalar_type(UINT64), Value::from_scalar(1, UINT64)?)?;
-            const1.set_name("First constant 1")?;
-            let n1 = i.add(const1)?;
-            let const2 = g.constant(scalar_type(UINT64), Value::from_scalar(1, UINT64)?)?;
-            const2.set_name("Second constant 1")?;
-            let n2 = n1.add(const2)?;
-            let n3 = n2.add(g.constant(scalar_type(UINT64), Value::from_scalar(1, UINT64)?)?)?;
-            let n4 = n3.add(g.constant(scalar_type(UINT64), Value::from_scalar(2, UINT64)?)?)?;
-            let o = n4.add(g.constant(scalar_type(UINT64), Value::from_scalar(2, UINT64)?)?)?;
-            o.set_as_output()?;
-            g.finalize()?;
-            g.set_as_main()?;
-            c.finalize()?;
+            let c = simple_context(|g| {
+                let i = g.input(scalar_type(UINT64))?;
+                let const1 = g.constant(scalar_type(UINT64), Value::from_scalar(1, UINT64)?)?;
+                const1.set_name("First constant 1")?;
+                let n1 = i.add(const1)?;
+                let const2 = g.constant(scalar_type(UINT64), Value::from_scalar(1, UINT64)?)?;
+                const2.set_name("Second constant 1")?;
+                let n2 = n1.add(const2)?;
+                let n3 =
+                    n2.add(g.constant(scalar_type(UINT64), Value::from_scalar(1, UINT64)?)?)?;
+                let n4 =
+                    n3.add(g.constant(scalar_type(UINT64), Value::from_scalar(2, UINT64)?)?)?;
+                n4.add(g.constant(scalar_type(UINT64), Value::from_scalar(2, UINT64)?)?)
+            })?;
 
             let mut evaluator = SimpleEvaluator::new(None)?;
             evaluator.preprocess(c.clone())?;
@@ -250,21 +241,17 @@ mod tests {
     #[test]
     fn test_constants_simple_arithmetic() {
         || -> Result<()> {
-            let c = create_context()?;
-            let g = c.create_graph()?;
-            let i = g.input(scalar_type(UINT64))?;
-            let const1 = g.constant(scalar_type(UINT64), Value::from_scalar(4, UINT64)?)?;
-            const1.set_name("First constant")?;
-            let n1 = i.add(const1)?;
-            let const2 = g.constant(scalar_type(UINT64), Value::from_scalar(2, UINT64)?)?;
-            let const3 = g.constant(scalar_type(UINT64), Value::from_scalar(2, UINT64)?)?;
-            let const4 = const2.add(const3)?;
-            const4.set_name("Fourth constant")?;
-            let o = n1.add(const4)?;
-            o.set_as_output()?;
-            g.finalize()?;
-            g.set_as_main()?;
-            c.finalize()?;
+            let c = simple_context(|g| {
+                let i = g.input(scalar_type(UINT64))?;
+                let const1 = g.constant(scalar_type(UINT64), Value::from_scalar(4, UINT64)?)?;
+                const1.set_name("First constant")?;
+                let n1 = i.add(const1)?;
+                let const2 = g.constant(scalar_type(UINT64), Value::from_scalar(2, UINT64)?)?;
+                let const3 = g.constant(scalar_type(UINT64), Value::from_scalar(2, UINT64)?)?;
+                let const4 = const2.add(const3)?;
+                const4.set_name("Fourth constant")?;
+                n1.add(const4)
+            })?;
 
             let mut evaluator = SimpleEvaluator::new(None)?;
             evaluator.preprocess(c.clone())?;
@@ -295,21 +282,17 @@ mod tests {
         }()
         .unwrap();
         || -> Result<()> {
-            let c = create_context()?;
-            let g = c.create_graph()?;
-            let i = g.input(scalar_type(UINT64))?;
-            let const1 = g.constant(scalar_type(UINT64), Value::from_scalar(2, UINT64)?)?;
-            let const2 = g.constant(scalar_type(UINT64), Value::from_scalar(2, UINT64)?)?;
-            let const3 = const1.add(const2)?;
-            const3.set_name("First constant")?;
-            let n = i.add(const3)?;
-            let const4 = g.constant(scalar_type(UINT64), Value::from_scalar(4, UINT64)?)?;
-            const4.set_name("Fourth constant")?;
-            let o = n.add(const4)?;
-            o.set_as_output()?;
-            g.finalize()?;
-            g.set_as_main()?;
-            c.finalize()?;
+            let c = simple_context(|g| {
+                let i = g.input(scalar_type(UINT64))?;
+                let const1 = g.constant(scalar_type(UINT64), Value::from_scalar(2, UINT64)?)?;
+                let const2 = g.constant(scalar_type(UINT64), Value::from_scalar(2, UINT64)?)?;
+                let const3 = const1.add(const2)?;
+                const3.set_name("First constant")?;
+                let n = i.add(const3)?;
+                let const4 = g.constant(scalar_type(UINT64), Value::from_scalar(4, UINT64)?)?;
+                const4.set_name("Fourth constant")?;
+                n.add(const4)
+            })?;
 
             let mut evaluator = SimpleEvaluator::new(None)?;
             evaluator.preprocess(c.clone())?;

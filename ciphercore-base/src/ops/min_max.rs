@@ -167,6 +167,7 @@ mod tests {
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
     use crate::graphs::create_context;
+    use crate::graphs::util::simple_context;
 
     use super::*;
 
@@ -185,28 +186,24 @@ mod tests {
                 (u64::MAX - 761522, u64::MAX - 761523),
             ];
             let context = || -> Result<Context> {
-                let c = create_context()?;
-                let g = c.create_graph()?;
-                let i1 = g.input(scalar_type(UINT64))?.a2b()?;
-                let i2 = g.input(scalar_type(UINT64))?.a2b()?;
-                let o = g.create_tuple(vec![
-                    g.custom_op(
-                        CustomOperation::new(Min {
-                            signed_comparison: false,
-                        }),
-                        vec![i1.clone(), i2.clone()],
-                    )?,
-                    g.custom_op(
-                        CustomOperation::new(Max {
-                            signed_comparison: true,
-                        }),
-                        vec![i1.clone(), i2.clone()],
-                    )?,
-                ])?;
-                g.set_output_node(o)?;
-                g.finalize()?;
-                c.set_main_graph(g)?;
-                c.finalize()?;
+                let c = simple_context(|g| {
+                    let i1 = g.input(scalar_type(UINT64))?.a2b()?;
+                    let i2 = g.input(scalar_type(UINT64))?.a2b()?;
+                    g.create_tuple(vec![
+                        g.custom_op(
+                            CustomOperation::new(Min {
+                                signed_comparison: false,
+                            }),
+                            vec![i1.clone(), i2.clone()],
+                        )?,
+                        g.custom_op(
+                            CustomOperation::new(Max {
+                                signed_comparison: true,
+                            }),
+                            vec![i1.clone(), i2.clone()],
+                        )?,
+                    ])
+                })?;
                 let mapped_c = run_instantiation_pass(c)?;
                 Ok(mapped_c.get_context())
             }()?;
@@ -260,28 +257,24 @@ mod tests {
     fn test_vector() {
         || -> Result<()> {
             let context = || -> Result<Context> {
-                let c = create_context()?;
-                let g = c.create_graph()?;
-                let i1 = g.input(array_type(vec![1, 3, 64], BIT))?;
-                let i2 = g.input(array_type(vec![3, 1, 64], BIT))?;
-                let o = g.create_tuple(vec![
-                    g.custom_op(
-                        CustomOperation::new(Min {
-                            signed_comparison: false,
-                        }),
-                        vec![i1.clone(), i2.clone()],
-                    )?,
-                    g.custom_op(
-                        CustomOperation::new(Max {
-                            signed_comparison: false,
-                        }),
-                        vec![i1.clone(), i2.clone()],
-                    )?,
-                ])?;
-                g.set_output_node(o)?;
-                g.finalize()?;
-                c.set_main_graph(g)?;
-                c.finalize()?;
+                let c = simple_context(|g| {
+                    let i1 = g.input(array_type(vec![1, 3, 64], BIT))?;
+                    let i2 = g.input(array_type(vec![3, 1, 64], BIT))?;
+                    g.create_tuple(vec![
+                        g.custom_op(
+                            CustomOperation::new(Min {
+                                signed_comparison: false,
+                            }),
+                            vec![i1.clone(), i2.clone()],
+                        )?,
+                        g.custom_op(
+                            CustomOperation::new(Max {
+                                signed_comparison: false,
+                            }),
+                            vec![i1.clone(), i2.clone()],
+                        )?,
+                    ])
+                })?;
                 let mapped_c = run_instantiation_pass(c)?;
                 Ok(mapped_c.get_context())
             }()?;

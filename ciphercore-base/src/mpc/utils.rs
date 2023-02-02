@@ -230,7 +230,7 @@ mod tests {
         custom_ops::{run_instantiation_pass, CustomOperation},
         data_types::{INT32, UINT32},
         evaluators::random_evaluate,
-        graphs::create_context,
+        graphs::util::simple_context,
         inline::inline_ops::{inline_operations, InlineConfig, InlineMode},
         mpc::{
             mpc_compiler::IOStatus,
@@ -269,43 +269,36 @@ mod tests {
     fn test_oblivious_transfer() {
         // test correct inputs
         let roles_helper = |sender_id: u64, receiver_id: u64| -> Result<()> {
-            let c = create_context()?;
-
-            let input_type = array_type(vec![2], INT32);
-            let bit_type = array_type(vec![2], BIT);
-
-            let g = c.create_graph()?;
-
-            let i0 = g.input(input_type.clone())?;
-            let i1 = g.input(input_type.clone())?;
-
-            // Generate a selecting bit known by parties 0 and 2
             let helper_id = PARTIES as u64 - sender_id - receiver_id;
-            let b = g
-                .input(bit_type.clone())?
-                .nop()?
-                .add_annotation(NodeAnnotation::Send(receiver_id, helper_id))?;
+            let c = simple_context(|g| {
+                let input_type = array_type(vec![2], INT32);
+                let bit_type = array_type(vec![2], BIT);
 
-            // Generate a PRF key known to the sender and helper
-            let key_t = array_type(vec![KEY_LENGTH], BIT);
-            let key = g
-                .random(key_t.clone())?
-                .nop()?
-                .add_annotation(NodeAnnotation::Send(helper_id, sender_id))?;
+                let i0 = g.input(input_type.clone())?;
+                let i1 = g.input(input_type.clone())?;
 
-            // Run the OT protocol with party 0 being a receiver and party 1 being a sender.
-            let o = g.custom_op(
-                CustomOperation::new(ObliviousTransfer {
-                    sender_id,
-                    receiver_id,
-                }),
-                vec![i0, i1, b, key],
-            )?;
-            o.set_as_output()?;
+                // Generate a selecting bit known by parties 0 and 2
+                let b = g
+                    .input(bit_type.clone())?
+                    .nop()?
+                    .add_annotation(NodeAnnotation::Send(receiver_id, helper_id))?;
 
-            g.finalize()?;
-            g.set_as_main()?;
-            c.finalize()?;
+                // Generate a PRF key known to the sender and helper
+                let key_t = array_type(vec![KEY_LENGTH], BIT);
+                let key = g
+                    .random(key_t.clone())?
+                    .nop()?
+                    .add_annotation(NodeAnnotation::Send(helper_id, sender_id))?;
+
+                // Run the OT protocol with party 0 being a receiver and party 1 being a sender.
+                g.custom_op(
+                    CustomOperation::new(ObliviousTransfer {
+                        sender_id,
+                        receiver_id,
+                    }),
+                    vec![i0, i1, b, key],
+                )
+            })?;
 
             let instantiated_c = run_instantiation_pass(c)?.context;
             let inlined_c = inline_operations(

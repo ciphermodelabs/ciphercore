@@ -493,7 +493,7 @@ mod tests {
     use crate::data_types::{array_type, scalar_type, ScalarType, INT64, UINT64};
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
-    use crate::graphs::create_context;
+    use crate::graphs::util::simple_context;
     use crate::inline::inline_ops::{InlineConfig, InlineMode};
     use crate::mpc::mpc_compiler::{prepare_for_mpc_evaluation, IOStatus, PARTIES};
 
@@ -504,14 +504,10 @@ mod tests {
         scale: u64,
         inline_config: InlineConfig,
     ) -> Result<Context> {
-        let c = create_context()?;
-        let g = c.create_graph()?;
-        let i = g.input(t)?;
-        let o = g.truncate(i, scale)?;
-        g.set_output_node(o)?;
-        g.finalize()?;
-        c.set_main_graph(g)?;
-        c.finalize()?;
+        let c = simple_context(|g| {
+            let i = g.input(t)?;
+            g.truncate(i, scale)
+        })?;
 
         prepare_for_mpc_evaluation(c, vec![vec![party_id]], vec![output_parties], inline_config)
     }

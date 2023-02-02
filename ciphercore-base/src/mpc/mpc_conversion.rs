@@ -4,8 +4,9 @@ use crate::custom_ops::{
 use crate::data_types::{array_type, scalar_type, tuple_type, ScalarType, Type, BIT};
 use crate::data_values::Value;
 use crate::errors::Result;
+use crate::graphs::util::simple_context;
 use crate::graphs::SliceElement::{Ellipsis, SingleIndex};
-use crate::graphs::{create_context, Context, Graph, Node, NodeAnnotation};
+use crate::graphs::{Context, Graph, Node, NodeAnnotation};
 use crate::inline::inline_ops::{
     inline_operations, DepthOptimizationLevel, InlineConfig, InlineMode,
 };
@@ -346,17 +347,11 @@ fn get_left_shift_graph(context: Context, bits_t: Type) -> Result<Graph> {
 
 fn get_binary_adder_graph(context: Context, bits_t: Type) -> Result<Graph> {
     // Binary adder
-    let adder_context = create_context()?;
-    let adder_g = adder_context.create_graph()?;
-    {
-        let input1 = adder_g.input(bits_t.clone())?;
-        let input2 = adder_g.input(bits_t)?;
-        let o = adder_g.custom_op(CustomOperation::new(BinaryAdd {}), vec![input1, input2])?;
-        o.set_as_output()?;
-        adder_g.finalize()?;
-    }
-    adder_context.set_main_graph(adder_g)?;
-    adder_context.finalize()?;
+    let adder_context = simple_context(|g| {
+        let input1 = g.input(bits_t.clone())?;
+        let input2 = g.input(bits_t)?;
+        g.custom_op(CustomOperation::new(BinaryAdd {}), vec![input1, input2])
+    })?;
     let instantiated_adder_context = run_instantiation_pass(adder_context)?.get_context();
     let inlined_adder_context = inline_operations(
         instantiated_adder_context,
@@ -424,7 +419,7 @@ mod tests {
     use crate::data_types::{array_type, ScalarType, INT32, UINT32};
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
-    use crate::graphs::{create_context, Operation};
+    use crate::graphs::Operation;
     use crate::inline::inline_ops::{InlineConfig, InlineMode};
     use crate::mpc::mpc_compiler::{prepare_for_mpc_evaluation, IOStatus};
     use crate::type_inference::a2b_type_inference;
@@ -436,19 +431,15 @@ mod tests {
         t: Type,
         inline_config: InlineConfig,
     ) -> Result<Context> {
-        let c = create_context()?;
-        let g = c.create_graph()?;
         let input_t = if op == Operation::A2B {
             t.clone()
         } else {
             a2b_type_inference(t.clone())?
         };
-        let i = g.input(input_t)?;
-        let o = g.add_node(vec![i], vec![], op)?;
-        g.set_output_node(o)?;
-        g.finalize()?;
-        c.set_main_graph(g)?;
-        c.finalize()?;
+        let c = simple_context(|g| {
+            let i = g.input(input_t)?;
+            g.add_node(vec![i], vec![], op)
+        })?;
 
         prepare_for_mpc_evaluation(c, vec![vec![party_id]], vec![output_parties], inline_config)
     }

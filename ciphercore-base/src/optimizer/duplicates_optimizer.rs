@@ -116,20 +116,17 @@ mod tests {
     use crate::data_values::Value;
     use crate::graphs::contexts_deep_equal;
     use crate::graphs::create_context;
+    use crate::graphs::util::simple_context;
 
     #[test]
     fn test_no_dups() {
         || -> Result<()> {
-            let c = create_context()?;
-            let g = c.create_graph()?;
-            let i1 = g.input(scalar_type(UINT64))?;
-            let i2 = g.input(scalar_type(UINT64))?;
-            let n = i1.add(i2)?;
-            let o = n.add(g.constant(scalar_type(UINT64), Value::from_scalar(1, UINT64)?)?)?;
-            o.set_as_output()?;
-            g.finalize()?;
-            g.set_as_main()?;
-            c.finalize()?;
+            let c = simple_context(|g| {
+                let i1 = g.input(scalar_type(UINT64))?;
+                let i2 = g.input(scalar_type(UINT64))?;
+                let n = i1.add(i2)?;
+                n.add(g.constant(scalar_type(UINT64), Value::from_scalar(1, UINT64)?)?)
+            })?;
 
             let new_c = create_context()?;
             let new_g = new_c.create_graph()?;
@@ -146,21 +143,17 @@ mod tests {
     #[test]
     fn test_some_dups() {
         || -> Result<()> {
-            let c = create_context()?;
-            let g = c.create_graph()?;
-            let i1 = g.input(scalar_type(UINT64))?;
-            let i2 = g.input(scalar_type(UINT64))?;
-            let n1 = i1.add(i2.clone())?;
-            n1.set_name("node1")?;
-            let n2 = i1.add(i2)?;
-            n2.set_name("node2")?;
-            let o1 = n1.add(n2.clone())?;
-            let o2 = n2.add(n1)?;
-            let o = o1.add(o2)?;
-            o.set_as_output()?;
-            g.finalize()?;
-            g.set_as_main()?;
-            c.finalize()?;
+            let c = simple_context(|g| {
+                let i1 = g.input(scalar_type(UINT64))?;
+                let i2 = g.input(scalar_type(UINT64))?;
+                let n1 = i1.add(i2.clone())?;
+                n1.set_name("node1")?;
+                let n2 = i1.add(i2)?;
+                n2.set_name("node2")?;
+                let o1 = n1.add(n2.clone())?;
+                let o2 = n2.add(n1)?;
+                o1.add(o2)
+            })?;
 
             let new_c = create_context()?;
             let new_g = new_c.create_graph()?;

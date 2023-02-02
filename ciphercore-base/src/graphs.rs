@@ -4136,6 +4136,46 @@ impl PyBindingSliceElement {
     }
 }
 
+pub mod util {
+    use super::{create_context, Context, Graph, Node};
+    use crate::errors::Result;
+
+    /// Creates a computation context with a single graph within it.
+    ///
+    /// The graph is passed to the provided `build_graph_fn` function to
+    /// specify the computation. The node returned by the function is marked
+    /// as output.
+    ///
+    /// # Returns
+    ///
+    /// New computation context
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::util::simple_context;
+    /// # use ciphercore_base::data_types::{scalar_type, INT32};
+    /// let c = simple_context(|g| {
+    ///     let a = g.input(scalar_type(INT32))?;
+    ///     let b = g.input(scalar_type(INT32))?;
+    ///     g.add(a, b)
+    /// }).unwrap();
+    /// ```
+    pub fn simple_context<F>(build_graph_fn: F) -> Result<Context>
+    where
+        F: FnOnce(&Graph) -> Result<Node>,
+    {
+        let c = create_context()?;
+        let g = c.create_graph()?;
+        let out = build_graph_fn(&g)?;
+        out.set_as_output()?;
+        g.finalize()?;
+        g.set_as_main()?;
+        c.finalize()?;
+        Ok(c)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

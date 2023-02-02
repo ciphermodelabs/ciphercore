@@ -332,7 +332,7 @@ mod tests {
     use crate::custom_ops::CustomOperation;
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
-    use crate::graphs::create_context;
+    use crate::graphs::util::simple_context;
     use crate::random::entropy_test;
 
     fn helper_with_reference(input: Vec<u8>, expected: Vec<u8>) -> Result<()> {
@@ -341,22 +341,18 @@ mod tests {
 
         let input_shape = vec![2, 2, input_size];
 
-        let c = create_context()?;
-        let g = c.create_graph()?;
-        let i = g.input(array_type(input_shape, BIT))?;
-        let key = g.input(array_type(vec![key_size], BIT))?;
-        let o = g.custom_op(
-            CustomOperation::new(LowMC {
-                s_boxes_per_round: 10,
-                rounds: 20,
-                block_size: LowMCBlockSize::SIZE128,
-            }),
-            vec![i, key],
-        )?;
-        o.set_as_output()?;
-        g.finalize()?;
-        g.set_as_main()?;
-        c.finalize()?;
+        let c = simple_context(|g| {
+            let i = g.input(array_type(input_shape, BIT))?;
+            let key = g.input(array_type(vec![key_size], BIT))?;
+            g.custom_op(
+                CustomOperation::new(LowMC {
+                    s_boxes_per_round: 10,
+                    rounds: 20,
+                    block_size: LowMCBlockSize::SIZE128,
+                }),
+                vec![i, key],
+            )
+        })?;
         let mapped_c = run_instantiation_pass(c)?;
 
         let key_value = Value::from_bytes(
@@ -405,22 +401,18 @@ mod tests {
             let input_shape = vec![16, 16, input_size];
             let input_bytes_len = input_shape.iter().product::<u64>() >> 3;
 
-            let c = create_context()?;
-            let g = c.create_graph()?;
-            let i = g.input(array_type(input_shape.clone(), BIT))?;
-            let key = g.input(array_type(vec![key_size], BIT))?;
-            let o = g.custom_op(
-                CustomOperation::new(LowMC {
-                    s_boxes_per_round: 26,
-                    rounds: 4,
-                    block_size: LowMCBlockSize::SIZE80,
-                }),
-                vec![i, key],
-            )?;
-            o.set_as_output()?;
-            g.finalize()?;
-            g.set_as_main()?;
-            c.finalize()?;
+            let c = simple_context(|g| {
+                let i = g.input(array_type(input_shape.clone(), BIT))?;
+                let key = g.input(array_type(vec![key_size], BIT))?;
+                g.custom_op(
+                    CustomOperation::new(LowMC {
+                        s_boxes_per_round: 26,
+                        rounds: 4,
+                        block_size: LowMCBlockSize::SIZE80,
+                    }),
+                    vec![i, key],
+                )
+            })?;
             let mapped_c = run_instantiation_pass(c)?;
 
             let key_value = Value::from_bytes(

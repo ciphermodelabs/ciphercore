@@ -1309,7 +1309,7 @@ mod tests {
             INT32, UINT32, UINT64, UINT8,
         },
         evaluators::{evaluate_simple_evaluator, random_evaluate},
-        graphs::{create_context, JoinType},
+        graphs::{create_context, util::simple_context, JoinType},
         random::chi_statistics,
         type_inference::NULL_HEADER,
         typed_value_operations::{FromVectorMode, TypedValueArrayOperations, TypedValueOperations},
@@ -1320,18 +1320,14 @@ mod tests {
     #[test]
     fn test_prf() {
         let helper = |iv: u64, t: Type| -> Result<()> {
-            let c = create_context()?;
-            let g = c.create_graph()?;
-            let i1 = g.random(array_type(vec![128], BIT))?;
-            let i2 = g.random(array_type(vec![128], BIT))?;
-            let p1 = g.prf(i1.clone(), iv, t.clone())?;
-            let p2 = g.prf(i2, iv, t.clone())?;
-            let p3 = g.prf(i1, iv, t.clone())?;
-            let o = g.create_vector(t.clone(), vec![p1, p2, p3])?;
-            g.set_output_node(o)?;
-            g.finalize()?;
-            c.set_main_graph(g)?;
-            c.finalize()?;
+            let c = simple_context(|g| {
+                let i1 = g.random(array_type(vec![128], BIT))?;
+                let i2 = g.random(array_type(vec![128], BIT))?;
+                let p1 = g.prf(i1.clone(), iv, t.clone())?;
+                let p2 = g.prf(i2, iv, t.clone())?;
+                let p3 = g.prf(i1, iv, t.clone())?;
+                g.create_vector(t.clone(), vec![p1, p2, p3])
+            })?;
             let mut evaluator = SimpleEvaluator {
                 prng: PRNG::new(None)?,
                 prfs: HashMap::new(),
@@ -1375,15 +1371,13 @@ mod tests {
         hash_shape: ArrayShape,
         inputs: Vec<Value>,
     ) -> Result<Vec<u64>> {
-        let c = create_context()?;
-        let g = c.create_graph()?;
-        let i = g.input(array_type(input_shape.clone(), BIT))?;
-        let hash_matrix = g.input(array_type(hash_shape.clone(), BIT))?;
-        let o = i.cuckoo_hash(hash_matrix)?;
-        g.set_output_node(o.clone())?;
-        g.finalize()?;
-        c.set_main_graph(g.clone())?;
-        c.finalize()?;
+        let c = simple_context(|g| {
+            let i = g.input(array_type(input_shape.clone(), BIT))?;
+            let hash_matrix = g.input(array_type(hash_shape.clone(), BIT))?;
+            i.cuckoo_hash(hash_matrix)
+        })?;
+        let g = c.get_main_graph()?;
+        let o = g.get_output_node()?;
         let result_value = random_evaluate(g, inputs)?;
         let result_type = o.get_type()?;
         result_value.to_flattened_array_u64(result_type)
@@ -1463,20 +1457,18 @@ mod tests {
         st: ScalarType,
         inputs: Vec<Value>,
     ) -> Result<Vec<u64>> {
-        let c = create_context()?;
-        let g = c.create_graph()?;
-        let i = g.input(array_type(input_shape.clone(), st.clone()))?;
-        let b = g.input(array_type(vec![input_shape[0]], BIT))?;
-        let first_row = if input_shape.len() > 1 {
-            g.input(array_type(input_shape[1..].to_vec(), st))?
-        } else {
-            g.input(scalar_type(st))?
-        };
-        let o = i.segment_cumsum(b, first_row)?;
-        g.set_output_node(o.clone())?;
-        g.finalize()?;
-        c.set_main_graph(g.clone())?;
-        c.finalize()?;
+        let c = simple_context(|g| {
+            let i = g.input(array_type(input_shape.clone(), st.clone()))?;
+            let b = g.input(array_type(vec![input_shape[0]], BIT))?;
+            let first_row = if input_shape.len() > 1 {
+                g.input(array_type(input_shape[1..].to_vec(), st))?
+            } else {
+                g.input(scalar_type(st))?
+            };
+            i.segment_cumsum(b, first_row)
+        })?;
+        let g = c.get_main_graph()?;
+        let o = g.get_output_node()?;
         let result_value = random_evaluate(g, inputs)?;
         let result_type = o.get_type()?;
         result_value.to_flattened_array_u64(result_type)
@@ -1561,15 +1553,9 @@ mod tests {
     }
 
     fn inverse_permutation_helper(n: u64, inputs: Vec<Value>) -> Result<Vec<u64>> {
-        let c = create_context()?;
-        let g = c.create_graph()?;
         let input_type = array_type(vec![n], UINT64);
-        let i = g.input(input_type.clone())?;
-        let o = i.inverse_permutation()?;
-        g.set_output_node(o)?;
-        g.finalize()?;
-        c.set_main_graph(g.clone())?;
-        c.finalize()?;
+        let c = simple_context(|g| g.input(input_type.clone())?.inverse_permutation())?;
+        let g = c.get_main_graph()?;
         let result_value = random_evaluate(g, inputs)?;
         result_value.to_flattened_array_u64(input_type)
     }
@@ -1580,15 +1566,13 @@ mod tests {
         axis: u64,
         inputs: Vec<Value>,
     ) -> Result<Vec<u64>> {
-        let c = create_context()?;
-        let g = c.create_graph()?;
-        let inp = g.input(array_type(input_shape.clone(), UINT32))?;
-        let ind = g.input(array_type(indices_shape.clone(), UINT64))?;
-        let o = inp.gather(ind, axis)?;
-        g.set_output_node(o.clone())?;
-        g.finalize()?;
-        c.set_main_graph(g.clone())?;
-        c.finalize()?;
+        let c = simple_context(|g| {
+            let inp = g.input(array_type(input_shape.clone(), UINT32))?;
+            let ind = g.input(array_type(indices_shape.clone(), UINT64))?;
+            inp.gather(ind, axis)
+        })?;
+        let g = c.get_main_graph()?;
+        let o = g.get_output_node()?;
         let result_value = random_evaluate(g, inputs)?;
         let result_type = o.get_type()?;
         result_value.to_flattened_array_u64(result_type)
@@ -1715,13 +1699,9 @@ mod tests {
     }
 
     fn random_permutation_helper(n: u64) -> Result<()> {
-        let c = create_context()?;
-        let g = c.create_graph()?;
-        let o = g.random_permutation(n)?;
-        g.set_output_node(o.clone())?;
-        g.finalize()?;
-        c.set_main_graph(g.clone())?;
-        c.finalize()?;
+        let c = simple_context(|g| g.random_permutation(n))?;
+        let g = c.get_main_graph()?;
+        let o = g.get_output_node()?;
         let result_type = o.get_type()?;
 
         let mut perm_statistics: HashMap<Vec<u64>, u64> = HashMap::new();
@@ -1780,15 +1760,12 @@ mod tests {
         input_value: Value,
         seed: Option<[u8; 16]>,
     ) -> Result<Vec<u64>> {
-        let c = create_context()?;
-        let g = c.create_graph()?;
         let input_type = array_type(shape, UINT64);
-        let i = g.input(input_type.clone())?;
-        let o = i.cuckoo_to_permutation()?;
-        g.set_output_node(o)?;
-        g.finalize()?;
-        c.set_main_graph(g.clone())?;
-        c.finalize()?;
+        let c = simple_context(|g| {
+            let i = g.input(input_type.clone())?;
+            i.cuckoo_to_permutation()
+        })?;
+        let g = c.get_main_graph()?;
         let result_value = evaluate_simple_evaluator(g, vec![input_value], seed)?;
         result_value.to_flattened_array_u64(input_type)
     }
@@ -1900,15 +1877,12 @@ mod tests {
         input_value: Value,
         seed: Option<[u8; 16]>,
     ) -> Result<(Vec<u64>, Vec<u64>, Vec<u64>, Vec<u64>)> {
-        let c = create_context()?;
-        let g = c.create_graph()?;
         let input_type = array_type(shape.clone(), UINT64);
-        let i = g.input(input_type.clone())?;
-        let o = i.decompose_switching_map(n)?;
-        g.set_output_node(o)?;
-        g.finalize()?;
-        c.set_main_graph(g.clone())?;
-        c.finalize()?;
+        let c = simple_context(|g| {
+            let i = g.input(input_type.clone())?;
+            i.decompose_switching_map(n)
+        })?;
+        let g = c.get_main_graph()?;
         let result_vector = evaluate_simple_evaluator(g, vec![input_value], seed)?.to_vector()?;
 
         let perm1 = result_vector[0].to_flattened_array_u64(input_type.clone())?;
@@ -2092,16 +2066,13 @@ mod tests {
 
     fn join_helper(test_info: Vec<JoinTestInfo>, join_t: JoinType) -> Result<()> {
         for test_i in test_info {
-            let c = create_context()?;
-            let g = c.create_graph()?;
-            let i0 = g.input(test_i.set0.get_type())?;
-            let i1 = g.input(test_i.set1.get_type())?;
-            let o = i0.join(i1, join_t, test_i.headers)?;
-            g.set_output_node(o.clone())?;
-            g.finalize()?;
-            c.set_main_graph(g.clone())?;
-            c.finalize()?;
-
+            let c = simple_context(|g| {
+                let i0 = g.input(test_i.set0.get_type())?;
+                let i1 = g.input(test_i.set1.get_type())?;
+                i0.join(i1, join_t, test_i.headers)
+            })?;
+            let g = c.get_main_graph()?;
+            let o = g.get_output_node()?;
             let result =
                 random_evaluate(g, vec![test_i.set0.get_value()?, test_i.set1.get_value()?])?
                     .to_vector()?;
@@ -3000,17 +2971,14 @@ mod tests {
         input_arrays: Vec<Vec<u64>>,
         expected: Vec<u64>,
     ) -> Result<()> {
-        let c = create_context()?;
-        let g = c.create_graph()?;
-        let mut inputs = vec![];
-        for t in input_types.iter() {
-            inputs.push(g.input((*t).clone())?);
-        }
-        let o = g.concatenate(inputs, axis)?;
-        g.set_output_node(o)?;
-        g.finalize()?;
-        c.set_main_graph(g.clone())?;
-        c.finalize()?;
+        let c = simple_context(|g| {
+            let mut inputs = vec![];
+            for t in input_types.iter() {
+                inputs.push(g.input((*t).clone())?);
+            }
+            g.concatenate(inputs, axis)
+        })?;
+        let g = c.get_main_graph()?;
 
         let mut input_values = vec![];
         for (i, t) in input_types.iter().enumerate() {

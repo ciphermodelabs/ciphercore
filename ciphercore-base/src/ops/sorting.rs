@@ -521,6 +521,7 @@ mod tests {
     use crate::data_types::{scalar_size_in_bits, ScalarType, BIT, INT64, UINT16, UINT32, UINT64};
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
+    use crate::graphs::util::simple_context;
     use crate::random::PRNG;
     use std::cmp::Reverse;
 
@@ -533,35 +534,32 @@ mod tests {
     /// * `k` - number of elements of an array (i.e., 2<sup>k</sup>)
     /// * `st` - scalar type of array elements
     fn test_large_vec_batchers_sorting(k: u32, st: ScalarType) -> Result<()> {
-        let context = create_context()?;
-        let graph = context.create_graph()?;
         let n = 2u64.pow(k);
-        let b = scalar_size_in_bits(st.clone());
-        let i = graph.input(array_type(vec![n], st.clone()))?;
-        let i_binary = if st == BIT {
-            i.reshape(array_type(vec![n, 1], BIT))?
-        } else {
-            i.a2b()?
-        };
-        let signed_comparison = st.get_signed();
-        let sorted = graph.custom_op(
-            CustomOperation::new(Sort {
-                k,
-                b,
-                signed_comparison,
-            }),
-            vec![i_binary],
-        )?;
-        let o = if st == BIT {
-            sorted
-        } else {
-            sorted.b2a(st.clone())?
-        };
-        o.set_as_output()?;
-        graph.finalize()?;
-        graph.set_as_main()?;
-        context.finalize()?;
-
+        let context = simple_context(|g| {
+            let b = scalar_size_in_bits(st.clone());
+            let i = g.input(array_type(vec![n], st.clone()))?;
+            let i_binary = if st == BIT {
+                i.reshape(array_type(vec![n, 1], BIT))?
+            } else {
+                i.a2b()?
+            };
+            let signed_comparison = st.get_signed();
+            let sorted = g.custom_op(
+                CustomOperation::new(Sort {
+                    k,
+                    b,
+                    signed_comparison,
+                }),
+                vec![i_binary],
+            )?;
+            let o = if st == BIT {
+                sorted
+            } else {
+                sorted.b2a(st.clone())?
+            };
+            Ok(o)
+        })?;
+        let graph = context.get_main_graph()?;
         let mapped_c = run_instantiation_pass(graph.get_context())?;
 
         let seed = b"\xB6\xD7\x1A\x2F\x88\xC1\x12\xBA\x3F\x2E\x17\xAB\xB7\x46\x15\x9A";
@@ -595,35 +593,32 @@ mod tests {
     /// * `k` - number of elements of an array (i.e., 2<sup>k</sup>)
     /// * `st` - scalar type of array elements
     fn test_batchers_sorting_graph_helper(k: u32, st: ScalarType, data: Vec<u64>) -> Result<()> {
-        let context = create_context()?;
-        let graph = context.create_graph()?;
-        let n = 2u64.pow(k);
-        let b = scalar_size_in_bits(st.clone());
-        let signed_comparison = st.get_signed();
-        let i = graph.input(array_type(vec![n], st.clone()))?;
-        let i_binary = if st == BIT {
-            i.reshape(array_type(vec![n, 1], BIT))?
-        } else {
-            i.a2b()?
-        };
-        let sorted = graph.custom_op(
-            CustomOperation::new(Sort {
-                k,
-                b,
-                signed_comparison,
-            }),
-            vec![i_binary],
-        )?;
-        let o = if st == BIT {
-            sorted
-        } else {
-            sorted.b2a(st.clone())?
-        };
-        o.set_as_output()?;
-        graph.finalize()?;
-        graph.set_as_main()?;
-        context.finalize()?;
-
+        let context = simple_context(|g| {
+            let n = 2u64.pow(k);
+            let b = scalar_size_in_bits(st.clone());
+            let signed_comparison = st.get_signed();
+            let i = g.input(array_type(vec![n], st.clone()))?;
+            let i_binary = if st == BIT {
+                i.reshape(array_type(vec![n, 1], BIT))?
+            } else {
+                i.a2b()?
+            };
+            let sorted = g.custom_op(
+                CustomOperation::new(Sort {
+                    k,
+                    b,
+                    signed_comparison,
+                }),
+                vec![i_binary],
+            )?;
+            let o = if st == BIT {
+                sorted
+            } else {
+                sorted.b2a(st.clone())?
+            };
+            Ok(o)
+        })?;
+        let graph = context.get_main_graph()?;
         let mapped_c = run_instantiation_pass(graph.get_context())?;
 
         let v_a = Value::from_flattened_array(&data, st.clone())?;

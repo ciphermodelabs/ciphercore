@@ -710,6 +710,7 @@ mod tests {
     use crate::data_types::array_type;
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
+    use crate::graphs::util::simple_context;
     use crate::graphs::{contexts_deep_equal, NodeAnnotation};
 
     fn get_hash(custom_op: &CustomOperation) -> u64 {
@@ -913,15 +914,12 @@ mod tests {
     #[test]
     fn test_instantiation_pass() {
         || -> Result<()> {
-            let c = create_context()?;
-            let g = c.create_graph()?;
-            let i = g.input(scalar_type(BIT))?;
-            let o = g.custom_op(CustomOperation::new(A {}), vec![i])?;
-            o.set_name("A")?;
-            g.set_output_node(o)?;
-            g.finalize()?;
-            c.set_main_graph(g)?;
-            c.finalize()?;
+            let c = simple_context(|g| {
+                let i = g.input(scalar_type(BIT))?;
+                let o = g.custom_op(CustomOperation::new(A {}), vec![i])?;
+                o.set_name("A")?;
+                Ok(o)
+            })?;
 
             let processed_c = run_instantiation_pass(c)?.context;
 
@@ -1003,18 +1001,13 @@ mod tests {
         // Checking that `run_instantiation_pass` is deterministic
         || -> Result<()> {
             let generate_context = || -> Result<Context> {
-                let c = create_context()?;
-                let g = c.create_graph()?;
-                let i1 = g.input(array_type(vec![1, 5], BIT))?;
-                let i2 = g.input(array_type(vec![7, 5], BIT))?;
-                let i3 = g.input(array_type(vec![4, 3], BIT))?;
-                let i4 = g.input(array_type(vec![2, 3], BIT))?;
-                let o = g.custom_op(CustomOperation::new(C {}), vec![i1, i2, i3, i4])?;
-                g.set_output_node(o)?;
-                g.finalize()?;
-                c.set_main_graph(g)?;
-                c.finalize()?;
-                Ok(c)
+                simple_context(|g| {
+                    let i1 = g.input(array_type(vec![1, 5], BIT))?;
+                    let i2 = g.input(array_type(vec![7, 5], BIT))?;
+                    let i3 = g.input(array_type(vec![4, 3], BIT))?;
+                    let i4 = g.input(array_type(vec![2, 3], BIT))?;
+                    g.custom_op(CustomOperation::new(C {}), vec![i1, i2, i3, i4])
+                })
             };
             let mut contexts = vec![];
             for _ in 0..10 {
@@ -1036,21 +1029,14 @@ mod tests {
 
         // Checking that `run_instantiation_pass` copies node annotations
         || -> Result<()> {
-            let generate_context = || -> Result<Context> {
-                let c = create_context()?;
-                let g = c.create_graph()?;
+            let context = simple_context(|g| {
                 let i1 = g.input(array_type(vec![1, 5], BIT))?;
                 let i2 = g.input(array_type(vec![7, 5], BIT))?;
                 let i3 = g.input(array_type(vec![4, 3], BIT))?;
                 let i4 = g.input(array_type(vec![2, 3], BIT))?;
-                let o = g.custom_op(CustomOperation::new(C {}), vec![i1, i2, i3, i4])?;
-                g.set_output_node(o)?;
-                g.finalize()?;
-                c.set_main_graph(g)?;
-                c.finalize()?;
-                Ok(c)
-            };
-            let new_context = run_instantiation_pass(generate_context()?)?.context;
+                g.custom_op(CustomOperation::new(C {}), vec![i1, i2, i3, i4])
+            })?;
+            let new_context = run_instantiation_pass(context)?.context;
             assert_eq!(
                 new_context
                     .get_node_annotations(new_context.get_graphs()[6].get_output_node()?)?
@@ -1063,18 +1049,10 @@ mod tests {
 
         // Check `run_instantiation_pass` for Not
         || -> Result<()> {
-            let generate_context = || -> Result<Context> {
-                let c = create_context()?;
-                let g = c.create_graph()?;
+            let c = simple_context(|g| {
                 let i1 = g.input(array_type(vec![5], BIT))?;
-                let o = g.custom_op(CustomOperation::new(Not {}), vec![i1])?;
-                g.set_output_node(o)?;
-                g.finalize()?;
-                c.set_main_graph(g)?;
-                c.finalize()?;
-                Ok(c)
-            };
-            let c = generate_context()?;
+                g.custom_op(CustomOperation::new(Not {}), vec![i1])
+            })?;
             let mapped_c = run_instantiation_pass(c)?;
             let expected_c = create_context()?;
             let not_g = expected_c.create_graph()?;
@@ -1098,19 +1076,11 @@ mod tests {
 
         // Check `run_instantiation_pass` for Or
         || -> Result<()> {
-            let generate_context = || -> Result<Context> {
-                let c = create_context()?;
-                let g = c.create_graph()?;
+            let c = simple_context(|g| {
                 let i1 = g.input(array_type(vec![5], BIT))?;
                 let i2 = g.input(array_type(vec![3, 5], BIT))?;
-                let o = g.custom_op(CustomOperation::new(Or {}), vec![i1, i2])?;
-                g.set_output_node(o)?;
-                g.finalize()?;
-                c.set_main_graph(g)?;
-                c.finalize()?;
-                Ok(c)
-            };
-            let c = generate_context()?;
+                g.custom_op(CustomOperation::new(Or {}), vec![i1, i2])
+            })?;
             let mapped_c = run_instantiation_pass(c)?;
             let expected_c = create_context()?;
             let not_g_2 = expected_c.create_graph()?;

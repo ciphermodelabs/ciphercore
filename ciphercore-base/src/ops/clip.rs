@@ -137,18 +137,15 @@ mod tests {
     use crate::data_types::{array_type, tuple_type, INT32, INT64};
     use crate::evaluators::random_evaluate;
     use crate::graphs::create_context;
+    use crate::graphs::util::simple_context;
 
     #[test]
     fn test_well_behaved() {
         || -> Result<()> {
-            let c = create_context()?;
-            let g = c.create_graph()?;
-            let i = g.input(array_type(vec![19, 64], BIT))?;
-            let o = g.custom_op(CustomOperation::new(Clip2K { k: 10 }), vec![i])?;
-            g.set_output_node(o)?;
-            g.finalize()?;
-            c.set_main_graph(g)?;
-            c.finalize()?;
+            let c = simple_context(|g| {
+                let i = g.input(array_type(vec![19, 64], BIT))?;
+                g.custom_op(CustomOperation::new(Clip2K { k: 10 }), vec![i])
+            })?;
             let mapped_c = run_instantiation_pass(c)?;
             let inputs = Value::from_flattened_array(
                 &vec![
@@ -184,14 +181,10 @@ mod tests {
         }()
         .unwrap();
         || -> Result<()> {
-            let c = create_context()?;
-            let g = c.create_graph()?;
-            let i = g.input(array_type(vec![64], BIT))?;
-            let o = g.custom_op(CustomOperation::new(Clip2K { k: 20 }), vec![i])?;
-            g.set_output_node(o)?;
-            g.finalize()?;
-            c.set_main_graph(g)?;
-            c.finalize()?;
+            let c = simple_context(|g| {
+                let i = g.input(array_type(vec![64], BIT))?;
+                g.custom_op(CustomOperation::new(Clip2K { k: 20 }), vec![i])
+            })?;
             let mapped_c = run_instantiation_pass(c)?;
             let inputs = Value::from_scalar(123456789, INT64)?;
             let result_v = random_evaluate(mapped_c.get_context().get_main_graph()?, vec![inputs])?

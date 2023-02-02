@@ -243,6 +243,7 @@ mod tests {
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
     use crate::graphs::create_context;
+    use crate::graphs::util::simple_context;
 
     fn test_helper(first: u64, second: u64, bits: u64) -> Result<()> {
         let modulus = if bits == 64 {
@@ -258,15 +259,11 @@ mod tests {
         let first = first & mask;
         let second = second & mask;
 
-        let c = create_context()?;
-        let g = c.create_graph()?;
-        let i1 = g.input(array_type(vec![bits], BIT))?;
-        let i2 = g.input(array_type(vec![bits], BIT))?;
-        let o = g.custom_op(CustomOperation::new(BinaryAdd {}), vec![i1, i2])?;
-        g.set_output_node(o)?;
-        g.finalize()?;
-        c.set_main_graph(g)?;
-        c.finalize()?;
+        let c = simple_context(|g| {
+            let i1 = g.input(array_type(vec![bits], BIT))?;
+            let i2 = g.input(array_type(vec![bits], BIT))?;
+            g.custom_op(CustomOperation::new(BinaryAdd {}), vec![i1, i2])
+        })?;
         let mapped_c = run_instantiation_pass(c)?;
         let scalar = create_scalar_type(false, modulus);
         let input0 = Value::from_scalar(first, scalar.clone())?;
@@ -298,15 +295,11 @@ mod tests {
     #[test]
     fn test_well_behaved() -> Result<()> {
         {
-            let c = create_context()?;
-            let g = c.create_graph()?;
-            let i1 = g.input(array_type(vec![5, 16], BIT))?;
-            let i2 = g.input(array_type(vec![1, 16], BIT))?;
-            let o = g.custom_op(CustomOperation::new(BinaryAdd {}), vec![i1, i2])?;
-            g.set_output_node(o)?;
-            g.finalize()?;
-            c.set_main_graph(g)?;
-            c.finalize()?;
+            let c = simple_context(|g| {
+                let i1 = g.input(array_type(vec![5, 16], BIT))?;
+                let i2 = g.input(array_type(vec![1, 16], BIT))?;
+                g.custom_op(CustomOperation::new(BinaryAdd {}), vec![i1, i2])
+            })?;
             let mapped_c = run_instantiation_pass(c)?;
             let inputs1 =
                 Value::from_flattened_array(&vec![0, 1023, -1023, i16::MIN, i16::MAX], INT16)?;
@@ -322,15 +315,11 @@ mod tests {
             );
         }
         {
-            let c = create_context()?;
-            let g = c.create_graph()?;
-            let i1 = g.input(array_type(vec![64], BIT))?;
-            let i2 = g.input(array_type(vec![64], BIT))?;
-            let o = g.custom_op(CustomOperation::new(BinaryAdd {}), vec![i1, i2])?;
-            g.set_output_node(o)?;
-            g.finalize()?;
-            c.set_main_graph(g)?;
-            c.finalize()?;
+            let c = simple_context(|g| {
+                let i1 = g.input(array_type(vec![64], BIT))?;
+                let i2 = g.input(array_type(vec![64], BIT))?;
+                g.custom_op(CustomOperation::new(BinaryAdd {}), vec![i1, i2])
+            })?;
             let mapped_c = run_instantiation_pass(c)?;
             let input0 = Value::from_scalar(123456790, INT64)?;
             let input1 = Value::from_scalar(-123456789, INT64)?;

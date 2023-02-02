@@ -1213,6 +1213,7 @@ mod tests {
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
     use crate::evaluators::simple_evaluator::evaluate_add_subtract_multiply;
+    use crate::graphs::util::simple_context;
     use crate::graphs::SliceElement::{Ellipsis, SubArray};
     use crate::inline::inline_ops::{inline_operations, InlineConfig, InlineMode};
     use crate::random::PRNG;
@@ -1297,14 +1298,7 @@ mod tests {
         let mut prng = PRNG::new(Some(*seed)).unwrap();
         let mut helper =
             |t: Type, input_status: IOStatus, output_parties: Vec<IOStatus>| -> Result<()> {
-                let c = create_context()?;
-                let g = c.create_graph()?;
-                let i = g.input(t.clone())?;
-                g.set_output_node(i)?;
-                g.finalize()?;
-                c.set_main_graph(g)?;
-                c.finalize()?;
-
+                let c = simple_context(|g| g.input(t.clone()))?;
                 let mpc_mapped_context = compile_to_mpc(
                     c,
                     vec![vec![input_status.clone()]],
@@ -1499,26 +1493,24 @@ mod tests {
         input_party_map: Vec<IOStatus>,
         output_parties: Vec<IOStatus>,
     ) -> Result<()> {
-        let c = create_context()?;
-        let g = c.create_graph()?;
-        let mut input_nodes = vec![];
-        for i in 0..input_types.len() {
-            let input_node = g.input(input_types[i].clone())?;
-            input_node.set_name(&format!("Input {}", i))?;
-            input_nodes.push(input_node);
-        }
-        let o = if op != Operation::VectorGet {
-            g.add_node(input_nodes, vec![], op)?
-        } else {
-            let index = g.constant(scalar_type(UINT64), Value::from_scalar(0, UINT64)?)?;
-            input_nodes[0].vector_get(index)?
-        };
-        o.set_name("Plaintext operation")?;
-        let output_type = o.get_type()?;
-        g.set_output_node(o.clone())?;
-        g.finalize()?;
-        c.set_main_graph(g.clone())?;
-        c.finalize()?;
+        let c = simple_context(|g| {
+            let mut input_nodes = vec![];
+            for i in 0..input_types.len() {
+                let input_node = g.input(input_types[i].clone())?;
+                input_node.set_name(&format!("Input {}", i))?;
+                input_nodes.push(input_node);
+            }
+            let o = if op != Operation::VectorGet {
+                g.add_node(input_nodes, vec![], op)?
+            } else {
+                let index = g.constant(scalar_type(UINT64), Value::from_scalar(0, UINT64)?)?;
+                input_nodes[0].vector_get(index)?
+            };
+            o.set_name("Plaintext operation")?;
+            Ok(o)
+        })?;
+        let g = c.get_main_graph()?;
+        let output_type = g.get_output_node()?.get_type()?;
 
         let inline_config = InlineConfig {
             default_mode: InlineMode::Simple,

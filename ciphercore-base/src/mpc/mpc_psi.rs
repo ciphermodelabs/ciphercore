@@ -7,7 +7,8 @@ use crate::data_types::{
     array_type, get_size_in_bits, get_types_vector, named_tuple_type, tuple_type, Type, BIT, UINT64,
 };
 use crate::errors::Result;
-use crate::graphs::{create_context, Context, Graph, JoinType, Node, NodeAnnotation, SliceElement};
+use crate::graphs::util::simple_context;
+use crate::graphs::{Context, Graph, JoinType, Node, NodeAnnotation, SliceElement};
 use crate::inline::inline_common::DepthOptimizationLevel;
 use crate::inline::inline_ops::{inline_operations, InlineConfig, InlineMode};
 use crate::ops::comparisons::Equal;
@@ -213,31 +214,23 @@ fn get_equality_graph(
     is_input1_private: bool,
     is_input2_private: bool,
 ) -> Result<Graph> {
-    let eq_context = create_context()?;
-    let g = eq_context.create_graph()?;
+    let eq_context = simple_context(|g| {
+        let i0 = g.input(type1)?;
+        let i1 = g.input(type2)?;
 
-    let i0 = g.input(type1)?;
-    let i1 = g.input(type2)?;
+        let key_columns_0 = i0.named_tuple_get(key_header.clone())?;
+        let key_columns_1 = i1.named_tuple_get(key_header)?;
 
-    let key_columns_0 = i0.named_tuple_get(key_header.clone())?;
-    let key_columns_1 = i1.named_tuple_get(key_header)?;
+        let eq_bits = g.custom_op(
+            CustomOperation::new(Equal {}),
+            vec![key_columns_0, key_columns_1],
+        )?;
 
-    let eq_bits = g.custom_op(
-        CustomOperation::new(Equal {}),
-        vec![key_columns_0, key_columns_1],
-    )?;
+        let null_0 = i0.named_tuple_get(NULL_HEADER.to_owned())?;
+        let null_1 = i1.named_tuple_get(NULL_HEADER.to_owned())?;
 
-    let null_0 = i0.named_tuple_get(NULL_HEADER.to_owned())?;
-    let null_1 = i1.named_tuple_get(NULL_HEADER.to_owned())?;
-
-    let res = null_0.multiply(null_1)?.multiply(eq_bits)?;
-
-    res.set_as_output()?;
-
-    g.finalize()?;
-
-    eq_context.set_main_graph(g)?;
-    eq_context.finalize()?;
+        null_0.multiply(null_1)?.multiply(eq_bits)
+    })?;
 
     convert_main_graph_to_mpc(
         eq_context,
@@ -252,78 +245,65 @@ fn get_select_graph(
     num_entries: u64,
     key_header: String,
 ) -> Result<Graph> {
-    let select_context = create_context()?;
-    let g = select_context.create_graph()?;
+    let select_context = simple_context(|g| {
+        let data_t = named_tuple_type(column_header_types.clone());
+        let data_columns = g.input(data_t)?;
 
-    let data_t = named_tuple_type(column_header_types.clone());
-    let data_columns = g.input(data_t)?;
+        let mask_t = array_type(vec![num_entries], BIT);
+        let mask = g.input(mask_t)?;
 
-    let mask_t = array_type(vec![num_entries], BIT);
-    let mask = g.input(mask_t)?;
+        let mut result_columns = vec![];
+        for (header, t) in column_header_types {
+            if header == NULL_HEADER || header == key_header {
+                continue;
+            }
+            let column = data_columns.named_tuple_get(header.clone())?;
+            let column_shape = t.get_shape();
+            // Reshape the mask to multiply row-wise
+            let mut mask_shape = vec![num_entries];
+            if column_shape.len() > 1 {
+                mask_shape.extend(vec![1; column_shape.len() - 1]);
+            }
+            let column_mask = mask.reshape(array_type(mask_shape, BIT))?;
+            // Multiply the column by the mask
+            let result_column = if t.get_scalar_type() == BIT {
+                column.multiply(column_mask)?
+            } else {
+                column.mixed_multiply(column_mask)?
+            };
 
-    let mut result_columns = vec![];
-    for (header, t) in column_header_types {
-        if header == NULL_HEADER || header == key_header {
-            continue;
+            result_columns.push((header, result_column));
         }
-        let column = data_columns.named_tuple_get(header.clone())?;
-        let column_shape = t.get_shape();
-        // Reshape the mask to multiply row-wise
-        let mut mask_shape = vec![num_entries];
-        if column_shape.len() > 1 {
-            mask_shape.extend(vec![1; column_shape.len() - 1]);
-        }
-        let column_mask = mask.reshape(array_type(mask_shape, BIT))?;
-        // Multiply the column by the mask
-        let result_column = if t.get_scalar_type() == BIT {
-            column.multiply(column_mask)?
-        } else {
-            column.mixed_multiply(column_mask)?
-        };
-
-        result_columns.push((header, result_column));
-    }
-    g.create_named_tuple(result_columns)?.set_as_output()?;
-
-    g.finalize()?;
-
-    select_context.set_main_graph(g)?;
-    select_context.finalize()?;
+        g.create_named_tuple(result_columns)
+    })?;
 
     convert_main_graph_to_mpc(select_context, context, vec![true, true])
 }
 
 fn get_lowmc_graph(context: Context, input_t: Type, key_t: Type) -> Result<Graph> {
-    let lowmc_context = create_context()?;
-    let g = lowmc_context.create_graph()?;
+    let lowmc_context = simple_context(|g| {
+        // Compute OPRF of hashed key columns in both sets
+        // Set the parameters of the LowMC block cipher serving here as PRF.
+        // TODO: these parameters can be further optimized with great caution.
+        // See `low_mc.rs` for guidelines.
+        let block_size = match PRF_OUTPUT_SIZE {
+            80 => LowMCBlockSize::SIZE80,
+            128 => LowMCBlockSize::SIZE128,
+            _ => {
+                return Err(runtime_error!("LowMC doesn't support this block size"));
+            }
+        };
+        let low_mc_op = CustomOperation::new(LowMC {
+            s_boxes_per_round: 16,
+            rounds: 11,
+            block_size,
+        });
 
-    // Compute OPRF of hashed key columns in both sets
-    // Set the parameters of the LowMC block cipher serving here as PRF.
-    // TODO: these parameters can be further optimized with great caution.
-    // See `low_mc.rs` for guidelines.
-    let block_size = match PRF_OUTPUT_SIZE {
-        80 => LowMCBlockSize::SIZE80,
-        128 => LowMCBlockSize::SIZE128,
-        _ => {
-            return Err(runtime_error!("LowMC doesn't support this block size"));
-        }
-    };
-    let low_mc_op = CustomOperation::new(LowMC {
-        s_boxes_per_round: 16,
-        rounds: 11,
-        block_size,
-    });
+        let input_data = g.input(input_t)?;
+        let key = g.input(key_t)?;
 
-    let input_data = g.input(input_t)?;
-    let key = g.input(key_t)?;
-
-    g.custom_op(low_mc_op, vec![input_data, key])?
-        .set_as_output()?;
-
-    g.finalize()?;
-
-    lowmc_context.set_main_graph(g)?;
-    lowmc_context.finalize()?;
+        g.custom_op(low_mc_op, vec![input_data, key])
+    })?;
 
     convert_main_graph_to_mpc(lowmc_context, context, vec![true, true])
 }
@@ -340,42 +320,36 @@ fn get_merging_graph(
         headers_map.insert((*h).clone(), (*t).clone());
     }
 
-    let merging_context = create_context()?;
-    let g = merging_context.create_graph()?;
+    let merging_context = simple_context(|g| {
+        let data = g.input(named_tuple_type(header_types.clone()))?;
 
-    let data = g.input(named_tuple_type(header_types.clone()))?;
+        let num_entries = header_types[0].1.get_shape()[0];
 
-    let num_entries = header_types[0].1.get_shape()[0];
+        let mut bit_columns = vec![];
+        for header in key_headers {
+            let t = headers_map.get(header).unwrap();
 
-    let mut bit_columns = vec![];
-    for header in key_headers {
-        let t = headers_map.get(header).unwrap();
-
-        let column = data.named_tuple_get((*header).clone())?;
-        let mut bit_column = if t.get_scalar_type() != BIT {
-            column.a2b()?
+            let column = data.named_tuple_get((*header).clone())?;
+            let mut bit_column = if t.get_scalar_type() != BIT {
+                column.a2b()?
+            } else {
+                column
+            };
+            // Flatten all the bits per entry
+            let flattened_shape = vec![num_entries, get_size_in_bits((*t).clone())? / num_entries];
+            bit_column = bit_column.reshape(array_type(flattened_shape, BIT))?;
+            // Pull out bits to simplify merging of columns
+            bit_columns.push(bit_column);
+        }
+        // Merge key columns
+        let merged_columns = if bit_columns.len() > 1 {
+            g.concatenate(bit_columns, 1)?
         } else {
-            column
+            bit_columns[0].clone()
         };
-        // Flatten all the bits per entry
-        let flattened_shape = vec![num_entries, get_size_in_bits((*t).clone())? / num_entries];
-        bit_column = bit_column.reshape(array_type(flattened_shape, BIT))?;
-        // Pull out bits to simplify merging of columns
-        bit_columns.push(bit_column);
-    }
-    // Merge key columns
-    let merged_columns = if bit_columns.len() > 1 {
-        g.concatenate(bit_columns, 1)?
-    } else {
-        bit_columns[0].clone()
-    };
 
-    merged_columns.set_as_output()?;
-
-    g.finalize()?;
-
-    merging_context.set_main_graph(g)?;
-    merging_context.finalize()?;
+        Ok(merged_columns)
+    })?;
 
     convert_main_graph_to_mpc(merging_context, context, vec![is_private])
 }
@@ -1775,7 +1749,9 @@ mod tests {
     use crate::data_types::{scalar_type, ArrayShape, INT16, INT32, INT64};
     use crate::data_values::Value;
     use crate::evaluators::{evaluate_simple_evaluator, random_evaluate};
-    use crate::graphs::{create_context, Operation};
+
+    use crate::graphs::util::simple_context;
+    use crate::graphs::Operation;
     use crate::inline::inline_ops::{inline_operations, InlineConfig, InlineMode};
     use crate::mpc::mpc_compiler::{generate_prf_key_triple, prepare_for_mpc_evaluation, IOStatus};
     use crate::mpc::mpc_equivalence_class::{
@@ -1789,15 +1765,12 @@ mod tests {
         hash_shape: ArrayShape,
         inputs: Vec<Value>,
     ) -> Result<Vec<u64>> {
-        let c = create_context()?;
-        let g = c.create_graph()?;
-        let i = g.input(array_type(input_shape.clone(), BIT))?;
-        let hash_matrix = g.input(array_type(hash_shape.clone(), BIT))?;
-        let o = g.custom_op(CustomOperation::new(SimpleHash), vec![i, hash_matrix])?;
-        g.set_output_node(o)?;
-        g.finalize()?;
-        c.set_main_graph(g.clone())?;
-        c.finalize()?;
+        let c = simple_context(|g| {
+            let i = g.input(array_type(input_shape.clone(), BIT))?;
+            let hash_matrix = g.input(array_type(hash_shape.clone(), BIT))?;
+            g.custom_op(CustomOperation::new(SimpleHash), vec![i, hash_matrix])
+        })?;
+
         let mapped_c = run_instantiation_pass(c)?.context;
         let result_value = random_evaluate(mapped_c.get_main_graph()?, inputs)?;
         let mut result_shape = input_shape[0..input_shape.len() - 1].to_vec();
@@ -1807,15 +1780,11 @@ mod tests {
     }
 
     fn simple_hash_helper_fails(input_t: Type, hash_t: Type) -> Result<()> {
-        let c = create_context()?;
-        let g = c.create_graph()?;
-        let i = g.input(input_t)?;
-        let hash_matrix = g.input(hash_t)?;
-        let o = g.custom_op(CustomOperation::new(SimpleHash), vec![i, hash_matrix])?;
-        g.set_output_node(o)?;
-        g.finalize()?;
-        c.set_main_graph(g.clone())?;
-        c.finalize()?;
+        let c = simple_context(|g| {
+            let i = g.input(input_t)?;
+            let hash_matrix = g.input(hash_t)?;
+            g.custom_op(CustomOperation::new(SimpleHash), vec![i, hash_matrix])
+        })?;
         run_instantiation_pass(c)?;
         Ok(())
     }
@@ -1923,74 +1892,69 @@ mod tests {
          -> Result<()> {
             // test correct inputs
             let roles_helper = |sender_id: u64, programmer_id: u64| -> Result<()> {
-                let c = create_context()?;
+                let c = simple_context(|g| {
+                    let column_a = g.input(a_type.clone())?;
+                    let column_b = g.input(b_type.clone())?;
 
-                let g = c.create_graph()?;
+                    // Generate PRF keys
+                    let key_t = array_type(vec![KEY_LENGTH], BIT);
+                    let keys_vec = generate_prf_key_triple(g.clone())?;
+                    let keys = g.create_tuple(keys_vec)?;
+                    // PRF key known only to Sender.
+                    let key_s = g.random(key_t.clone())?;
+                    // Split input into two shares between Sender and Programmer
+                    // Sender generates Programmer's shares
+                    let column_a_programmer_share = g.prf(key_s.clone(), 0, a_type.clone())?;
+                    let column_b_programmer_share = g.prf(key_s.clone(), 0, b_type.clone())?;
+                    // Sender computes its shares
+                    let column_a_sender_share =
+                        column_a.subtract(column_a_programmer_share.clone())?;
+                    let column_b_sender_share =
+                        column_b.subtract(column_b_programmer_share.clone())?;
 
-                let column_a = g.input(a_type.clone())?;
-                let column_b = g.input(b_type.clone())?;
+                    // Sender packs shares in named tuples and send one of them to Programmer
+                    let programmer_share = g
+                        .create_named_tuple(vec![
+                            ("a".to_owned(), column_a_programmer_share),
+                            ("b".to_owned(), column_b_programmer_share),
+                        ])?
+                        .nop()?
+                        .add_annotation(NodeAnnotation::Send(sender_id, programmer_id))?;
+                    let sender_share = g.create_named_tuple(vec![
+                        ("a".to_owned(), column_a_sender_share),
+                        ("b".to_owned(), column_b_sender_share),
+                    ])?;
 
-                // Generate PRF keys
-                let key_t = array_type(vec![KEY_LENGTH], BIT);
-                let keys_vec = generate_prf_key_triple(g.clone())?;
-                let keys = g.create_tuple(keys_vec)?;
-                // PRF key known only to Sender.
-                let key_s = g.random(key_t.clone())?;
-                // Split input into two shares between Sender and Programmer
-                // Sender generates Programmer's shares
-                let column_a_programmer_share = g.prf(key_s.clone(), 0, a_type.clone())?;
-                let column_b_programmer_share = g.prf(key_s.clone(), 0, b_type.clone())?;
-                // Sender computes its shares
-                let column_a_sender_share = column_a.subtract(column_a_programmer_share.clone())?;
-                let column_b_sender_share = column_b.subtract(column_b_programmer_share.clone())?;
+                    // Pack shares together
+                    let shares = g.create_tuple(vec![programmer_share, sender_share])?;
 
-                // Sender packs shares in named tuples and send one of them to Programmer
-                let programmer_share = g
-                    .create_named_tuple(vec![
-                        ("a".to_owned(), column_a_programmer_share),
-                        ("b".to_owned(), column_b_programmer_share),
-                    ])?
-                    .nop()?
-                    .add_annotation(NodeAnnotation::Send(sender_id, programmer_id))?;
-                let sender_share = g.create_named_tuple(vec![
-                    ("a".to_owned(), column_a_sender_share),
-                    ("b".to_owned(), column_b_sender_share),
-                ])?;
+                    // Permutation input
+                    let permutation =
+                        g.input(array_type(vec![permutation_values.len() as u64], UINT64))?;
 
-                // Pack shares together
-                let shares = g.create_tuple(vec![programmer_share, sender_share])?;
+                    // Permuted shares
+                    let permuted_shares = g.custom_op(
+                        CustomOperation::new(PermutationMPC {
+                            sender_id,
+                            programmer_id,
+                        }),
+                        vec![shares, permutation, keys],
+                    )?;
 
-                // Permutation input
-                let permutation =
-                    g.input(array_type(vec![permutation_values.len() as u64], UINT64))?;
+                    // Sum permuted shares
+                    let receiver_permuted_share = permuted_shares.tuple_get(1)?;
+                    let programmer_permuted_share = permuted_shares.tuple_get(0)?;
 
-                // Permuted shares
-                let permuted_shares = g.custom_op(
-                    CustomOperation::new(PermutationMPC {
-                        sender_id,
-                        programmer_id,
-                    }),
-                    vec![shares, permutation, keys],
-                )?;
+                    let permuted_column_a = receiver_permuted_share
+                        .named_tuple_get("a".to_owned())?
+                        .add(programmer_permuted_share.named_tuple_get("a".to_owned())?)?;
+                    let permuted_column_b = receiver_permuted_share
+                        .named_tuple_get("b".to_owned())?
+                        .add(programmer_permuted_share.named_tuple_get("b".to_owned())?)?;
 
-                // Sum permuted shares
-                let receiver_permuted_share = permuted_shares.tuple_get(1)?;
-                let programmer_permuted_share = permuted_shares.tuple_get(0)?;
-
-                let permuted_column_a = receiver_permuted_share
-                    .named_tuple_get("a".to_owned())?
-                    .add(programmer_permuted_share.named_tuple_get("a".to_owned())?)?;
-                let permuted_column_b = receiver_permuted_share
-                    .named_tuple_get("b".to_owned())?
-                    .add(programmer_permuted_share.named_tuple_get("b".to_owned())?)?;
-
-                // Combine permuted columns
-                g.create_tuple(vec![permuted_column_a, permuted_column_b])?
-                    .set_as_output()?;
-
-                g.finalize()?;
-                g.set_as_main()?;
-                c.finalize()?;
+                    // Combine permuted columns
+                    g.create_tuple(vec![permuted_column_a, permuted_column_b])
+                })?;
 
                 let instantiated_c = run_instantiation_pass(c)?.context;
                 let inlined_c = inline_operations(
@@ -2235,79 +2199,74 @@ mod tests {
          -> Result<()> {
             // test correct inputs
             let roles_helper = |sender_id: u64, programmer_id: u64| -> Result<()> {
-                let c = create_context()?;
-
-                let g = c.create_graph()?;
-
-                let column_a = g.input(a_type.clone())?;
-                let column_b = g.input(b_type.clone())?;
-
-                // Generate PRF keys
-                let key_t = array_type(vec![KEY_LENGTH], BIT);
-                let keys_vec = generate_prf_key_triple(g.clone())?;
-                let keys = g.create_tuple(keys_vec)?;
-                // PRF key known only to Sender.
-                let key_s = g.random(key_t.clone())?;
-                // Split input into two shares between Sender and Programmer
-                // Sender generates Programmer's shares
-                let column_a_programmer_share = g.prf(key_s.clone(), 0, a_type.clone())?;
-                let column_b_programmer_share = g.prf(key_s.clone(), 0, b_type.clone())?;
-                // Sender computes its shares
-                let column_a_sender_share = column_a.subtract(column_a_programmer_share.clone())?;
-                let column_b_sender_share = column_b.subtract(column_b_programmer_share.clone())?;
-
-                // Sender packs shares in named tuples and send one of them to Programmer
-                let programmer_share = g
-                    .create_named_tuple(vec![
-                        ("a".to_owned(), column_a_programmer_share),
-                        ("b".to_owned(), column_b_programmer_share),
-                    ])?
-                    .nop()?
-                    .add_annotation(NodeAnnotation::Send(sender_id, programmer_id))?;
-                let sender_share = g.create_named_tuple(vec![
-                    ("a".to_owned(), column_a_sender_share),
-                    ("b".to_owned(), column_b_sender_share),
-                ])?;
-
-                // Pack shares together
-                let shares = g.create_tuple(vec![programmer_share, sender_share])?;
-
-                // Duplication map input
                 let num_entries = duplication_indices.len();
-                let duplication_map = g.input(tuple_type(vec![
-                    array_type(vec![num_entries as u64], UINT64),
-                    array_type(vec![num_entries as u64], BIT),
-                ]))?;
+                let c = simple_context(|g| {
+                    let column_a = g.input(a_type.clone())?;
+                    let column_b = g.input(b_type.clone())?;
 
-                // Duplicated shares
-                let duplicated_shares = g
-                    .custom_op(
-                        CustomOperation::new(DuplicationMPC {
-                            sender_id,
-                            programmer_id,
-                        }),
-                        vec![shares, duplication_map, keys],
-                    )?
-                    .set_name("Duplication output")?;
+                    // Generate PRF keys
+                    let key_t = array_type(vec![KEY_LENGTH], BIT);
+                    let keys_vec = generate_prf_key_triple(g.clone())?;
+                    let keys = g.create_tuple(keys_vec)?;
+                    // PRF key known only to Sender.
+                    let key_s = g.random(key_t.clone())?;
+                    // Split input into two shares between Sender and Programmer
+                    // Sender generates Programmer's shares
+                    let column_a_programmer_share = g.prf(key_s.clone(), 0, a_type.clone())?;
+                    let column_b_programmer_share = g.prf(key_s.clone(), 0, b_type.clone())?;
+                    // Sender computes its shares
+                    let column_a_sender_share =
+                        column_a.subtract(column_a_programmer_share.clone())?;
+                    let column_b_sender_share =
+                        column_b.subtract(column_b_programmer_share.clone())?;
 
-                // Sum duplicated shares
-                let receiver_duplicated_share = duplicated_shares.tuple_get(1)?;
-                let programmer_duplicated_share = duplicated_shares.tuple_get(0)?;
+                    // Sender packs shares in named tuples and send one of them to Programmer
+                    let programmer_share = g
+                        .create_named_tuple(vec![
+                            ("a".to_owned(), column_a_programmer_share),
+                            ("b".to_owned(), column_b_programmer_share),
+                        ])?
+                        .nop()?
+                        .add_annotation(NodeAnnotation::Send(sender_id, programmer_id))?;
+                    let sender_share = g.create_named_tuple(vec![
+                        ("a".to_owned(), column_a_sender_share),
+                        ("b".to_owned(), column_b_sender_share),
+                    ])?;
 
-                let duplicated_column_a = receiver_duplicated_share
-                    .named_tuple_get("a".to_owned())?
-                    .add(programmer_duplicated_share.named_tuple_get("a".to_owned())?)?;
-                let duplicated_column_b = receiver_duplicated_share
-                    .named_tuple_get("b".to_owned())?
-                    .add(programmer_duplicated_share.named_tuple_get("b".to_owned())?)?;
+                    // Pack shares together
+                    let shares = g.create_tuple(vec![programmer_share, sender_share])?;
 
-                // Combine duplicated columns
-                g.create_tuple(vec![duplicated_column_a, duplicated_column_b])?
-                    .set_as_output()?;
+                    // Duplication map input
+                    let duplication_map = g.input(tuple_type(vec![
+                        array_type(vec![num_entries as u64], UINT64),
+                        array_type(vec![num_entries as u64], BIT),
+                    ]))?;
 
-                g.finalize()?;
-                g.set_as_main()?;
-                c.finalize()?;
+                    // Duplicated shares
+                    let duplicated_shares = g
+                        .custom_op(
+                            CustomOperation::new(DuplicationMPC {
+                                sender_id,
+                                programmer_id,
+                            }),
+                            vec![shares, duplication_map, keys],
+                        )?
+                        .set_name("Duplication output")?;
+
+                    // Sum duplicated shares
+                    let receiver_duplicated_share = duplicated_shares.tuple_get(1)?;
+                    let programmer_duplicated_share = duplicated_shares.tuple_get(0)?;
+
+                    let duplicated_column_a = receiver_duplicated_share
+                        .named_tuple_get("a".to_owned())?
+                        .add(programmer_duplicated_share.named_tuple_get("a".to_owned())?)?;
+                    let duplicated_column_b = receiver_duplicated_share
+                        .named_tuple_get("b".to_owned())?
+                        .add(programmer_duplicated_share.named_tuple_get("b".to_owned())?)?;
+
+                    // Combine duplicated columns
+                    g.create_tuple(vec![duplicated_column_a, duplicated_column_b])
+                })?;
 
                 let instantiated_c = run_instantiation_pass(c)?.context;
                 let inlined_c = inline_operations(
@@ -2658,29 +2617,21 @@ mod tests {
         is_y_private: bool,
     ) -> Result<()> {
         // test correct inputs
-        let c = create_context()?;
+        let c = simple_context(|g| {
+            let compose_set_shares = |types: &[(String, Type)]| -> Result<Node> {
+                let mut columns = vec![];
+                for (header, t) in types {
+                    let input_column = g.input((*t).clone())?;
 
-        let g = c.create_graph()?;
+                    columns.push(((*header).clone(), input_column));
+                }
+                g.create_named_tuple(columns)
+            };
 
-        let compose_set_shares = |types: &[(String, Type)]| -> Result<Node> {
-            let mut columns = vec![];
-            for (header, t) in types {
-                let input_column = g.input((*t).clone())?;
-
-                columns.push(((*header).clone(), input_column));
-            }
-            g.create_named_tuple(columns)
-        };
-
-        let data_x = compose_set_shares(&types_x)?;
-        let data_y = compose_set_shares(&types_y)?;
-
-        let out = g.add_node(vec![data_x, data_y], vec![], op)?;
-
-        out.set_as_output()?;
-        g.finalize()?;
-        g.set_as_main()?;
-        c.finalize()?;
+            let data_x = compose_set_shares(&types_x)?;
+            let data_y = compose_set_shares(&types_y)?;
+            g.add_node(vec![data_x, data_y], vec![], op)
+        })?;
 
         let mut input_parties = vec![];
         if is_x_private {
