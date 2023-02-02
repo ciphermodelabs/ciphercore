@@ -144,9 +144,7 @@ pub(crate) fn print_stats(graph: Graph) -> Result<()> {
         match op {
             Operation::Input(_) => {
                 let input = InputInfo {
-                    name: node
-                        .get_name()
-                        .or_else(|_| Result::Ok("unnamed".to_string()))?,
+                    name: node.get_name()?.unwrap_or_else(|| "unnamed".to_owned()),
                     type_string: format!("{}", node.get_type()?),
                 };
                 inputs.push(input);
@@ -191,8 +189,8 @@ pub(crate) fn print_stats(graph: Graph) -> Result<()> {
 
     let output_node = graph.get_output_node()?;
     let output_name = output_node
-        .get_name()
-        .or_else(|_| Result::Ok("unnamed".to_string()))?;
+        .get_name()?
+        .unwrap_or_else(|| "unnamed".to_owned());
     let output_type = format!("{}", output_node.get_type()?);
     println!("Output: ",);
     println!("  Name:{output_name}");

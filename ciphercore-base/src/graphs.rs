@@ -372,9 +372,9 @@ impl Node {
     /// let t = scalar_type(BIT);
     /// let n = g.input(t).unwrap();
     /// n.set_name("XOR").unwrap();
-    /// assert_eq!(n.get_name().unwrap(), "XOR".to_owned());
+    /// assert_eq!(n.get_name().unwrap(), Some("XOR".to_owned()));
     /// ```
-    pub fn get_name(&self) -> Result<String> {
+    pub fn get_name(&self) -> Result<Option<String>> {
         self.get_graph().get_context().get_node_name(self.clone())
     }
 
@@ -3604,7 +3604,7 @@ impl Context {
     ///
     /// # Returns
     ///
-    /// Name of a node
+    /// Name of a node or None if it doesn't have a name
     ///
     /// # Example
     ///
@@ -3616,20 +3616,16 @@ impl Context {
     /// let t = scalar_type(BIT);
     /// let n = g.input(t).unwrap();
     /// n.set_name("XOR").unwrap();
-    /// assert_eq!(c.get_node_name(n).unwrap(), "XOR".to_owned());
+    /// assert_eq!(c.get_node_name(n).unwrap(), Some("XOR".to_owned()));
     /// ```
-    pub fn get_node_name(&self, node: Node) -> Result<String> {
+    pub fn get_node_name(&self, node: Node) -> Result<Option<String>> {
         if node.get_graph().get_context() != *self {
             return Err(runtime_error!("The node is in a different context"));
         }
         let node_id = node.get_id();
         let graph_id = node.get_graph().get_id();
         let cell = self.body.borrow();
-        Ok(cell
-            .nodes_names
-            .get(&(graph_id, node_id))
-            .ok_or_else(|| runtime_error!("The node is not named"))?
-            .clone())
+        Ok(cell.nodes_names.get(&(graph_id, node_id)).cloned())
     }
 
     /// Returns the node with a given name in a given graph.
@@ -4090,8 +4086,7 @@ pub fn contexts_deep_equal(context1: Context, context2: Context) -> bool {
 
 // Pass the node name of `in_node` to `out_node` if it is present.
 pub(crate) fn copy_node_name(in_node: Node, out_node: Node) -> Result<()> {
-    let node_name_result = in_node.get_name();
-    if let Ok(node_name) = node_name_result {
+    if let Some(node_name) = in_node.get_name()? {
         out_node.set_name(&node_name)?;
     }
     Ok(())
@@ -4776,7 +4771,7 @@ mod tests {
             context.set_main_graph(graph.clone())?;
             assert!(context.get_graph_name(graph.clone()).is_err());
             assert!(context.retrieve_graph("main").is_err());
-            assert!(context.get_node_name(input_a.clone()).is_err());
+            assert!(context.get_node_name(input_a.clone())?.is_none());
             assert!(context.retrieve_node(graph.clone(), "a").is_err());
             context.set_graph_name(graph.clone(), "main")?;
             context.set_node_name(input_a.clone(), "a")?;
@@ -4784,8 +4779,14 @@ mod tests {
             context.set_node_name(input_b.clone(), "b")?;
             context.finalize()?;
             assert_eq!(context.get_graph_name(graph.clone())?, "main");
-            assert_eq!(context.get_node_name(input_a.clone())?, "a");
-            assert_eq!(context.get_node_name(input_b.clone())?, "b");
+            assert_eq!(
+                context.get_node_name(input_a.clone())?,
+                Some("a".to_owned())
+            );
+            assert_eq!(
+                context.get_node_name(input_b.clone())?,
+                Some("b".to_owned())
+            );
             assert!(context.retrieve_node(graph.clone(), "a")? == input_a.clone());
             Ok(context)
         };
@@ -5026,7 +5027,7 @@ mod tests {
             let i = g.input(scalar_type(BIT))?.set_name("node name")?;
             assert_eq!(g.get_name()?, "graph name");
             assert!(g.retrieve_node("node name")? == i);
-            assert!(i.get_name()? == "node name");
+            assert_eq!(i.get_name()?, Some("node name".to_owned()));
             assert_eq!(
                 g.prepare_input_values(hashmap!("node name" => Value::from_scalar(1, BIT)?))?,
                 vec![Value::from_scalar(1, BIT)?]

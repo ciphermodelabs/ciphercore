@@ -49,7 +49,7 @@ pub(super) fn optimize_graph_constants(
                 "Constant optimization works only on fully inlined graphs."
             ));
         }
-        let mut resolve_const = |t: Type, val: Value, name: Result<String>| -> Result<Node> {
+        let mut resolve_const = |t: Type, val: Value, name: Option<String>| -> Result<Node> {
             let key = ConstantKey {
                 t: t.clone(),
                 v: val.clone(),
@@ -57,8 +57,8 @@ pub(super) fn optimize_graph_constants(
             if let std::collections::hash_map::Entry::Vacant(e) = constant_cache.entry(key.clone())
             {
                 let constant_node = out_graph.constant(t, val)?;
-                if name.is_ok() {
-                    constant_node.set_name(&(name?))?;
+                if let Some(name) = name {
+                    constant_node.set_name(&name)?;
                 }
                 e.insert(constant_node.clone());
                 Ok(constant_node)
@@ -75,7 +75,7 @@ pub(super) fn optimize_graph_constants(
                 }
                 let value_ptr = evaluator.evaluate_node(node.clone(), vec![])?;
                 constant_nodes.insert(node.clone(), value_ptr);
-                resolve_const(t, val, node.get_name())?
+                resolve_const(t, val, node.get_name()?)?
             }
             _ => {
                 let mut deps = vec![];
@@ -101,7 +101,7 @@ pub(super) fn optimize_graph_constants(
                         .collect();
                     let value_ptr = evaluator.evaluate_node(node.clone(), dep_vals)?;
                     constant_nodes.insert(node.clone(), value_ptr.clone());
-                    resolve_const(node.get_type()?, value_ptr.clone(), node.get_name())?
+                    resolve_const(node.get_type()?, value_ptr.clone(), node.get_name()?)?
                 } else {
                     let result = out_graph.add_node(deps, vec![], node.get_operation())?;
                     for annotation in node.get_annotations()? {

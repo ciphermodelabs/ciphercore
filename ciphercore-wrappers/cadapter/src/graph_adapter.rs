@@ -575,7 +575,7 @@ pub extern "C" fn context_get_node_name(
 ) -> CResultVal<CStr> {
     context_method_helper(context_ptr, |c| {
         let node = unsafe_deref(node_ptr)?;
-        CStr::from_string(c.get_node_name(node)?)
+        CStr::from_string(c.get_node_name(node)?.unwrap_or_default())
     })
 }
 

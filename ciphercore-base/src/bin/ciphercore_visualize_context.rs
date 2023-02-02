@@ -68,7 +68,7 @@ fn get_graphviz_node_def(node: Node) -> Result<String> {
     // Generate a string according to the node type
     let node_type = node.get_type()?;
     type_str.push_str(&(node_type.to_string()));
-    let node_name = if let Ok(s) = node.get_name() {
+    let node_name = if let Some(s) = node.get_name()? {
         format!("\\n{s}\\n")
     } else {
         "".to_owned()
