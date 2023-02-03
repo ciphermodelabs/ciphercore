@@ -3680,6 +3680,15 @@ impl Context {
     }
 }
 
+fn serialize_hashmap<K, V>(map: HashMap<K, V>) -> Vec<(K, V)>
+where
+    K: Ord + Copy,
+{
+    let mut vec: Vec<_> = map.into_iter().collect();
+    vec.sort_by_key(|(k, _)| *k);
+    vec
+}
+
 /// Methods which aren't supposed to be imported in Python.
 impl Context {
     pub(super) fn is_finalized(&self) -> bool {
@@ -3700,10 +3709,10 @@ impl Context {
                 .map(|g| g.make_serializable())
                 .collect(),
             main_graph,
-            graphs_names: cell.graphs_names.clone().into_iter().collect(),
-            nodes_names: cell.nodes_names.clone().into_iter().collect(),
-            graphs_annotations: cell.graphs_annotations.clone().into_iter().collect(),
-            nodes_annotations: cell.nodes_annotations.clone().into_iter().collect(),
+            graphs_names: serialize_hashmap(cell.graphs_names.clone()),
+            nodes_names: serialize_hashmap(cell.nodes_names.clone()),
+            graphs_annotations: serialize_hashmap(cell.graphs_annotations.clone()),
+            nodes_annotations: serialize_hashmap(cell.nodes_annotations.clone()),
         })
     }
 
@@ -4615,6 +4624,19 @@ mod tests {
             context.finalize().unwrap();
             context
         };
+        let context15 = || {
+            let context = create_unchecked_context().unwrap();
+            let graph = context.create_graph().unwrap();
+            let mut x = graph.input(scalar_type(BIT)).unwrap();
+            for i in 1..20 {
+                let y = graph.input(scalar_type(BIT)).unwrap();
+                y.set_name(format!("input_{}", i).as_str()).unwrap();
+                x = graph.add(x, y).unwrap();
+            }
+            graph.set_output_node(x).unwrap();
+            graph.finalize().unwrap();
+            context
+        };
         let mut closures: Vec<Box<dyn Fn() -> Context>> = vec![];
         closures.push(Box::new(context1));
         closures.push(Box::new(context2));
@@ -4630,6 +4652,7 @@ mod tests {
         closures.push(Box::new(context12));
         closures.push(Box::new(context13));
         closures.push(Box::new(context14));
+        closures.push(Box::new(context15));
         closures
     }
 
@@ -4719,6 +4742,10 @@ mod tests {
                 contexts[i].clone(),
                 deserialized_contexts[i].clone()
             ));
+            assert_eq!(
+                serialized_contexts[i],
+                serde_json::to_string(&deserialized_contexts[i]).unwrap()
+            )
         }
 
         //Read test cases from golden file
