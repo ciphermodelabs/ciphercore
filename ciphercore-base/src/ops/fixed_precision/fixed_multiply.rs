@@ -185,7 +185,7 @@ mod tests {
         let two_times_two = multiply_helper(
             TypedValue::from_scalar(2, INT64)?,
             TypedValue::from_scalar(2, INT64)?,
-            int_config.clone(),
+            int_config,
         )?
         .to_u64()?;
         assert_eq!(two_times_two, 4);
@@ -204,7 +204,7 @@ mod tests {
         let two_times_two = multiply_helper(
             TypedValue::from_scalar(2 << 15, INT64)?,
             TypedValue::from_scalar(2 << 15, INT64)?,
-            fixed_config.clone(),
+            fixed_config,
         )?
         .to_u64()?;
         assert_eq!(two_times_two, 4 << 15);
@@ -227,7 +227,7 @@ mod tests {
         let two_times_minus_three = multiply_helper(
             TypedValue::from_scalar(2 << 15, INT64)?,
             TypedValue::from_scalar(-3 << 15, INT64)?,
-            fixed_config.clone(),
+            fixed_config,
         )?
         .to_u64()?;
         assert_eq!(two_times_minus_three as i64, -6 << 15);
@@ -243,19 +243,19 @@ mod tests {
         let two_times_x = ToNdarray::<i64>::to_ndarray(&multiply_helper(
             TypedValue::from_scalar(2 << 15, INT64)?,
             TypedValue::from_ndarray(array![1 << 15, 2 << 15, 3 << 15].into_dyn(), INT64)?,
-            fixed_config.clone(),
+            fixed_config,
         )?)?;
         assert_eq!(two_times_x.into_raw_vec(), vec![2 << 15, 4 << 15, 6 << 15]);
         let x_times_two = ToNdarray::<i64>::to_ndarray(&multiply_helper(
             TypedValue::from_ndarray(array![1 << 15, 2 << 15, 3 << 15].into_dyn(), INT64)?,
             TypedValue::from_scalar(2 << 15, INT64)?,
-            fixed_config.clone(),
+            fixed_config,
         )?)?;
         assert_eq!(x_times_two.into_raw_vec(), vec![2 << 15, 4 << 15, 6 << 15]);
         let x_times_y = ToNdarray::<i64>::to_ndarray(&multiply_helper(
             TypedValue::from_ndarray(array![1 << 15, 2 << 15, 3 << 15].into_dyn(), INT64)?,
             TypedValue::from_ndarray(array![4 << 15, 5 << 15, 6 << 15].into_dyn(), INT64)?,
-            fixed_config.clone(),
+            fixed_config,
         )?)?;
         assert_eq!(x_times_y.into_raw_vec(), vec![4 << 15, 10 << 15, 18 << 15]);
         Ok(())
@@ -270,7 +270,7 @@ mod tests {
         let x_times_y = ToNdarray::<i64>::to_ndarray(&multiply_helper(
             TypedValue::from_ndarray(array![1 << 15, 2 << 15, 3 << 15].into_dyn(), INT64)?,
             TypedValue::from_ndarray(array![2 << 15].into_dyn(), INT64)?,
-            fixed_config.clone(),
+            fixed_config,
         )?)?;
         assert_eq!(x_times_y.into_raw_vec(), vec![2 << 15, 4 << 15, 6 << 15]);
         Ok(())
@@ -285,7 +285,7 @@ mod tests {
         let two_times_two = multiply_helper(
             TypedValue::from_scalar(2 << 15, INT64)?,
             TypedValue::from_scalar(2 << 15, INT64)?,
-            fixed_config.clone(),
+            fixed_config,
         )?
         .to_u64()?;
         assert_eq!(two_times_two, 4 << 15);
@@ -301,7 +301,7 @@ mod tests {
         let err = multiply_helper(
             TypedValue::from_scalar(1 << 30, INT64)?,
             TypedValue::from_scalar(1 << 30, INT64)?,
-            fixed_config.clone(),
+            fixed_config,
         );
         assert!(err.is_err());
         Ok(())
