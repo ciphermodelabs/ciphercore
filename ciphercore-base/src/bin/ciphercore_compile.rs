@@ -1,5 +1,4 @@
 //! Code of a binary that outputs a serialized context, which is optimized and MPC-ready, from a given context
-#![cfg_attr(feature = "nightly-features", feature(backtrace))]
 #[macro_use]
 extern crate ciphercore_base;
 

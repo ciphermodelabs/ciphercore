@@ -1,5 +1,4 @@
 //! Code example of a binary creating the serialization of a set intersection context via [the HEK protocol](https://homes.luddy.indiana.edu/yh33/mypub/psi.pdf).
-#![cfg_attr(feature = "nightly-features", feature(backtrace))]
 extern crate ciphercore_base;
 
 use std::str::FromStr;

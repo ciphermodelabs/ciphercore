@@ -1,8 +1,6 @@
 //! Wrapper for a main function to run CipherCore
 use crate::errors::ErrorWithBody;
 use log::error;
-#[cfg(feature = "nightly-features")]
-use log::info;
 use std::fmt::Display;
 use std::process;
 use std::result::Result;
@@ -20,9 +18,7 @@ where
     let result = std::panic::catch_unwind(|| {
         let result = f();
         if let Err(e) = result {
-            error!("CipherCore Error: {}", e);
-            #[cfg(feature = "nightly-features")]
-            info!("error backtrace: \n{}", e.get_body().backtrace);
+            error!("CipherCore Error:\n{e}");
             process::exit(1);
         }
     });

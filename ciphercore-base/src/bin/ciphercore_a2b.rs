@@ -1,5 +1,4 @@
 //! Code example of a binary creating the serialization of a a2b context.
-#![cfg_attr(feature = "nightly-features", feature(backtrace))]
 extern crate ciphercore_base;
 
 use std::str::FromStr;

@@ -1,5 +1,4 @@
 //! Code of a binary printing statistics on a given serialized context.
-#![cfg_attr(feature = "nightly-features", feature(backtrace))]
 extern crate ciphercore_base;
 
 use ciphercore_base::data_types::{

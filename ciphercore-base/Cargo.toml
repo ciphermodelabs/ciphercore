@@ -40,7 +40,6 @@ futures-util = "0.3.21"
 
 [features]
 default = []
-nightly-features = []
 fuzzing = []
 py-binding = ["dep:pyo3", "dep:pywrapper-macro"]
 

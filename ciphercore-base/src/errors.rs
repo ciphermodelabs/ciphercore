@@ -21,14 +21,14 @@ impl CiphercoreBaseError {
 }
 
 impl ErrorWithBody for CiphercoreBaseError {
-    fn get_body(&self) -> CiphercoreErrorBody {
-        self.body.clone()
+    fn get_body(self) -> CiphercoreErrorBody {
+        self.body
     }
 }
 
 impl fmt::Display for CiphercoreBaseError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", serde_json::to_string_pretty(&self).unwrap())
+        self.body.fmt(f)
     }
 }
 

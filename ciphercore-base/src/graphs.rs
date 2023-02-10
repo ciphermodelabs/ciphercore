@@ -4189,6 +4189,7 @@ mod tests {
     use crate::inline::inline_ops::InlineConfig;
     use crate::mpc::mpc_compiler::{prepare_for_mpc_evaluation, IOStatus};
     use crate::version::DATA_VERSION;
+    use std::panic;
     use std::rc::Rc;
 
     #[test]
@@ -4690,6 +4691,9 @@ mod tests {
 
     pub fn deserialize_error_lenient(serialized_string: &str, error_msg: &str) {
         use std::panic::catch_unwind;
+        panic::set_hook(Box::new(|_info| {
+            // See: https://stackoverflow.com/questions/35559267/suppress-panic-output-in-rust-when-using-paniccatch-unwind
+        }));
         let result = catch_unwind(|| serde_json::from_str::<Context>(serialized_string).unwrap());
         // This is a (nasty) hack.
         // We check whether the returned error contain the expected error message.
@@ -4723,7 +4727,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "nightly-features"))]
     fn test_context_serialize() {
         let generators = context_generators();
         let contexts: Vec<Context> = generators.iter().map(|generator| generator()).collect();

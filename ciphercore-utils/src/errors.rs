@@ -37,7 +37,7 @@ mod custom_date_time_format {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CiphercoreErrorBody {
     pub kind: CiphercoreErrorKind,
     pub message: String,
@@ -47,18 +47,23 @@ pub struct CiphercoreErrorBody {
     pub column: u32,
     #[serde(with = "custom_date_time_format")]
     pub utc_date_time: DateTime<Utc>,
-    #[cfg(feature = "nightly-features")]
+    #[serde(skip)]
     pub backtrace: String,
 }
 
 impl fmt::Display for CiphercoreErrorBody {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", serde_json::to_string_pretty(&self).unwrap())
+        write!(
+            f,
+            "{}\n{}",
+            serde_json::to_string_pretty(&self).unwrap(),
+            self.backtrace
+        )
     }
 }
 
 pub trait ErrorWithBody {
-    fn get_body(&self) -> CiphercoreErrorBody;
+    fn get_body(self) -> CiphercoreErrorBody;
 }
 
 #[doc(hidden)]
@@ -73,26 +78,9 @@ macro_rules! runtime_error_body {
             line: line!(),
             column: column!(),
             utc_date_time: chrono::Utc::now(),
-            #[cfg(feature = "nightly-features")]
             backtrace: std::backtrace::Backtrace::force_capture().to_string(),
         }
     };
-}
-
-impl Clone for CiphercoreErrorBody {
-    fn clone(&self) -> Self {
-        Self {
-            kind: self.kind.clone(),
-            message: self.message.clone(),
-            module: self.module.clone(),
-            file: self.file.clone(),
-            line: self.line,
-            column: self.column,
-            utc_date_time: self.utc_date_time,
-            #[cfg(feature = "nightly-features")]
-            backtrace: self.backtrace.clone(),
-        }
-    }
 }
 
 #[cfg(test)]
