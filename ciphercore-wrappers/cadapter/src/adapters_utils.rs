@@ -219,7 +219,7 @@ pub struct CiphercoreError {
 }
 
 impl CiphercoreError {
-    pub(crate) fn new(body: CiphercoreErrorBody) -> CiphercoreError {
+    pub(crate) fn new(body: Box<CiphercoreErrorBody>) -> CiphercoreError {
         let s = format!("{}", body);
         let cs = std::ffi::CString::new(s).unwrap();
         let p = cs.as_ptr() as *const u8;

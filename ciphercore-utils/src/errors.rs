@@ -63,7 +63,7 @@ impl fmt::Display for CiphercoreErrorBody {
 }
 
 pub trait ErrorWithBody {
-    fn get_body(self) -> CiphercoreErrorBody;
+    fn get_body(self) -> Box<CiphercoreErrorBody>;
 }
 
 #[doc(hidden)]

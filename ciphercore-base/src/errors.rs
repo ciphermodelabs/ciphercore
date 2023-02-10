@@ -11,17 +11,23 @@ use std::fmt;
 #[doc(hidden)]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CiphercoreBaseError {
-    body: CiphercoreErrorBody,
+    body: Box<CiphercoreErrorBody>,
 }
 
 impl CiphercoreBaseError {
     pub fn new(body: CiphercoreErrorBody) -> Self {
+        Self {
+            body: Box::new(body),
+        }
+    }
+
+    pub fn new_box(body: Box<CiphercoreErrorBody>) -> Self {
         Self { body }
     }
 }
 
 impl ErrorWithBody for CiphercoreBaseError {
-    fn get_body(self) -> CiphercoreErrorBody {
+    fn get_body(self) -> Box<CiphercoreErrorBody> {
         self.body
     }
 }
@@ -116,5 +122,15 @@ mod tests {
             let err = CiphercoreBaseError::from(e);
             assert!(err.to_string().find("serde_json::Error: ").is_some())
         }
+    }
+
+    #[test]
+    fn error_size_should_be_small() {
+        // Types like `Result<u32, Err>` takes max(4, size_of(Err)) bytes, which could be
+        // quite expensive. So we wrap errors into Box.
+        //
+        // See more: https://rust-lang.github.io/rust-clippy/master/index.html#result_large_err
+        let size = std::mem::size_of::<CiphercoreBaseError>();
+        assert!(size <= 16);
     }
 }
