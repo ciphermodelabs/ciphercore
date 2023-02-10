@@ -1,14 +1,18 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{
-    data_types::Type, data_values::Value, errors::Result, graphs::JoinType,
+    data_types::{array_type, named_tuple_type, Type},
+    data_values::Value,
+    errors::Result,
+    graphs::JoinType,
     type_inference::NULL_HEADER,
+    typed_value::TypedValue,
 };
 
 // column header -> column array type
 type HeadersTypes = Vec<(String, Arc<Type>)>;
 
-fn get_named_types(t: Type) -> HeadersTypes {
+fn get_named_types(t: &Type) -> &HeadersTypes {
     if let Type::NamedTuple(v) = t {
         v
     } else {
@@ -17,7 +21,7 @@ fn get_named_types(t: Type) -> HeadersTypes {
 }
 
 struct ColumnsMap {
-    // column header -> column array
+    // column header -> column array index
     header_index_map: HashMap<String, usize>,
     // arrays containing data of all columns
     columns_data: Vec<Vec<u64>>,
@@ -34,11 +38,11 @@ impl ColumnsMap {
     }
 }
 
-fn extract_columns(set_value: Value, headers_types: &HeadersTypes) -> Result<ColumnsMap> {
+fn extract_columns(set: &TypedValue, headers_types: &HeadersTypes) -> Result<ColumnsMap> {
     let mut header_index_map = HashMap::new();
     let mut columns_data = vec![];
     let mut elements_per_row = vec![];
-    let set_columns = set_value.to_vector()?;
+    let set_columns = set.value.to_vector()?;
     for (i, (header, column_t)) in headers_types.iter().enumerate() {
         let column_array = set_columns[i].to_flattened_array_u64((**column_t).clone())?;
         columns_data.push(column_array);
@@ -166,13 +170,13 @@ fn get_inner_join_columns(join_input: &JoinInput) -> Vec<Vec<u64>> {
 
 // Preprocessed input of join algorithms.
 // Note that it contains a hashmap of the rows of the second set hashed by their key columns, which simplifies computation of the set intersection
-struct JoinInput {
+struct JoinInput<'a> {
     // Columns of the first set
     columns0: ColumnsMap,
     // Columns of the second set
     columns1: ColumnsMap,
     // Headers and types of the first set
-    headers_types0: HeadersTypes,
+    headers_types0: &'a HeadersTypes,
     // Key headers of the first set
     key_headers0: Vec<String>,
     // Map of key headers: first set header -> second set header
@@ -180,7 +184,7 @@ struct JoinInput {
     // Keys of the second set with the corresponding rows kept in a hashmap
     key_data_hashmap1: HashMap<Vec<u64>, Vec<Vec<u64>>>,
     // Headers and types of the result
-    result_headers_types: HeadersTypes,
+    result_headers_types: &'a HeadersTypes,
 }
 
 // Computes the left join of given sets.
@@ -305,29 +309,105 @@ fn get_union_columns(join_input: &JoinInput) -> Vec<Vec<u64>> {
     res_columns
 }
 
-pub(crate) fn evaluate_join(
-    join_t: JoinType,
-    set0: Value,
-    set1: Value,
-    set0_t: Type,
-    set1_t: Type,
+fn get_number_of_rows(set_t: &Type) -> Result<u64> {
+    let headers_types = get_named_types(set_t);
+    if headers_types.is_empty() {
+        return Err(runtime_error!("The set is empty"));
+    }
+    Ok(headers_types[0].1.get_shape()[0])
+}
+
+fn evaluate_full_join(
+    set0: TypedValue,
+    set1: TypedValue,
     headers: &HashMap<String, String>,
     res_t: Type,
 ) -> Result<Value> {
-    let headers_types1 = get_named_types(set1_t);
+    // First, evaluate the left join of set1 and set0.
+    let num_rows1 = get_number_of_rows(&set1.t)?;
+    // Resulting type of this left join. The columns of set1 go first, then the remaining columns of set0.
+    let left_join_t = {
+        let mut result_types_vec = vec![];
+        let headers_types1 = get_named_types(&set1.t);
+        for (h, sub_t) in headers_types1 {
+            let mut shape = sub_t.get_shape();
+            shape[0] = num_rows1;
+            let st = sub_t.get_scalar_type();
+            let res_sub_t = array_type(shape, st);
+            result_types_vec.push((h.clone(), res_sub_t));
+        }
+        let headers_types0 = get_named_types(&set0.t);
+        for (h, sub_t) in headers_types0 {
+            if h != NULL_HEADER && !headers.contains_key(h) {
+                let mut shape = sub_t.get_shape();
+                shape[0] = num_rows1;
+                let st = sub_t.get_scalar_type();
+                let res_sub_t = array_type(shape, st);
+                result_types_vec.push((h.clone(), res_sub_t));
+            }
+        }
+
+        named_tuple_type(result_types_vec)
+    };
+    // The headers of the left join are the reversed input headers.
+    let mut left_join_headers = HashMap::new();
+    for (h0, h1) in headers {
+        left_join_headers.insert(h1.clone(), h0.clone());
+    }
+    let left_join_value = evaluate_join(
+        JoinType::Left,
+        set1,
+        set0.clone(),
+        &left_join_headers,
+        left_join_t.clone(),
+    )?;
+    let left_join = TypedValue {
+        value: left_join_value,
+        t: left_join_t,
+        name: None,
+    };
+    // Then, evaluate the union of set0 and the left join result
+    // The headers for union should contain the input headers and the remaining headers of set0 except for NULL_HEADER.
+    // This avoids an error triggered on non-key columns with the same header.
+    let mut union_headers = headers.clone();
+    let headers0: Vec<String> = get_named_types(&set0.t)
+        .iter()
+        .map(|ht| ht.0.clone())
+        .collect();
+    for h in &headers0 {
+        if h == NULL_HEADER {
+            continue;
+        }
+        if !headers.contains_key(h) {
+            union_headers.insert(h.clone(), h.clone());
+        }
+    }
+    evaluate_join(JoinType::Union, set0, left_join, &union_headers, res_t)
+}
+
+pub(crate) fn evaluate_join(
+    join_t: JoinType,
+    set0: TypedValue,
+    set1: TypedValue,
+    headers: &HashMap<String, String>,
+    res_t: Type,
+) -> Result<Value> {
+    if join_t == JoinType::Full {
+        return evaluate_full_join(set0, set1, headers, res_t);
+    }
+    let headers_types1 = get_named_types(&set1.t);
     // Extract columns of the second set
-    let columns1 = extract_columns(set1, &headers_types1)?;
+    let columns1 = extract_columns(&set1, headers_types1)?;
 
     let (key_headers0, key_headers1): (Vec<_>, Vec<_>) = headers.clone().into_iter().unzip();
     // Key columns of the second set are merged and added to the hash map along with the corresponding rows
-    let key_data_hashmap1 =
-        get_hashmap_from_key_columns(&columns1, &headers_types1, &key_headers1)?;
+    let key_data_hashmap1 = get_hashmap_from_key_columns(&columns1, headers_types1, &key_headers1)?;
 
-    let headers_types0 = get_named_types(set0_t);
+    let headers_types0 = get_named_types(&set0.t);
     // Extract columns of the first set
-    let columns0 = extract_columns(set0, &headers_types0)?;
+    let columns0 = extract_columns(&set0, headers_types0)?;
 
-    let result_headers_types = get_named_types(res_t);
+    let result_headers_types = get_named_types(&res_t);
 
     let join_input = JoinInput {
         columns0,
@@ -343,6 +423,10 @@ pub(crate) fn evaluate_join(
         JoinType::Inner => get_inner_join_columns(&join_input),
         JoinType::Left => get_left_join_columns(&join_input),
         JoinType::Union => get_union_columns(&join_input),
+        JoinType::Full => {
+            // Full join is computed via left and union joins
+            return Err(runtime_error!("Shouldn't be here"));
+        }
     };
     // Collect all columns
     let mut res_value_vec = vec![];

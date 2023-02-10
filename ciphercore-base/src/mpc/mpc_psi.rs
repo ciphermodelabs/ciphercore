@@ -636,6 +636,61 @@ pub struct JoinMPC {
     pub headers: Vec<(String, String)>,
 }
 
+impl JoinMPC {
+    // FullJoin (X, Y) = Union(set0, LeftJoin(Y, X))
+    fn create_full_join_graph(
+        &self,
+        context: Context,
+        data_x_t: Type,
+        data_y_t: Type,
+        prf_t: Type,
+    ) -> Result<Graph> {
+        let g = context.create_graph()?;
+        let data_x = g.input(data_x_t.clone())?;
+        let data_y = g.input(data_y_t)?;
+        let prf_keys = g.input(prf_t)?;
+        // The headers of the left join are the reversed input headers.
+        let mut left_join_headers = vec![];
+        for (h0, h1) in &self.headers {
+            left_join_headers.push((h1.clone(), h0.clone()));
+        }
+        let left_join = g.custom_op(
+            CustomOperation::new(JoinMPC {
+                join_t: JoinType::Left,
+                headers: left_join_headers,
+            }),
+            vec![data_y, data_x.clone(), prf_keys.clone()],
+        )?;
+        // The headers for union should contain the input headers and the remaining headers of X except for NULL_HEADER.
+        // This avoids an error triggered on non-key columns with the same header.
+        let mut union_headers = self.headers.clone();
+        let (_, column_header_types_x) =
+            check_and_extract_dataset_parameters(data_x_t.clone(), is_type_shared(&data_x_t))?;
+        let headers_x: Vec<String> = column_header_types_x
+            .iter()
+            .map(|ht| ht.0.clone())
+            .collect();
+        let key_headers_x: Vec<String> = self.headers.iter().map(|ht| ht.0.clone()).collect();
+        for h in &headers_x {
+            if h == NULL_HEADER {
+                continue;
+            }
+            if !key_headers_x.contains(h) {
+                union_headers.push((h.clone(), h.clone()));
+            }
+        }
+        let res = g.custom_op(
+            CustomOperation::new(JoinMPC {
+                join_t: JoinType::Union,
+                headers: union_headers,
+            }),
+            vec![data_x, left_join, prf_keys],
+        )?;
+        res.set_as_output()?;
+        g.finalize()
+    }
+}
+
 fn check_and_extract_dataset_parameters(
     t: Type,
     is_private: bool,
@@ -695,6 +750,11 @@ impl CustomOperationBody for JoinMPC {
             check_and_extract_dataset_parameters(data_x_t.clone(), is_x_private)?;
         let (num_entries_y, column_header_types_y) =
             check_and_extract_dataset_parameters(data_y_t.clone(), is_y_private)?;
+
+        // FullJoin (X, Y) = Union(set0, LeftJoin(Y, X))
+        if self.join_t == JoinType::Full {
+            return self.create_full_join_graph(context, data_x_t, data_y_t, prf_t);
+        }
 
         // Name of the "key" column containing bits of compared columns
         // To avoid a collision with input headers, the key header is the join of all input headers
@@ -782,6 +842,9 @@ impl CustomOperationBody for JoinMPC {
             }
             JoinType::Union => {
                 y_h_types.push((NULL_HEADER.to_owned(), array_type(vec![num_entries_x], BIT)));
+            }
+            JoinType::Full => {
+                panic!("Shouldn't be here");
             }
         }
 
@@ -953,6 +1016,9 @@ impl CustomOperationBody for JoinMPC {
                 // The resulting rows are extracted directly from Y, so only the null column should be attached to Y_h
                 extended_y_shares.extract_and_attach(NULL_HEADER, data_y)?;
             }
+            JoinType::Full => {
+                panic!("Shouldn't be here");
+            }
         }
         let extended_y = extended_y_shares.into_node()?;
 
@@ -1074,6 +1140,9 @@ impl CustomOperationBody for JoinMPC {
                 node_vec
             }
             JoinType::Union => vec![],
+            JoinType::Full => {
+                panic!("Shouldn't be here");
+            }
         };
         for shares in y_h_shares.iter().skip(1) {
             // Compare elements of Y_h and X
@@ -1116,6 +1185,9 @@ impl CustomOperationBody for JoinMPC {
                     };
                 }
                 JoinType::Union => (),
+                JoinType::Full => {
+                    panic!("Shouldn't be here");
+                }
             }
             // match bits are equal to OR of eq_bits over all Y_h
             // Namely, we have new match_bits = match_bits OR eq_bits = match_bits * eq_bits + match_bits + eq_bits = match_bits + select_bits
@@ -1152,6 +1224,9 @@ impl CustomOperationBody for JoinMPC {
                 result_shares.attach_column(NULL_HEADER, res_null.clone())?;
                 res_null
             }
+            JoinType::Full => {
+                panic!("Shouldn't be here");
+            }
         };
 
         // Add resulting data in the columns of X
@@ -1175,6 +1250,9 @@ impl CustomOperationBody for JoinMPC {
                         let column = get_column(&data_x_shares, header_x.clone())?;
                         zero_pad_column(column, num_entries_y, false, prf_keys.clone())?
                     }
+                }
+                JoinType::Full => {
+                    panic!("Shouldn't be here");
                 }
             };
             // Mask out rows
@@ -1202,6 +1280,9 @@ impl CustomOperationBody for JoinMPC {
                     column = zero_pad_column(column, num_entries_x, true, prf_keys.clone())?;
                     // Y might be public, so we might need to share it
                     share_column(column, prf_keys.clone())?
+                }
+                JoinType::Full => {
+                    panic!("Shouldn't be here");
                 }
             };
             result_shares.attach_column(header_y, res_column)?;
@@ -4251,6 +4332,519 @@ mod tests {
                 vec![1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1],
             ),
             ("a".to_owned(), vec![1, 2, 0, 0, 5, 0, 0, 0, 0, 0, 0]),
+            (
+                "b".to_owned(),
+                array!([
+                    [0, 0, 0, 1],
+                    [0, 0, 1, 0],
+                    [0, 0, 0, 0],
+                    [0, 0, 0, 0],
+                    [0, 1, 0, 1],
+                    [0, 0, 1, 1],
+                    [0, 0, 0, 0],
+                    [0, 1, 0, 0],
+                    [0, 1, 1, 0],
+                    [0, 1, 1, 1],
+                    [1, 0, 0, 0]
+                ])
+                .into_raw_vec(),
+            ),
+            (
+                "c".to_owned(),
+                vec![100, 200, 0, 0, 500, 300, 210, 400, 410, 510, 610],
+            ),
+            (
+                "f".to_owned(),
+                vec![
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0,
+                ],
+            ),
+        ];
+        join_helper(
+            types_x.clone(),
+            types_y.clone(),
+            op.clone(),
+            values_x.clone(),
+            values_y.clone(),
+            expected.clone(),
+            true,
+            false,
+        )?;
+        join_helper(
+            types_x.clone(),
+            types_y.clone(),
+            op.clone(),
+            values_x.clone(),
+            values_y.clone(),
+            expected.clone(),
+            false,
+            true,
+        )?;
+        join_helper(
+            types_x, types_y, op, values_x, values_y, expected, false, false,
+        )?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_private_full_join() -> Result<()> {
+        let data_helper = |types_x: Vec<(String, Type)>,
+                           types_y: Vec<(String, Type)>,
+                           headers: Vec<(String, String)>,
+                           values_x: Vec<Vec<u64>>,
+                           values_y: Vec<Vec<u64>>,
+                           expected: Vec<(String, Vec<u64>)>|
+         -> Result<()> {
+            let mut headers_map = HashMap::new();
+            for (h0, h1) in headers {
+                headers_map.insert(h0, h1);
+            }
+            join_helper(
+                types_x,
+                types_y,
+                Operation::Join(JoinType::Full, headers_map),
+                values_x,
+                values_y,
+                expected,
+                true,
+                true,
+            )
+        };
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5], INT32)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("c".to_owned(), array_type(vec![6], INT32)),
+                ("d".to_owned(), array_type(vec![6], INT16)),
+            ],
+            vec![("b".to_owned(), "c".to_owned())],
+            vec![
+                vec![1, 1, 1, 1, 1],
+                vec![1, 2, 3, 4, 5],
+                vec![10, 20, 30, 40, 50],
+            ],
+            vec![
+                vec![1, 1, 1, 1, 1, 1],
+                vec![30, 21, 40, 41, 51, 61],
+                vec![300, 210, 400, 410, 510, 610],
+            ],
+            vec![
+                (
+                    NULL_HEADER.to_owned(),
+                    vec![1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1],
+                ),
+                ("a".to_owned(), vec![1, 2, 0, 0, 5, 3, 0, 4, 0, 0, 0]),
+                (
+                    "b".to_owned(),
+                    vec![10, 20, 0, 0, 50, 30, 21, 40, 41, 51, 61],
+                ),
+                (
+                    "d".to_owned(),
+                    vec![0, 0, 0, 0, 0, 300, 210, 400, 410, 510, 610],
+                ),
+            ],
+        )?;
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5, 4], BIT)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("b".to_owned(), array_type(vec![6, 4], BIT)),
+                ("c".to_owned(), array_type(vec![6], INT16)),
+            ],
+            vec![("b".to_owned(), "b".to_owned())],
+            vec![
+                vec![1, 1, 1, 0, 1],
+                vec![1, 2, 3, 4, 5],
+                array!([
+                    [0, 0, 0, 1],
+                    [0, 0, 1, 0],
+                    [0, 0, 1, 1],
+                    [0, 1, 0, 0],
+                    [0, 1, 0, 1]
+                ])
+                .into_raw_vec(),
+            ],
+            vec![
+                vec![1, 0, 1, 1, 1, 1],
+                array!([
+                    [0, 0, 1, 1],
+                    [1, 1, 1, 0],
+                    [0, 1, 0, 0],
+                    [0, 1, 1, 0],
+                    [0, 1, 1, 1],
+                    [1, 0, 0, 0]
+                ])
+                .into_raw_vec(),
+                vec![300, 210, 400, 410, 510, 610],
+            ],
+            vec![
+                (
+                    NULL_HEADER.to_owned(),
+                    vec![1, 1, 0, 0, 1, 1, 0, 1, 1, 1, 1],
+                ),
+                ("a".to_owned(), vec![1, 2, 0, 0, 5, 3, 0, 0, 0, 0, 0]),
+                (
+                    "b".to_owned(),
+                    array!([
+                        [0, 0, 0, 1],
+                        [0, 0, 1, 0],
+                        [0, 0, 0, 0],
+                        [0, 0, 0, 0],
+                        [0, 1, 0, 1],
+                        [0, 0, 1, 1],
+                        [0, 0, 0, 0],
+                        [0, 1, 0, 0],
+                        [0, 1, 1, 0],
+                        [0, 1, 1, 1],
+                        [1, 0, 0, 0]
+                    ])
+                    .into_raw_vec(),
+                ),
+                (
+                    "c".to_owned(),
+                    vec![0, 0, 0, 0, 0, 300, 0, 400, 410, 510, 610],
+                ),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5, 4], BIT)),
+                ("c".to_owned(), array_type(vec![5], INT16)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("d".to_owned(), array_type(vec![6, 4], BIT)),
+                ("e".to_owned(), array_type(vec![6], INT16)),
+                ("f".to_owned(), array_type(vec![6, 2], BIT)),
+            ],
+            vec![
+                ("b".to_owned(), "d".to_owned()),
+                ("c".to_owned(), "e".to_owned()),
+            ],
+            vec![
+                vec![1, 1, 1, 1, 1],
+                vec![1, 2, 3, 4, 5],
+                array!([
+                    [0, 0, 0, 1],
+                    [0, 0, 1, 0],
+                    [0, 0, 1, 1],
+                    [0, 1, 0, 0],
+                    [0, 1, 0, 1]
+                ])
+                .into_raw_vec(),
+                vec![100, 200, 300, 400, 500],
+            ],
+            vec![
+                vec![1, 1, 1, 1, 1, 1],
+                array!([
+                    [0, 0, 1, 1],
+                    [0, 0, 0, 0],
+                    [0, 1, 0, 0],
+                    [0, 1, 1, 0],
+                    [0, 1, 1, 1],
+                    [1, 0, 0, 0]
+                ])
+                .into_raw_vec(),
+                vec![300, 210, 400, 410, 510, 610],
+                vec![0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0],
+            ],
+            vec![
+                (
+                    NULL_HEADER.to_owned(),
+                    vec![1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1],
+                ),
+                ("a".to_owned(), vec![1, 2, 0, 0, 5, 3, 0, 4, 0, 0, 0]),
+                (
+                    "b".to_owned(),
+                    array!([
+                        [0, 0, 0, 1],
+                        [0, 0, 1, 0],
+                        [0, 0, 0, 0],
+                        [0, 0, 0, 0],
+                        [0, 1, 0, 1],
+                        [0, 0, 1, 1],
+                        [0, 0, 0, 0],
+                        [0, 1, 0, 0],
+                        [0, 1, 1, 0],
+                        [0, 1, 1, 1],
+                        [1, 0, 0, 0]
+                    ])
+                    .into_raw_vec(),
+                ),
+                (
+                    "c".to_owned(),
+                    vec![100, 200, 0, 0, 500, 300, 210, 400, 410, 510, 610],
+                ),
+                (
+                    "f".to_owned(),
+                    vec![
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0,
+                    ],
+                ),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5, 2], INT32)),
+                ("c".to_owned(), array_type(vec![5], INT16)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("b".to_owned(), array_type(vec![6, 2], INT32)),
+                ("c".to_owned(), array_type(vec![6], INT16)),
+                ("d".to_owned(), array_type(vec![6], BIT)),
+            ],
+            vec![
+                ("b".to_owned(), "b".to_owned()),
+                ("c".to_owned(), "c".to_owned()),
+            ],
+            vec![
+                vec![1, 1, 0, 1, 1],
+                vec![1, 2, 3, 4, 5],
+                array!([[10, 10], [20, 20], [30, 30], [40, 40], [50, 50]]).into_raw_vec(),
+                vec![100, 200, 300, 400, 500],
+            ],
+            vec![
+                vec![1, 0, 1, 1, 1, 0],
+                array!([[30, 30], [21, 21], [40, 40], [41, 41], [51, 51], [61, 61]]).into_raw_vec(),
+                vec![300, 210, 400, 410, 510, 610],
+                vec![0, 1, 1, 0, 1, 0],
+            ],
+            vec![
+                (
+                    NULL_HEADER.to_owned(),
+                    vec![1, 1, 0, 0, 1, 1, 0, 1, 1, 1, 0],
+                ),
+                ("a".to_owned(), vec![1, 2, 0, 0, 5, 0, 0, 4, 0, 0, 0]),
+                (
+                    "b".to_owned(),
+                    array!([
+                        [10, 10],
+                        [20, 20],
+                        [0, 0],
+                        [0, 0],
+                        [50, 50],
+                        [30, 30],
+                        [0, 0],
+                        [40, 40],
+                        [41, 41],
+                        [51, 51],
+                        [0, 0]
+                    ])
+                    .into_raw_vec(),
+                ),
+                (
+                    "c".to_owned(),
+                    vec![100, 200, 0, 0, 500, 300, 0, 400, 410, 510, 0],
+                ),
+                ("d".to_owned(), vec![0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5], INT32)),
+                ("c".to_owned(), array_type(vec![5], INT16)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("b".to_owned(), array_type(vec![6], INT32)),
+                ("c".to_owned(), array_type(vec![6], INT16)),
+                ("d".to_owned(), array_type(vec![6], BIT)),
+            ],
+            vec![
+                ("b".to_owned(), "b".to_owned()),
+                ("c".to_owned(), "c".to_owned()),
+            ],
+            vec![
+                vec![1, 1, 1, 1, 1],
+                vec![1, 2, 3, 4, 5],
+                vec![10, 20, 30, 40, 50],
+                vec![100, 200, 300, 400, 500],
+            ],
+            vec![
+                vec![1, 1, 1, 1, 1, 1],
+                vec![60, 70, 80, 90, 100, 110],
+                vec![600, 700, 800, 900, 1000, 1100],
+                vec![0, 1, 1, 0, 1, 0],
+            ],
+            vec![
+                (
+                    NULL_HEADER.to_owned(),
+                    vec![1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                ),
+                ("a".to_owned(), vec![1, 2, 3, 4, 5, 0, 0, 0, 0, 0, 0]),
+                (
+                    "b".to_owned(),
+                    vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110],
+                ),
+                (
+                    "c".to_owned(),
+                    vec![100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100],
+                ),
+                ("d".to_owned(), vec![0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5], INT32)),
+                ("c".to_owned(), array_type(vec![5], INT16)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("b".to_owned(), array_type(vec![6], INT32)),
+                ("c".to_owned(), array_type(vec![6], INT16)),
+                ("d".to_owned(), array_type(vec![6], BIT)),
+            ],
+            vec![
+                ("b".to_owned(), "b".to_owned()),
+                ("c".to_owned(), "c".to_owned()),
+            ],
+            vec![
+                vec![0, 0, 0, 1, 1],
+                vec![1, 2, 3, 4, 5],
+                vec![10, 20, 30, 40, 50],
+                vec![100, 200, 300, 400, 500],
+            ],
+            vec![
+                vec![1, 1, 1, 0, 0, 0],
+                vec![10, 20, 30, 40, 50, 60],
+                vec![100, 200, 300, 400, 500, 600],
+                vec![0, 1, 1, 0, 1, 0],
+            ],
+            vec![
+                (
+                    NULL_HEADER.to_owned(),
+                    vec![0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0],
+                ),
+                ("a".to_owned(), vec![0, 0, 0, 4, 5, 0, 0, 0, 0, 0, 0]),
+                ("b".to_owned(), vec![0, 0, 0, 40, 50, 10, 20, 30, 0, 0, 0]),
+                (
+                    "c".to_owned(),
+                    vec![0, 0, 0, 400, 500, 100, 200, 300, 0, 0, 0],
+                ),
+                ("d".to_owned(), vec![0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("a".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("b".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![("a".to_owned(), "b".to_owned())],
+            vec![vec![1], vec![10]],
+            vec![vec![1], vec![10]],
+            vec![
+                (NULL_HEADER.to_owned(), vec![0, 1]),
+                ("a".to_owned(), vec![0, 10]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("a".to_owned(), array_type(vec![1], INT64)),
+                ("b".to_owned(), array_type(vec![1], INT64)),
+                ("c".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("b".to_owned(), array_type(vec![1], INT64)),
+                ("a".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![
+                ("a".to_owned(), "a".to_owned()),
+                ("b".to_owned(), "b".to_owned()),
+            ],
+            vec![vec![1], vec![2], vec![3], vec![4]],
+            vec![vec![1], vec![3], vec![2]],
+            vec![
+                (NULL_HEADER.to_owned(), vec![0, 1]),
+                ("a".to_owned(), vec![0, 2]),
+                ("b".to_owned(), vec![0, 3]),
+                ("c".to_owned(), vec![0, 4]),
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_semi_private_full_join() -> Result<()> {
+        let types_x = vec![
+            (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+            ("a".to_owned(), array_type(vec![5], INT64)),
+            ("b".to_owned(), array_type(vec![5, 4], BIT)),
+            ("c".to_owned(), array_type(vec![5], INT16)),
+        ];
+        let types_y = vec![
+            (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+            ("d".to_owned(), array_type(vec![6, 4], BIT)),
+            ("e".to_owned(), array_type(vec![6], INT16)),
+            ("f".to_owned(), array_type(vec![6, 2], BIT)),
+        ];
+        let mut headers = HashMap::new();
+        headers.insert("b".to_owned(), "d".to_owned());
+        headers.insert("c".to_owned(), "e".to_owned());
+        let op = Operation::Join(JoinType::Full, headers);
+        let values_x = vec![
+            vec![1, 1, 1, 1, 1],
+            vec![1, 2, 3, 4, 5],
+            array!([
+                [0, 0, 0, 1],
+                [0, 0, 1, 0],
+                [0, 0, 1, 1],
+                [0, 1, 0, 0],
+                [0, 1, 0, 1]
+            ])
+            .into_raw_vec(),
+            vec![100, 200, 300, 400, 500],
+        ];
+        let values_y = vec![
+            vec![1, 1, 1, 1, 1, 1],
+            array!([
+                [0, 0, 1, 1],
+                [0, 0, 0, 0],
+                [0, 1, 0, 0],
+                [0, 1, 1, 0],
+                [0, 1, 1, 1],
+                [1, 0, 0, 0]
+            ])
+            .into_raw_vec(),
+            vec![300, 210, 400, 410, 510, 610],
+            vec![0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0],
+        ];
+        let expected = vec![
+            (
+                NULL_HEADER.to_owned(),
+                vec![1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1],
+            ),
+            ("a".to_owned(), vec![1, 2, 0, 0, 5, 3, 0, 4, 0, 0, 0]),
             (
                 "b".to_owned(),
                 array!([

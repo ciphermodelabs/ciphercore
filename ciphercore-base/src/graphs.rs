@@ -63,6 +63,7 @@ pub enum JoinType {
     Inner,
     Left,
     Union,
+    Full,
 }
 
 #[doc(hidden)]
@@ -1453,6 +1454,12 @@ impl Graph {
     /// In contrast to the SQL union, this operation does not require that input datasets have respective columns of the same type.
     /// This means that columns of both datasets are included and filled with zeros where no data can be retrieved.
     /// Namely, the rows of the second set in the union join will contain zeros in non-key columns of the first set and vice versa.
+    /// - Full join: a named tuple containing all the rows of the both sets.
+    /// If a row of the first set match with a row of the second set, they are merged into one.
+    /// The order of rows goes as follows:
+    /// 1. the rows of the first set that don't belong to the inner join.
+    /// 2. all the rows of the second set including those merged with the rows of the first set as in inner join.
+    /// In this form, full join is computed as `union_join(a, left_join(b, a))`.  
     ///
     /// The content of non-key columns is merged.
     /// The order of these rows is the same as in the first named tuple.
@@ -1462,6 +1469,8 @@ impl Graph {
     ///
     /// * `a` - node containing the first named tuple
     /// * `b` - node containing the second named tuple
+    /// * `t` - join type (Inner/Left/Union/Full)
+    /// * `headers` - headers of columns along which the join is performed
     ///
     /// # Returns
     ///

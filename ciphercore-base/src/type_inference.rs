@@ -385,7 +385,7 @@ fn join_inference(
     let mut result_types_vec = vec![];
     let res_num_entries = match join_t {
         JoinType::Inner | JoinType::Left => num_entries0,
-        JoinType::Union => num_entries0 + num_entries1,
+        JoinType::Union | JoinType::Full => num_entries0 + num_entries1,
     };
     if let Type::NamedTuple(v0) = t0 {
         for (h, sub_t) in v0 {
@@ -3331,7 +3331,7 @@ mod tests {
         let num_expected = if let Operation::Join(join_t, _) = op {
             match join_t {
                 JoinType::Inner | JoinType::Left => num0,
-                JoinType::Union => num0 + num1,
+                JoinType::Union | JoinType::Full => num0 + num1,
             }
         } else {
             panic!("Shouldn't be here");
@@ -3671,6 +3671,11 @@ mod tests {
     #[test]
     fn test_union() -> Result<()> {
         join_helper(JoinType::Union)
+    }
+
+    #[test]
+    fn test_full_join() -> Result<()> {
+        join_helper(JoinType::Full)
     }
 
     fn test_concatenate_worker(ts: Vec<Type>, axis: u64, expected_t: Type) -> Result<()> {

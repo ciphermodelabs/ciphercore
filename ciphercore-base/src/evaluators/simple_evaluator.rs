@@ -654,13 +654,20 @@ impl Evaluator for SimpleEvaluator {
             }
             Operation::Join(join_t, headers) => {
                 let dependencies = node.get_node_dependencies();
-                let set0 = dependencies_values[0].clone();
-                let set1 = dependencies_values[1].clone();
-                let set0_t = dependencies[0].get_type()?;
-                let set1_t = dependencies[1].get_type()?;
                 let res_t = node.get_type()?;
 
-                evaluate_join(join_t, set0, set1, set0_t, set1_t, &headers, res_t)
+                let set0 = TypedValue {
+                    value: dependencies_values[0].clone(),
+                    t: dependencies[0].get_type()?,
+                    name: None,
+                };
+                let set1 = TypedValue {
+                    value: dependencies_values[1].clone(),
+                    t: dependencies[1].get_type()?,
+                    name: None,
+                };
+
+                evaluate_join(join_t, set0, set1, &headers, res_t)
             }
             Operation::CreateTuple
             | Operation::CreateNamedTuple(_)
@@ -2797,6 +2804,264 @@ mod tests {
             ),
         ];
         join_helper(tests, JoinType::Union)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_full_join() -> Result<()> {
+        let tests = vec![
+            join_info(
+                vec![
+                    column_info(NULL_HEADER, &[6], BIT, &[1, 1, 1, 1, 1, 1]),
+                    column_info("ID", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
+                    column_info("Income", &[6], UINT64, &[500, 300, 0, 400, 100, 200]),
+                ],
+                vec![
+                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
+                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                    column_info(
+                        "Outcome",
+                        &[10],
+                        UINT64,
+                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
+                    ),
+                ],
+                vec![("ID", "ID")],
+                expected_info(vec![
+                    (
+                        NULL_HEADER,
+                        &[1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                    ),
+                    ("ID", &[5, 0, 0, 0, 1, 0, 4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                    (
+                        "Income",
+                        &[500, 0, 0, 0, 100, 0, 400, 0, 0, 0, 0, 0, 0, 200, 300, 0],
+                    ),
+                    (
+                        "Outcome",
+                        &[0, 0, 0, 0, 0, 0, 40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
+                    ),
+                ]),
+            ),
+            join_info(
+                vec![
+                    column_info(NULL_HEADER, &[6], BIT, &[1, 1, 1, 1, 1, 1]),
+                    column_info("ID", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
+                    column_info("Income1", &[6], UINT64, &[50, 30, 0, 40, 10, 20]),
+                ],
+                vec![
+                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
+                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                    column_info(
+                        "Income2",
+                        &[10],
+                        UINT64,
+                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
+                    ),
+                ],
+                vec![("ID", "ID"), ("Income1", "Income2")],
+                expected_info(vec![
+                    (
+                        NULL_HEADER,
+                        &[1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                    ),
+                    ("ID", &[5, 0, 0, 0, 1, 0, 4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                    (
+                        "Income1",
+                        &[
+                            50, 0, 0, 0, 10, 0, 40, 70, 80, 90, 100, 110, 120, 20, 30, 130,
+                        ],
+                    ),
+                ]),
+            ),
+            join_info(
+                vec![
+                    column_info(NULL_HEADER, &[6], BIT, &[1, 1, 1, 1, 1, 0]),
+                    column_info("ID", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
+                    column_info("Income1", &[6], UINT64, &[50, 30, 0, 40, 10, 20]),
+                    column_info("Outcome1", &[6], UINT64, &[500, 300, 0, 400, 100, 200]),
+                ],
+                vec![
+                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
+                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                    column_info(
+                        "Income2",
+                        &[10],
+                        UINT64,
+                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
+                    ),
+                    column_info(
+                        "Outcome2",
+                        &[10],
+                        UINT64,
+                        &[400, 700, 800, 900, 1000, 1100, 1200, 200, 300, 1300],
+                    ),
+                ],
+                vec![("ID", "ID"), ("Income1", "Income2")],
+                expected_info(vec![
+                    (
+                        NULL_HEADER,
+                        &[1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                    ),
+                    ("ID", &[5, 0, 0, 0, 1, 0, 4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                    (
+                        "Income1",
+                        &[
+                            50, 0, 0, 0, 10, 0, 40, 70, 80, 90, 100, 110, 120, 20, 30, 130,
+                        ],
+                    ),
+                    (
+                        "Outcome1",
+                        &[500, 0, 0, 0, 100, 0, 400, 0, 0, 0, 0, 0, 0, 0, 300, 0],
+                    ),
+                    (
+                        "Outcome2",
+                        &[
+                            0, 0, 0, 0, 0, 0, 400, 700, 800, 900, 1000, 1100, 1200, 200, 300, 1300,
+                        ],
+                    ),
+                ]),
+            ),
+            join_info(
+                vec![
+                    column_info(NULL_HEADER, &[6], BIT, &[1, 0, 1, 0, 1, 1]),
+                    column_info("Income1", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
+                    column_info("ID", &[6], UINT64, &[50, 30, 0, 40, 10, 20]),
+                    column_info("Outcome1", &[6], UINT64, &[500, 300, 0, 400, 100, 200]),
+                ],
+                vec![
+                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 0, 1, 1]),
+                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                    column_info(
+                        "Income2",
+                        &[10],
+                        UINT64,
+                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
+                    ),
+                    column_info(
+                        "Outcome2",
+                        &[10],
+                        UINT64,
+                        &[400, 700, 800, 900, 1000, 1100, 1200, 200, 300, 1300],
+                    ),
+                ],
+                vec![("ID", "ID"), ("Income1", "Income2")],
+                expected_info(vec![
+                    (
+                        NULL_HEADER,
+                        &[1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1],
+                    ),
+                    (
+                        "Income1",
+                        &[5, 0, 0, 0, 1, 2, 40, 70, 80, 90, 100, 110, 120, 0, 30, 130],
+                    ),
+                    (
+                        "ID",
+                        &[50, 0, 0, 0, 10, 20, 4, 7, 8, 9, 10, 11, 12, 0, 3, 13],
+                    ),
+                    (
+                        "Outcome1",
+                        &[500, 0, 0, 0, 100, 200, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                    ),
+                    (
+                        "Outcome2",
+                        &[
+                            0, 0, 0, 0, 0, 0, 400, 700, 800, 900, 1000, 1100, 1200, 0, 300, 1300,
+                        ],
+                    ),
+                ]),
+            ),
+            join_info(
+                vec![
+                    column_info(NULL_HEADER, &[1], BIT, &[1]),
+                    column_info("ID", &[1], UINT64, &[5]),
+                    column_info("Income1", &[1], UINT64, &[50]),
+                    column_info("Outcome1", &[1], UINT64, &[500]),
+                ],
+                vec![
+                    column_info(NULL_HEADER, &[1], BIT, &[1]),
+                    column_info("ID", &[1], UINT64, &[5]),
+                    column_info("Income2", &[1], UINT64, &[50]),
+                    column_info("Outcome2", &[1], UINT64, &[51]),
+                ],
+                vec![("ID", "ID"), ("Income1", "Income2")],
+                expected_info(vec![
+                    (NULL_HEADER, &[0, 1]),
+                    ("ID", &[0, 5]),
+                    ("Income1", &[0, 50]),
+                    ("Outcome1", &[0, 500]),
+                    ("Outcome2", &[0, 51]),
+                ]),
+            ),
+            join_info(
+                vec![
+                    column_info(NULL_HEADER, &[1], BIT, &[1]),
+                    column_info("Income1", &[1], UINT64, &[50]),
+                    column_info("Outcome1", &[1], UINT64, &[500]),
+                    column_info("ID", &[1], UINT64, &[5]),
+                ],
+                vec![
+                    column_info(NULL_HEADER, &[1], BIT, &[1]),
+                    column_info("ID", &[1], UINT64, &[5]),
+                    column_info("Income2", &[1], UINT64, &[50]),
+                    column_info("Outcome2", &[1], UINT64, &[51]),
+                ],
+                vec![("ID", "ID"), ("Income1", "Income2")],
+                expected_info(vec![
+                    (NULL_HEADER, &[0, 1]),
+                    ("Income1", &[0, 50]),
+                    ("Outcome1", &[0, 500]),
+                    ("ID", &[0, 5]),
+                    ("Outcome2", &[0, 51]),
+                ]),
+            ),
+            join_info(
+                vec![
+                    column_info(NULL_HEADER, &[2], BIT, &[1, 1]),
+                    column_info("Income1", &[2], UINT64, &[40, 50]),
+                    column_info("Outcome1", &[2], UINT64, &[400, 500]),
+                    column_info("ID", &[2], UINT64, &[4, 5]),
+                ],
+                vec![
+                    column_info(NULL_HEADER, &[2], BIT, &[1, 1]),
+                    column_info("ID", &[2], UINT64, &[4, 3]),
+                    column_info("Income2", &[2], UINT64, &[40, 30]),
+                    column_info("Outcome2", &[2, 2], UINT64, &[40, 41, 30, 31]),
+                ],
+                vec![("ID", "ID"), ("Income1", "Income2")],
+                expected_info(vec![
+                    (NULL_HEADER, &[0, 1, 1, 1]),
+                    ("Income1", &[0, 50, 40, 30]),
+                    ("Outcome1", &[0, 500, 400, 0]),
+                    ("ID", &[0, 5, 4, 3]),
+                    ("Outcome2", &[0, 0, 0, 0, 40, 41, 30, 31]),
+                ]),
+            ),
+            join_info(
+                vec![
+                    column_info(NULL_HEADER, &[2], BIT, &[1, 1]),
+                    column_info("Income1", &[2], UINT64, &[40, 50]),
+                    column_info("Outcome1", &[2], UINT64, &[400, 500]),
+                    column_info("ID", &[2], UINT64, &[4, 5]),
+                ],
+                vec![
+                    column_info(NULL_HEADER, &[2], BIT, &[1, 1]),
+                    column_info("ID", &[2], UINT64, &[6, 7]),
+                    column_info("Income2", &[2], UINT64, &[60, 70]),
+                    column_info("Outcome2", &[2, 2], UINT64, &[60, 61, 70, 71]),
+                ],
+                vec![("ID", "ID"), ("Income1", "Income2")],
+                expected_info(vec![
+                    (NULL_HEADER, &[1, 1, 1, 1]),
+                    ("Income1", &[40, 50, 60, 70]),
+                    ("Outcome1", &[400, 500, 0, 0]),
+                    ("ID", &[4, 5, 6, 7]),
+                    ("Outcome2", &[0, 0, 0, 0, 60, 61, 70, 71]),
+                ]),
+            ),
+        ];
+        join_helper(tests, JoinType::Full)?;
 
         Ok(())
     }
