@@ -985,9 +985,10 @@ impl CustomOperationBody for JoinMPC {
         let revealed_oprf_set_y = reveal_array(oprf_set_y, 1)?;
 
         // 6. Parties 1 and 2 generate random matrices for hashing of shape [3, m, LOW_MC_BLOCK_SIZE],
-        // where m = ceil(log(num_entries_y)+1).
+        // where m = ceil(log(max(num_entries_y, num_entries_x)+1).
         // TODO: quantify probability of success of Cuckoo hashing with these parameters
-        let log_num_cuckoo_entries = ((num_entries_y as f64).log2() + 1f64).ceil() as u64;
+        let log_num_cuckoo_entries =
+            ((num_entries_y.max(num_entries_x) as f64).log2() + 1f64).ceil() as u64;
         let num_hash_functions = 3;
         let hash_matrices = prf_keys_vec[2].prf(
             0,
@@ -3357,6 +3358,66 @@ mod tests {
             ],
         )?;
 
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("a".to_owned(), array_type(vec![1], INT64)),
+                ("b".to_owned(), array_type(vec![1], INT64)),
+                ("c".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("b".to_owned(), array_type(vec![5], INT64)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+            ],
+            vec![
+                ("a".to_owned(), "a".to_owned()),
+                ("b".to_owned(), "b".to_owned()),
+            ],
+            vec![vec![1], vec![2], vec![3], vec![4]],
+            vec![
+                vec![1, 1, 1, 1, 1],
+                vec![3, 4, 5, 6, 7],
+                vec![2, 3, 4, 5, 6],
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), vec![1]),
+                ("a".to_owned(), vec![2]),
+                ("b".to_owned(), vec![3]),
+                ("c".to_owned(), vec![4]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("b".to_owned(), array_type(vec![5], INT64)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("a".to_owned(), array_type(vec![1], INT64)),
+                ("b".to_owned(), array_type(vec![1], INT64)),
+                ("c".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![
+                ("a".to_owned(), "a".to_owned()),
+                ("b".to_owned(), "b".to_owned()),
+            ],
+            vec![
+                vec![1, 1, 1, 1, 1],
+                vec![3, 4, 5, 6, 7],
+                vec![2, 3, 4, 5, 6],
+            ],
+            vec![vec![1], vec![2], vec![3], vec![4]],
+            vec![
+                (NULL_HEADER.to_owned(), vec![1, 0, 0, 0, 0]),
+                ("b".to_owned(), vec![3, 0, 0, 0, 0]),
+                ("a".to_owned(), vec![2, 0, 0, 0, 0]),
+                ("c".to_owned(), vec![4, 0, 0, 0, 0]),
+            ],
+        )?;
+
         Ok(())
     }
 
@@ -3779,6 +3840,66 @@ mod tests {
                 ("a".to_owned(), vec![2]),
                 ("b".to_owned(), vec![3]),
                 ("c".to_owned(), vec![4]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("a".to_owned(), array_type(vec![1], INT64)),
+                ("b".to_owned(), array_type(vec![1], INT64)),
+                ("c".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("b".to_owned(), array_type(vec![5], INT64)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+            ],
+            vec![
+                ("a".to_owned(), "a".to_owned()),
+                ("b".to_owned(), "b".to_owned()),
+            ],
+            vec![vec![1], vec![2], vec![3], vec![4]],
+            vec![
+                vec![1, 1, 1, 1, 1],
+                vec![3, 4, 5, 6, 7],
+                vec![2, 3, 4, 5, 6],
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), vec![1]),
+                ("a".to_owned(), vec![2]),
+                ("b".to_owned(), vec![3]),
+                ("c".to_owned(), vec![4]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("b".to_owned(), array_type(vec![5], INT64)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("a".to_owned(), array_type(vec![1], INT64)),
+                ("b".to_owned(), array_type(vec![1], INT64)),
+                ("c".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![
+                ("a".to_owned(), "a".to_owned()),
+                ("b".to_owned(), "b".to_owned()),
+            ],
+            vec![
+                vec![1, 1, 1, 1, 1],
+                vec![3, 4, 5, 6, 7],
+                vec![2, 3, 4, 5, 6],
+            ],
+            vec![vec![1], vec![2], vec![3], vec![4]],
+            vec![
+                (NULL_HEADER.to_owned(), vec![1, 1, 1, 1, 1]),
+                ("b".to_owned(), vec![3, 4, 5, 6, 7]),
+                ("a".to_owned(), vec![2, 3, 4, 5, 6]),
+                ("c".to_owned(), vec![4, 0, 0, 0, 0]),
             ],
         )?;
 
@@ -4275,6 +4396,66 @@ mod tests {
                 ("a".to_owned(), vec![0, 2]),
                 ("b".to_owned(), vec![0, 3]),
                 ("c".to_owned(), vec![0, 0]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("a".to_owned(), array_type(vec![1], INT64)),
+                ("b".to_owned(), array_type(vec![1], INT64)),
+                ("c".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("b".to_owned(), array_type(vec![5], INT64)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+            ],
+            vec![
+                ("a".to_owned(), "a".to_owned()),
+                ("b".to_owned(), "b".to_owned()),
+            ],
+            vec![vec![1], vec![2], vec![3], vec![4]],
+            vec![
+                vec![1, 1, 1, 1, 1],
+                vec![3, 4, 5, 6, 7],
+                vec![2, 3, 4, 5, 6],
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), vec![0, 1, 1, 1, 1, 1]),
+                ("a".to_owned(), vec![0, 2, 3, 4, 5, 6]),
+                ("b".to_owned(), vec![0, 3, 4, 5, 6, 7]),
+                ("c".to_owned(), vec![0, 0, 0, 0, 0, 0]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("b".to_owned(), array_type(vec![5], INT64)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("a".to_owned(), array_type(vec![1], INT64)),
+                ("b".to_owned(), array_type(vec![1], INT64)),
+                ("c".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![
+                ("a".to_owned(), "a".to_owned()),
+                ("b".to_owned(), "b".to_owned()),
+            ],
+            vec![
+                vec![1, 1, 1, 1, 1],
+                vec![3, 4, 5, 6, 7],
+                vec![2, 3, 4, 5, 6],
+            ],
+            vec![vec![1], vec![2], vec![3], vec![4]],
+            vec![
+                (NULL_HEADER.to_owned(), vec![0, 1, 1, 1, 1, 1]),
+                ("b".to_owned(), vec![0, 4, 5, 6, 7, 3]),
+                ("a".to_owned(), vec![0, 3, 4, 5, 6, 2]),
+                ("c".to_owned(), vec![0, 0, 0, 0, 0, 4]),
             ],
         )?;
 
@@ -4788,6 +4969,66 @@ mod tests {
                 ("a".to_owned(), vec![0, 2]),
                 ("b".to_owned(), vec![0, 3]),
                 ("c".to_owned(), vec![0, 4]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("a".to_owned(), array_type(vec![1], INT64)),
+                ("b".to_owned(), array_type(vec![1], INT64)),
+                ("c".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("b".to_owned(), array_type(vec![5], INT64)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+            ],
+            vec![
+                ("a".to_owned(), "a".to_owned()),
+                ("b".to_owned(), "b".to_owned()),
+            ],
+            vec![vec![1], vec![2], vec![3], vec![4]],
+            vec![
+                vec![1, 1, 1, 1, 1],
+                vec![3, 4, 5, 6, 7],
+                vec![2, 3, 4, 5, 6],
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), vec![0, 1, 1, 1, 1, 1]),
+                ("a".to_owned(), vec![0, 2, 3, 4, 5, 6]),
+                ("b".to_owned(), vec![0, 3, 4, 5, 6, 7]),
+                ("c".to_owned(), vec![0, 4, 0, 0, 0, 0]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("b".to_owned(), array_type(vec![5], INT64)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("a".to_owned(), array_type(vec![1], INT64)),
+                ("b".to_owned(), array_type(vec![1], INT64)),
+                ("c".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![
+                ("a".to_owned(), "a".to_owned()),
+                ("b".to_owned(), "b".to_owned()),
+            ],
+            vec![
+                vec![1, 1, 1, 1, 1],
+                vec![3, 4, 5, 6, 7],
+                vec![2, 3, 4, 5, 6],
+            ],
+            vec![vec![1], vec![2], vec![3], vec![4]],
+            vec![
+                (NULL_HEADER.to_owned(), vec![0, 1, 1, 1, 1, 1]),
+                ("b".to_owned(), vec![0, 4, 5, 6, 7, 3]),
+                ("a".to_owned(), vec![0, 3, 4, 5, 6, 2]),
+                ("c".to_owned(), vec![0, 0, 0, 0, 0, 4]),
             ],
         )?;
 
