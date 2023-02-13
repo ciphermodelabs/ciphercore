@@ -1,6 +1,4 @@
 //! Definition of the [Value] struct and related functions, which handle data values within CipherCore.
-use atomic_refcell::AtomicRefCell;
-
 use std::convert::TryInto;
 use std::fmt;
 use std::fmt::Debug;
@@ -27,23 +25,19 @@ enum SerializableValueBody {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct SerializableValue {
-    body: Arc<AtomicRefCellWrapper<SerializableValueBody>>,
+    body: Arc<SerializableValueBody>,
 }
 
 impl SerializableValue {
     pub fn from_bytes(bytes: Vec<u8>) -> Self {
         Self {
-            body: Arc::new(AtomicRefCellWrapper(AtomicRefCell::new(
-                SerializableValueBody::Bytes(bytes),
-            ))),
+            body: Arc::new(SerializableValueBody::Bytes(bytes)),
         }
     }
 
     pub fn from_vector(v: Vec<SerializableValue>) -> Self {
         Self {
-            body: Arc::new(AtomicRefCellWrapper(AtomicRefCell::new(
-                SerializableValueBody::Vector(v),
-            ))),
+            body: Arc::new(SerializableValueBody::Vector(v)),
         }
     }
 
@@ -52,9 +46,9 @@ impl SerializableValue {
         FB: FnOnce(&[u8]) -> Result<R>,
         FV: FnOnce(&Vec<SerializableValue>) -> Result<R>,
     {
-        match *self.body.0.borrow() {
-            SerializableValueBody::Bytes(ref bytes) => f_bytes(bytes),
-            SerializableValueBody::Vector(ref v) => f_vector(v),
+        match self.body.as_ref() {
+            SerializableValueBody::Bytes(bytes) => f_bytes(bytes),
+            SerializableValueBody::Vector(v) => f_vector(v),
         }
     }
 
@@ -109,7 +103,7 @@ impl Value {
     pub fn deep_hash<H: Hasher>(&self, state: &mut H) {
         // Can't use `self.access()` here,
         // since both branches require write access to `state`.
-        match &*self.body.0.borrow() {
+        match self.body.as_ref() {
             ValueBody::Bytes(data) => {
                 data.hash(state);
             }
@@ -119,28 +113,6 @@ impl Value {
                 }
             }
         }
-    }
-}
-
-#[derive(PartialEq, Eq, Debug)]
-struct AtomicRefCellWrapper<T>(pub AtomicRefCell<T>);
-
-impl<T: Serialize> Serialize for AtomicRefCellWrapper<T> {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        self.0.borrow().serialize(serializer)
-    }
-}
-
-impl<'de, T: Deserialize<'de>> Deserialize<'de> for AtomicRefCellWrapper<T> {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<AtomicRefCellWrapper<T>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let val = Deserialize::deserialize(deserializer)?;
-        Ok(AtomicRefCellWrapper(AtomicRefCell::new(val)))
     }
 }
 
@@ -159,7 +131,7 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for AtomicRefCellWrapper<T> {
 #[derive(PartialEq, Eq, Clone)]
 #[cfg_attr(feature = "py-binding", struct_wrapper)]
 pub struct Value {
-    body: Arc<AtomicRefCellWrapper<ValueBody>>,
+    body: Arc<ValueBody>,
 }
 
 impl Serialize for Value {
@@ -208,7 +180,7 @@ fn recursively_pretty_print_value(
     f: &mut fmt::Formatter,
     indent: &str,
 ) -> fmt::Result {
-    match &*val.body.0.borrow() {
+    match val.body.as_ref() {
         ValueBody::Bytes(bytes) => {
             write!(f, "{indent}[")?;
             let l = bytes.len();
@@ -256,9 +228,7 @@ impl Value {
     /// New value
     pub fn from_bytes(bytes: Vec<u8>) -> Self {
         Self {
-            body: Arc::new(AtomicRefCellWrapper(AtomicRefCell::new(ValueBody::Bytes(
-                bytes,
-            )))),
+            body: Arc::new(ValueBody::Bytes(bytes)),
         }
     }
 
@@ -284,9 +254,7 @@ impl Value {
     /// ```
     pub fn from_vector(v: Vec<Value>) -> Self {
         Self {
-            body: Arc::new(AtomicRefCellWrapper(AtomicRefCell::new(ValueBody::Vector(
-                v,
-            )))),
+            body: Arc::new(ValueBody::Vector(v)),
         }
     }
 
@@ -631,8 +599,7 @@ impl Value {
     /// }).unwrap();
     /// ```
     pub fn to_vector(&self) -> Result<Vec<Value>> {
-        let cell = self.body.0.borrow();
-        if let ValueBody::Vector(ref contents) = *cell {
+        if let ValueBody::Vector(contents) = self.body.as_ref() {
             Ok(contents.clone())
         } else {
             Err(runtime_error!("Not a vector!"))
@@ -829,9 +796,8 @@ impl Value {
         if !self.check_type(t.clone())? {
             return Err(runtime_error!("Type and value mismatch"));
         }
-        let deref_value = self.body.0.borrow().clone();
         let st = t.get_scalar_type();
-        if let ValueBody::Bytes(ref bytes) = deref_value {
+        if let ValueBody::Bytes(bytes) = self.body.as_ref() {
             let mut result = vec_from_bytes(bytes, st.clone())?;
             if st == BIT {
                 let num_values: u64 = t.get_dimensions().iter().product();
@@ -897,14 +863,14 @@ impl Value {
     pub fn check_type(&self, t: Type) -> Result<bool> {
         let s = get_size_in_bits(t.clone())?;
         match t {
-            Type::Scalar(_) | Type::Array(_, _) => match *self.body.0.borrow() {
-                ValueBody::Bytes(ref bytes) => Ok(bytes.len() as u64 == (s + 7) / 8),
+            Type::Scalar(_) | Type::Array(_, _) => match self.body.as_ref() {
+                ValueBody::Bytes(bytes) => Ok(bytes.len() as u64 == (s + 7) / 8),
                 _ => Ok(false),
             },
             Type::Vector(_, _) | Type::Tuple(_) | Type::NamedTuple(_) => {
                 let ts = get_types_vector(t)?;
-                match *self.body.0.borrow() {
-                    ValueBody::Vector(ref children) => {
+                match self.body.as_ref() {
+                    ValueBody::Vector(children) => {
                         if ts.len() != children.len() {
                             return Ok(false);
                         }
@@ -950,7 +916,7 @@ impl Value {
     where
         F: FnOnce(&[u8]) -> Result<R>,
     {
-        if let ValueBody::Bytes(ref bytes) = *self.body.0.borrow() {
+        if let ValueBody::Bytes(bytes) = self.body.as_ref() {
             f(bytes)
         } else {
             panic!("Value::access_bytes() on an invalid Value");
@@ -986,7 +952,7 @@ impl Value {
     where
         F: FnOnce(&Vec<Value>) -> Result<R>,
     {
-        if let ValueBody::Vector(ref v) = *self.body.0.borrow() {
+        if let ValueBody::Vector(v) = self.body.as_ref() {
             f(v)
         } else {
             panic!("Value::access_vector() on an invalid Value");
@@ -1034,9 +1000,9 @@ impl Value {
         FB: FnOnce(&[u8]) -> Result<R>,
         FV: FnOnce(&Vec<Value>) -> Result<R>,
     {
-        match *self.body.0.borrow() {
-            ValueBody::Bytes(ref bytes) => f_bytes(bytes),
-            ValueBody::Vector(ref v) => f_vector(v),
+        match self.body.as_ref() {
+            ValueBody::Bytes(bytes) => f_bytes(bytes),
+            ValueBody::Vector(v) => f_vector(v),
         }
     }
 
