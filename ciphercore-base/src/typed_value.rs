@@ -48,12 +48,23 @@ macro_rules! to_json_array_aux {
 /// [Clone] trait duplicates the pointer, not the underlying value (see [Value::deep_clone] for deep cloning).
 ///
 /// [PartialEq] trait performs the deep recursive comparison.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "py-binding", struct_wrapper)]
 pub struct TypedValue {
     pub value: Value,
     pub t: Type,
     pub name: Option<String>,
+}
+
+impl std::fmt::Debug for TypedValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.to_json() {
+            Ok(json) => f.write_str(&json.to_string()),
+            Err(err) => f.write_fmt(format_args!(
+                "Failed to convert TypedValue to json: {err:?}"
+            )),
+        }
+    }
 }
 
 #[cfg(feature = "py-binding")]
