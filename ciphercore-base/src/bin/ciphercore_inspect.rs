@@ -100,7 +100,7 @@ fn calculate_network_rounds(graph: Graph) -> Result<u32> {
 }
 
 const TWO: u64 = 2;
-fn format_traffic(t_in_bits: u64) -> String {
+fn format_bits(t_in_bits: u64) -> String {
     let t_in_bytes = t_in_bits / 8;
     if t_in_bytes >= TWO.pow(30) {
         format!("{:.2}GB", t_in_bytes as f32 / TWO.pow(30) as f32)
@@ -124,6 +124,44 @@ fn format_operations(ops: u64) -> String {
     } else {
         format!("{ops} Ops")
     }
+}
+
+struct RamStats {
+    peak_ram_bits: u64,
+    total_ram_bits: u64,
+}
+
+fn calculate_ram_stats(graph: Graph) -> Result<RamStats> {
+    let nodes = graph.get_nodes();
+    let mut node_size = vec![];
+    for node in nodes.iter() {
+        node_size.push(get_size_in_bits(node.get_type()?)?);
+    }
+    let mut remaining_dependents = vec![0; nodes.len()];
+    for node in nodes.iter() {
+        for dep in node.get_node_dependencies() {
+            remaining_dependents[dep.get_id() as usize] += 1;
+        }
+    }
+    let mut max_ram = 0;
+    let mut cur_ram = 0;
+    let mut total_ram = 0;
+    for node in nodes.iter() {
+        cur_ram += node_size[node.get_id() as usize];
+        total_ram += node_size[node.get_id() as usize];
+        for dep in node.get_node_dependencies() {
+            let dep_id = dep.get_id() as usize;
+            remaining_dependents[dep_id] -= 1;
+            if remaining_dependents[dep_id] == 0 {
+                cur_ram -= node_size[dep_id];
+            }
+        }
+        max_ram = max_ram.max(cur_ram);
+    }
+    Ok(RamStats {
+        peak_ram_bits: max_ram,
+        total_ram_bits: total_ram,
+    })
 }
 
 pub(crate) fn print_stats(graph: Graph) -> Result<()> {
@@ -196,10 +234,10 @@ pub(crate) fn print_stats(graph: Graph) -> Result<()> {
     println!("  Type:{output_type}");
 
     println!("Network rounds: {network_rounds}");
-    println!(
-        "Network traffic: {}",
-        format_traffic(network_traffic_in_bits)
-    );
+    println!("Network traffic: {}", format_bits(network_traffic_in_bits));
+    let ram_stats = calculate_ram_stats(graph.clone())?;
+    println!("Peak RAM: {}", format_bits(ram_stats.peak_ram_bits));
+    println!("Total RAM: {}", format_bits(ram_stats.total_ram_bits));
     println!(
         "Total number of integer arithmetic operations:   {}",
         format_operations(total_integer_operations)
