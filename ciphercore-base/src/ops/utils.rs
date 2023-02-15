@@ -261,48 +261,107 @@ pub fn unsqueeze(x: Node, axis: i64) -> Result<Node> {
 /// Similar to `Sum`, but for multiplication. Reduces over the last dimension.
 /// The use-case where it makes the most sense is when the type is BIT.
 pub fn reduce_mul(node: Node) -> Result<Node> {
-    let dims = match node.get_type()? {
-        Type::Array(shape, _) => shape,
-        _ => return Err(runtime_error!("Expected array")),
-    };
-    let mut dim = dims[dims.len() - 1];
-    let mut trans_node = pull_out_bits(node)?;
-    let mut stray_bits = vec![];
-    while dim > 1 {
-        if dim % 2 == 1 {
-            stray_bits.push(trans_node.get(vec![0])?);
-            trans_node = trans_node.get_slice(vec![SliceElement::SubArray(Some(1), None, None)])?;
-            dim -= 1;
+    custom_reduce(pull_out_bits(node)?, |first, second| first.multiply(second))
+}
+
+/// Reduces an array over the first dimension, using log number of `combine` calls.
+/// `combine` receives two arrays (first, second) of same shape, and needs to return one array of
+/// same shape. `combine` is assumed to be associative and commutative.
+pub fn custom_reduce(node: Node, combine: impl Fn(Node, Node) -> Result<Node>) -> Result<Node> {
+    custom_reduce_vec(vec![node], |first, second| {
+        Ok(vec![combine(first[0].clone(), second[0].clone())?])
+    })?
+    .into_iter()
+    .next()
+    .ok_or_else(|| runtime_error!("Internal error: custom_reduce_vec returned empty vec"))
+}
+
+/// Reduces a vector of arrays sharing the same first dimension, over the first dimension, using
+/// log number of `combine` calls.
+/// `combine` receives two vectors (first, second) of same shape, and needs to return one such
+/// vector of same shape (the same vector size, and array shapes).
+/// `combine` is assumed to be associative and commutative.
+pub fn custom_reduce_vec(
+    mut nodes: Vec<Node>,
+    combine: impl Fn(Vec<Node>, Vec<Node>) -> Result<Vec<Node>>,
+) -> Result<Vec<Node>> {
+    if nodes.is_empty() {
+        return Err(runtime_error!("Can't reduce an empty vector"));
+    }
+    let ns: Vec<u64> = nodes
+        .iter()
+        .map(|node| Ok(node.get_type()?.get_dimensions()[0]))
+        .collect::<Result<_>>()?;
+    let mut n = ns[0];
+    if ns.iter().any(|el| *el != n) {
+        return Err(runtime_error!("All nodes must share the first dimension"));
+    }
+
+    let mut result = None;
+    while n > 0 {
+        if n % 2 == 1 {
+            let (first, rest) = nodes
+                .into_iter()
+                .map(|node| {
+                    Ok((
+                        node.get(vec![0])?,
+                        if n > 1 {
+                            node.get_slice(vec![SliceElement::SubArray(Some(1), None, None)])?
+                        } else {
+                            // There is nothing left in the array when we remove the first row.
+                            // get_slice() would then give an error, but we're done anyway, so we
+                            // can assign anything here.
+                            node
+                        },
+                    ))
+                })
+                .collect::<Result<Vec<(Node, Node)>>>()?
+                .into_iter()
+                .unzip();
+            result = match result {
+                None => Some(first),
+                Some(result) => Some(combine(result, first)?),
+            };
+            nodes = rest;
+            n -= 1;
         } else {
-            let half1 = trans_node.get_slice(vec![SliceElement::SubArray(
-                Some(0),
-                Some((dim / 2) as i64),
-                None,
-            )])?;
-            let half2 = trans_node.get_slice(vec![SliceElement::SubArray(
-                Some((dim / 2) as i64),
-                None,
-                None,
-            )])?;
-            trans_node = half1.multiply(half2)?;
-            dim /= 2;
+            let (half1, half2) = nodes
+                .into_iter()
+                .map(|node| {
+                    Ok((
+                        node.get_slice(vec![SliceElement::SubArray(
+                            Some(0),
+                            Some((n / 2) as i64),
+                            None,
+                        )])?,
+                        node.get_slice(vec![SliceElement::SubArray(
+                            Some((n / 2) as i64),
+                            None,
+                            None,
+                        )])?,
+                    ))
+                })
+                .collect::<Result<Vec<(Node, Node)>>>()?
+                .into_iter()
+                .unzip();
+            nodes = combine(half1, half2)?;
+            n /= 2;
         }
     }
-    trans_node = trans_node.get(vec![0])?;
-    for bit in stray_bits {
-        trans_node = trans_node.multiply(bit)?;
-    }
-    Ok(trans_node)
+    result.ok_or_else(|| runtime_error!("Internal error: no result"))
 }
 
 #[cfg(test)]
 mod tests {
+    use ndarray::{array, Array};
+
     use super::*;
     use crate::{
         custom_ops::run_instantiation_pass,
-        data_types::{scalar_type, INT64},
+        data_types::{scalar_type, INT64, UINT32},
         evaluators::random_evaluate,
-        graphs::create_context,
+        graphs::{create_context, util::simple_context},
+        typed_value_operations::TypedValueArrayOperations,
     };
 
     #[test]
@@ -324,6 +383,65 @@ mod tests {
             let lower_bound = (result as f64) / (1 << denominator_cap_2k) as f64;
             let upper_bound = 2.0 * lower_bound;
             assert!(lower_bound <= expected && expected <= upper_bound);
+        }
+        Ok(())
+    }
+
+    fn custom_reduce_vec_helper(
+        arrays: Vec<TypedValue>,
+        combine: impl Fn(Vec<Node>, Vec<Node>) -> Result<Vec<Node>>,
+    ) -> Result<Vec<Value>> {
+        let c = simple_context(|g| {
+            let inputs = arrays
+                .iter()
+                .map(|array| g.input(array.t.clone()))
+                .collect::<Result<_>>()?;
+            g.create_tuple(custom_reduce_vec(inputs, combine)?)
+        })?;
+        let c = run_instantiation_pass(c)?.context;
+        let inputs = arrays.into_iter().map(|array| array.value).collect();
+        let outputs = random_evaluate(c.get_main_graph()?, inputs)?;
+        outputs.to_vector()
+    }
+
+    #[test]
+    fn test_custom_reduce_vec_sum_and_multiply_rows() -> Result<()> {
+        let in0 =
+            TypedValue::from_ndarray(array![[1, 2, 3], [4, 5, 6], [7, 8, 9]].into_dyn(), INT64)?;
+        let in1 = TypedValue::from_ndarray(array![[3, 2], [4, 3], [5, 4]].into_dyn(), INT64)?;
+        let result = custom_reduce_vec_helper(vec![in0, in1], |first, second| {
+            Ok(vec![
+                first[0].add(second[0].clone())?,
+                first[1].multiply(second[1].clone())?,
+            ])
+        })?;
+        let out0 = result[0].to_flattened_array_u64(array_type(vec![3], INT64))?;
+        let out1 = result[1].to_flattened_array_u64(array_type(vec![2], INT64))?;
+        assert_eq!(out0, [12, 15, 18]);
+        assert_eq!(out1, [60, 24]);
+        Ok(())
+    }
+
+    fn custom_reduce_helper(
+        array: TypedValue,
+        combine: impl Fn(Node, Node) -> Result<Node>,
+    ) -> Result<Value> {
+        let c = simple_context(|g| {
+            let input = g.input(array.t.clone())?;
+            custom_reduce(input, combine)
+        })?;
+        let c = run_instantiation_pass(c)?.context;
+        random_evaluate(c.get_main_graph()?, vec![array.value])
+    }
+
+    #[test]
+    fn test_custom_reduce_stress_sum() -> Result<()> {
+        for n in 1..=32 {
+            let data: Vec<u32> = (1..=n).collect();
+            let input = TypedValue::from_ndarray(Array::from(data).into_dyn(), UINT32)?;
+            let result = custom_reduce_helper(input, |first, second| Ok(first.add(second)?))?;
+            let output = result.to_flattened_array_u64(array_type(vec![1], UINT32))?;
+            assert_eq!(output, [(n * (n + 1) / 2) as u64]);
         }
         Ok(())
     }
