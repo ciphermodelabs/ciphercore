@@ -1,14 +1,13 @@
 //! Binary adder that adds two bitstrings.
-use crate::custom_ops::CustomOperationBody;
+use crate::custom_ops::{CustomOperation, CustomOperationBody};
 use crate::data_types::{array_type, Type, BIT};
 use crate::errors::Result;
 use crate::graphs::{Context, Graph, Node, SliceElement};
-use crate::ops::utils::{
-    constant_scalar, expand_dims, pull_out_bits, put_in_bits,
-    validate_arguments_in_broadcast_bit_ops,
-};
+use crate::ops::utils::{constant_scalar, expand_dims, pull_out_bits, put_in_bits};
 
 use serde::{Deserialize, Serialize};
+
+use super::utils::validate_arguments_in_broadcast_bit_ops;
 
 /// A structure that defines the custom operation BinaryAdd that implements the binary adder.
 ///
@@ -57,6 +56,59 @@ pub struct BinaryAdd {}
 impl CustomOperationBody for BinaryAdd {
     fn instantiate(&self, context: Context, arguments_types: Vec<Type>) -> Result<Graph> {
         validate_arguments_in_broadcast_bit_ops(arguments_types.clone(), &self.get_name())?;
+        let input_type0 = arguments_types[0].clone();
+        let input_type1 = arguments_types[1].clone();
+
+        // Adder input consists of two binary strings x and y
+        let g = context.create_graph()?;
+        let input0 = pull_out_bits(g.input(input_type0)?)?;
+        let input1 = pull_out_bits(g.input(input_type1)?)?;
+        let added = g.custom_op(
+            CustomOperation::new(BinaryAddTransposed {}),
+            vec![input0, input1],
+        )?;
+        let output = put_in_bits(added)?;
+        output.set_as_output()?;
+        g.finalize()?;
+        Ok(g)
+    }
+
+    fn get_name(&self) -> String {
+        "BinaryAdd".to_owned()
+    }
+}
+
+// Same as BinaryAdd, but expect that the first dimension is bits.
+// This is a performance optimization, it's easier to operate on the first dimension.
+#[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
+pub(crate) struct BinaryAddTransposed {}
+
+#[typetag::serde]
+impl CustomOperationBody for BinaryAddTransposed {
+    fn instantiate(&self, context: Context, arguments_types: Vec<Type>) -> Result<Graph> {
+        if arguments_types.len() != 2 {
+            return Err(runtime_error!("Invalid number of arguments"));
+        }
+        match (&arguments_types[0], &arguments_types[1]) {
+            (Type::Array(shape0, scalar_type0), Type::Array(shape1, scalar_type1)) => {
+                if shape0[0] != shape1[0] {
+                    return Err(runtime_error!(
+                        "Input arrays' first dimensions are not the same"
+                    ));
+                }
+                if *scalar_type0 != BIT {
+                    return Err(runtime_error!("Input array [0]'s ScalarType is not BIT"));
+                }
+                if *scalar_type1 != BIT {
+                    return Err(runtime_error!("Input array [1]'s ScalarType is not BIT"));
+                }
+            }
+            _ => {
+                return Err(runtime_error!(
+                    "Invalid input argument type, expected Array type"
+                ));
+            }
+        }
 
         let input_type0 = arguments_types[0].clone();
         let input_type1 = arguments_types[1].clone();
@@ -70,11 +122,7 @@ impl CustomOperationBody for BinaryAdd {
         // Compute "generate" bits x_i AND y_i
         let and_bits = g.multiply(input0, input1)?;
 
-        let pulled_out_xor_bits = pull_out_bits(xor_bits.clone())?;
-        let pulled_out_and_bits = pull_out_bits(and_bits)?;
-
-        let pulled_out_carries = calculate_carry_bits(pulled_out_xor_bits, pulled_out_and_bits)?;
-        let carries = put_in_bits(pulled_out_carries)?;
+        let carries = calculate_carry_bits(xor_bits.clone(), and_bits)?;
         // The last step is to XOR carries with "propagate" bits
         let output = carries.add(xor_bits)?;
         output.set_as_output()?;
@@ -83,7 +131,7 @@ impl CustomOperationBody for BinaryAdd {
     }
 
     fn get_name(&self) -> String {
-        "BinaryAdd".to_owned()
+        "BinaryAddTransposed".to_owned()
     }
 }
 

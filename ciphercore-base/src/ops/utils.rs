@@ -55,6 +55,20 @@ pub fn pull_out_bits(x: Node) -> Result<Node> {
     }
 }
 
+pub fn pull_out_bits_for_type(t: Type) -> Result<Type> {
+    if !t.is_array() {
+        return Err(runtime_error!("Expected array type"));
+    }
+    let shape = t.get_dimensions();
+    if shape.len() == 1 {
+        Ok(t)
+    } else {
+        let mut new_shape = vec![shape[shape.len() - 1]];
+        new_shape.extend(&shape[0..shape.len() - 1]);
+        Ok(array_type(new_shape, t.get_scalar_type()))
+    }
+}
+
 /// Panics if `x` is not an array.
 pub fn put_in_bits(x: Node) -> Result<Node> {
     let shape = x.get_type()?.get_dimensions();

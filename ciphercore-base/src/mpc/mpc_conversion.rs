@@ -5,15 +5,17 @@ use crate::data_types::{array_type, scalar_type, tuple_type, ScalarType, Type, B
 use crate::data_values::Value;
 use crate::errors::Result;
 use crate::graphs::util::simple_context;
-use crate::graphs::SliceElement::{Ellipsis, SingleIndex};
+use crate::graphs::SliceElement::SubArray;
 use crate::graphs::{Context, Graph, Node, NodeAnnotation};
 use crate::inline::inline_ops::{
     inline_operations, DepthOptimizationLevel, InlineConfig, InlineMode,
 };
 use crate::mpc::mpc_arithmetic::{AddMPC, MultiplyMPC};
 use crate::mpc::mpc_compiler::{check_private_tuple, compile_to_mpc_graph, PARTIES};
-use crate::ops::adder::BinaryAdd;
-use crate::ops::utils::{constant_scalar, put_in_bits};
+use crate::ops::adder::BinaryAddTransposed;
+use crate::ops::utils::{
+    constant_scalar, pull_out_bits, pull_out_bits_for_type, put_in_bits, zeros,
+};
 use crate::type_inference::a2b_type_inference;
 
 use serde::{Deserialize, Serialize};
@@ -69,7 +71,7 @@ impl CustomOperationBody for A2BMPC {
             return Err(runtime_error!("Shouldn't be here"));
         };
 
-        let bits_t = a2b_type_inference(input_t)?;
+        let bits_t = pull_out_bits_for_type(a2b_type_inference(input_t)?)?;
 
         // Create helper graphs.
         // They must be generated before the main graph g.
@@ -86,21 +88,24 @@ impl CustomOperationBody for A2BMPC {
 
         // generate shares of arithmetic shares converted to binary strings
         let mut bit_shares = vec![];
+        // convert each arithmetic share to a binary array
+        let mut input_bits = vec![];
+        for i in 0..PARTIES {
+            input_bits.push(pull_out_bits(input.tuple_get(i as u64)?.a2b()?)?);
+        }
 
         // this is a hacky way to create an array of shape `bits_t`, but without
         // storing big constant inside generated json graph
         let zero = constant_scalar(&g, 0, BIT)?;
-        let zero_bits = input.tuple_get(0)?.a2b()?.multiply(zero)?;
+        let zero_bits = input_bits[0].multiply(zero)?;
 
         for share_id in 0..PARTIES {
             let mut bit_share = vec![];
             // for every arithmetic share X create its binary sharing as
             // (X in binary, 0, 0)
-            for party_id in 0..PARTIES {
+            for (party_id, share) in input_bits.iter().enumerate().take(PARTIES) {
                 let bit_share_arith = if share_id == party_id {
-                    let share_arith = input.tuple_get(share_id as u64)?;
-                    // convert each arithmetic share to a binary array
-                    share_arith.a2b()?
+                    share.clone()
                 } else {
                     zero_bits.clone()
                 };
@@ -109,10 +114,8 @@ impl CustomOperationBody for A2BMPC {
             let bit_share_tuple = g.create_tuple(bit_share)?;
             bit_shares.push(bit_share_tuple);
         }
-
         // Sum binary shares
-
-        let o = add_3_bitstrings(
+        let transposed_output = add_3_bitstrings(
             g.clone(),
             adder_mpc_g,
             shift_mpc_g,
@@ -121,6 +124,11 @@ impl CustomOperationBody for A2BMPC {
             bit_shares[2].clone(),
             prf_keys,
         )?;
+        let mut output = vec![];
+        for i in 0..PARTIES {
+            output.push(put_in_bits(transposed_output.tuple_get(i as u64)?)?);
+        }
+        let o = g.create_tuple(output)?;
         o.set_as_output()?;
         g.finalize()?;
         Ok(g)
@@ -206,7 +214,7 @@ impl CustomOperationBody for B2AMPC {
 
         let t = argument_types[0].clone();
         let input_t = if let Type::Tuple(t_vec) = t.clone() {
-            (*t_vec[0]).clone()
+            pull_out_bits_for_type((*t_vec[0]).clone())?
         } else {
             panic!("Shouldn't be here");
         };
@@ -220,6 +228,11 @@ impl CustomOperationBody for B2AMPC {
 
         let g = context.create_graph()?;
         let input = g.input(t)?;
+        let mut transposed_input = vec![];
+        for i in 0..PARTIES {
+            transposed_input.push(pull_out_bits(input.tuple_get(i as u64)?)?);
+        }
+        let input = g.create_tuple(transposed_input)?;
 
         let prf_for_mul_type = argument_types[1].clone();
         let prf_for_mul_keys = g.input(prf_for_mul_type)?;
@@ -287,10 +300,10 @@ impl CustomOperationBody for B2AMPC {
         )?;
 
         // Convert -x_0, x_1 and -x_2 from binary to arithmetic
-        let mut arith_shares: Vec<Node> = bit_shares
-            .iter()
-            .map(|x| x.b2a(self.st.clone()).unwrap())
-            .collect();
+        let mut arith_shares = vec![];
+        for share in bit_shares.into_iter() {
+            arith_shares.push(put_in_bits(share)?.b2a(self.st.clone())?);
+        }
         // Negate -x_0 and -x_2 to x_0 and x_2, respectively
         arith_shares[0] = zero.subtract(arith_shares[0].clone())?;
         arith_shares[2] = zero.subtract(arith_shares[2].clone())?;
@@ -313,28 +326,23 @@ fn get_left_shift_graph(context: Context, bits_t: Type) -> Result<Graph> {
         let tuple_bits_t = tuple_type(vec![bits_t.clone(); PARTIES]);
         let input = shift_g.input(tuple_bits_t)?;
         let shape = bits_t.get_shape();
-        let top_type = if shape.len() == 1 {
-            scalar_type(BIT)
-        } else {
-            array_type(shape[0..shape.len() - 1].to_vec(), BIT)
-        };
-        let zero = shift_g.constant(top_type.clone(), Value::zero_of_type(top_type.clone()))?;
+        let mut new_shape = shape;
+        new_shape[0] = 1;
+        let t = array_type(new_shape, BIT);
+        let zero = zeros(&shift_g, t)?;
 
         let mut result_shares = vec![];
         for i in 0..PARTIES {
             let share = input.tuple_get(i as u64)?;
-            let mut rows_vec = vec![zero.clone()];
-            for i in 0..shape[shape.len() - 1] - 1 {
-                let slice = if shape.len() == 1 {
-                    share.get(vec![i])?
-                } else {
-                    share.get_slice(vec![Ellipsis, SingleIndex(i as i64)])?
-                };
-                rows_vec.push(slice);
-            }
-            let rows = shift_g.create_vector(top_type.clone(), rows_vec)?;
-            let result_share = put_in_bits(rows.vector_to_array()?)?;
-            result_shares.push(result_share);
+
+            let rows = shift_g.concatenate(
+                vec![
+                    zero.clone(),
+                    share.get_slice(vec![SubArray(None, Some(-1), None)])?,
+                ],
+                0,
+            )?;
+            result_shares.push(rows);
         }
         let o = shift_g.create_tuple(result_shares)?;
 
@@ -350,7 +358,10 @@ fn get_binary_adder_graph(context: Context, bits_t: Type) -> Result<Graph> {
     let adder_context = simple_context(|g| {
         let input1 = g.input(bits_t.clone())?;
         let input2 = g.input(bits_t)?;
-        g.custom_op(CustomOperation::new(BinaryAdd {}), vec![input1, input2])
+        g.custom_op(
+            CustomOperation::new(BinaryAddTransposed {}),
+            vec![input1, input2],
+        )
     })?;
     let instantiated_adder_context = run_instantiation_pass(adder_context)?.get_context();
     let inlined_adder_context = inline_operations(
@@ -387,7 +398,6 @@ fn add_3_bitstrings(
     // Given 3 bitstrings a, b and c, Add(a,b,c) = Add(carry << 1, xor_123),
     // where carry = a AND b XOR c AND (a XOR b), xor_123 = a XOR b XOR c
     // and Add is the binary adder.
-
     // a XOR b
     let xor_12 = g.custom_op(CustomOperation::new(AddMPC {}), vec![a.clone(), b.clone()])?;
     // a AND b
