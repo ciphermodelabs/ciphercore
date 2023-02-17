@@ -1,4 +1,5 @@
 //! Binary adder that adds two bitstrings.
+use crate::broadcast::broadcast_shapes;
 use crate::custom_ops::{CustomOperation, CustomOperationBody};
 use crate::data_types::{array_type, Type, BIT};
 use crate::errors::Result;
@@ -7,7 +8,7 @@ use crate::ops::utils::{constant_scalar, expand_dims, pull_out_bits, put_in_bits
 
 use serde::{Deserialize, Serialize};
 
-use super::utils::validate_arguments_in_broadcast_bit_ops;
+use super::utils::{validate_arguments_in_broadcast_bit_ops, zeros};
 
 /// A structure that defines the custom operation BinaryAdd that implements the binary adder.
 ///
@@ -58,11 +59,15 @@ impl CustomOperationBody for BinaryAdd {
         validate_arguments_in_broadcast_bit_ops(arguments_types.clone(), &self.get_name())?;
         let input_type0 = arguments_types[0].clone();
         let input_type1 = arguments_types[1].clone();
+        let output_type = array_type(
+            broadcast_shapes(input_type0.get_shape(), input_type1.get_shape())?,
+            BIT,
+        );
 
         // Adder input consists of two binary strings x and y
         let g = context.create_graph()?;
-        let input0 = pull_out_bits(g.input(input_type0)?)?;
-        let input1 = pull_out_bits(g.input(input_type1)?)?;
+        let input0 = pull_out_input_node_bits(&g, input_type0, output_type.clone())?;
+        let input1 = pull_out_input_node_bits(&g, input_type1, output_type)?;
         let added = g.custom_op(
             CustomOperation::new(BinaryAddTransposed {}),
             vec![input0, input1],
@@ -76,6 +81,16 @@ impl CustomOperationBody for BinaryAdd {
     fn get_name(&self) -> String {
         "BinaryAdd".to_owned()
     }
+}
+
+fn pull_out_input_node_bits(g: &Graph, input_type: Type, output_type: Type) -> Result<Node> {
+    let i = g.input(input_type.clone())?;
+    let i = if input_type == output_type {
+        i
+    } else {
+        zeros(g, output_type)?.add(i)?
+    };
+    pull_out_bits(i)
 }
 
 // Same as BinaryAdd, but expect that the first dimension is bits.
