@@ -217,18 +217,30 @@ fn random_pad_columns(columns: Node, num_extra_rows: u64, prf_keys: &[Node]) -> 
         let tuple_types_vec = get_types_vector(columns.get_type()?)?;
         get_named_types((*tuple_types_vec[0]).clone())
     };
+    // Null header should contain zeros to avoid false positives while comparing the rows
+    let null_header_shares = get_zero_shares(
+        graph.clone(),
+        graph.create_tuple(prf_keys.to_vec())?,
+        array_type(vec![num_extra_rows], BIT),
+    )?;
     let mut shares = vec![];
     for (share_id, prf_key) in prf_keys.iter().enumerate() {
         let data_share = columns.tuple_get(share_id as u64)?;
         let mut result_columns = vec![];
         for (header, t) in header_types.clone() {
             let column = data_share.named_tuple_get(header.clone())?;
-            let mut extra_rows_shape = t.get_shape();
-            extra_rows_shape[0] = num_extra_rows;
-            let st = t.get_scalar_type();
-            let extra_rows = prf_key.prf(0, array_type(extra_rows_shape.clone(), st.clone()))?;
-            // Merge input rows and extra rows
-            let padded_column = graph.concatenate(vec![column, extra_rows], 0)?;
+            let padded_column = if header == NULL_HEADER {
+                // Merge input rows and extra rows
+                graph.concatenate(vec![column, null_header_shares[share_id].clone()], 0)?
+            } else {
+                let mut extra_rows_shape = t.get_shape();
+                extra_rows_shape[0] = num_extra_rows;
+                let st = t.get_scalar_type();
+                let extra_rows =
+                    prf_key.prf(0, array_type(extra_rows_shape.clone(), st.clone()))?;
+                // Merge input rows and extra rows
+                graph.concatenate(vec![column, extra_rows], 0)?
+            };
             result_columns.push((header, padded_column));
         }
         let share = graph.create_named_tuple(result_columns)?;
@@ -987,8 +999,17 @@ impl CustomOperationBody for JoinMPC {
         // 6. Parties 1 and 2 generate random matrices for hashing of shape [3, m, LOW_MC_BLOCK_SIZE],
         // where m = ceil(log(max(num_entries_y, num_entries_x)+1).
         // TODO: quantify probability of success of Cuckoo hashing with these parameters
-        let log_num_cuckoo_entries =
-            ((num_entries_y.max(num_entries_x) as f64).log2() + 1f64).ceil() as u64;
+        let max_num_entries = num_entries_y.max(num_entries_x);
+        let log_num_cuckoo_entries = if max_num_entries >= 512 {
+            // here we use the empirical results from the paper, see Appendix B, https://eprint.iacr.org/2018/579.pdf.
+            // This should result in failure probability smaller than 2^(-40).
+            ((max_num_entries as f64).log2() + 1f64).ceil() as u64
+        } else {
+            // The approximation from the paper fails here.
+            // Therefore, we assume the conservative failure probability equal to the probability that there is a pair of elements with all hashes equal.
+            // This event is dominant over other failure events such as the existense of 3 elements hashed to only 2 values, 4 elements hashed to 3 etc.
+            ((max_num_entries as f64).log2() + 7f64).ceil() as u64
+        };
         let num_hash_functions = 3;
         let hash_matrices = prf_keys_vec[2].prf(
             0,
@@ -2943,16 +2964,40 @@ mod tests {
         Ok(())
     }
 
-    fn join_helper(
+    fn evaluate_join_helper(
+        c: Context,
+        input_values: Vec<Value>,
+        expected: Vec<(String, Vec<u64>)>,
+        prng_seed: Option<[u8; SEED_SIZE]>,
+        num_trials: u64,
+    ) -> Result<()> {
+        let inlined_g = c.get_main_graph()?;
+        for _ in 0..num_trials {
+            let result =
+                evaluate_simple_evaluator(inlined_g.clone(), input_values.clone(), prng_seed)?;
+
+            let result_type_vec = get_named_types(inlined_g.get_output_node()?.get_type()?);
+
+            let result_columns = result.to_vector()?;
+            assert_eq!(result_columns.len(), expected.len());
+            for (i, (expected_header, expected_column)) in expected.iter().enumerate() {
+                let result_array =
+                    result_columns[i].to_flattened_array_u64(result_type_vec[i].1.clone())?;
+                assert_eq!(result_type_vec[i].0, *expected_header);
+                assert_eq!(result_array, *expected_column);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn join_context(
         types_x: Vec<(String, Type)>,
         types_y: Vec<(String, Type)>,
         op: Operation,
-        values_x: Vec<Vec<u64>>,
-        values_y: Vec<Vec<u64>>,
-        expected: Vec<(String, Vec<u64>)>,
         is_x_private: bool,
         is_y_private: bool,
-    ) -> Result<()> {
+    ) -> Result<Context> {
         // test correct inputs
         let c = simple_context(|g| {
             let compose_set_shares = |types: &[(String, Type)]| -> Result<Node> {
@@ -2982,7 +3027,7 @@ mod tests {
             input_parties.extend(vec![IOStatus::Public; types_y.len()]);
         }
 
-        let inlined_c = prepare_for_mpc_evaluation(
+        prepare_for_mpc_evaluation(
             c,
             vec![input_parties],
             vec![vec![IOStatus::Party(0)]],
@@ -2990,8 +3035,15 @@ mod tests {
                 default_mode: InlineMode::DepthOptimized(DepthOptimizationLevel::Default),
                 ..Default::default()
             },
-        )?;
+        )
+    }
 
+    fn build_join_columns(
+        types_x: Vec<(String, Type)>,
+        types_y: Vec<(String, Type)>,
+        values_x: Vec<Vec<u64>>,
+        values_y: Vec<Vec<u64>>,
+    ) -> Result<Vec<Value>> {
         // Generate input columns
         let mut input_values = vec![];
         for (i, column_value) in values_x.iter().enumerate() {
@@ -3006,23 +3058,53 @@ mod tests {
                 types_y[i].1.get_scalar_type(),
             )?);
         }
+        Ok(input_values)
+    }
 
-        let inlined_g = inlined_c.get_main_graph()?;
+    fn deterministic_join_helper(
+        types_x: Vec<(String, Type)>,
+        types_y: Vec<(String, Type)>,
+        op: Operation,
+        values_x: Vec<Vec<u64>>,
+        values_y: Vec<Vec<u64>>,
+        expected: Vec<(String, Vec<u64>)>,
+        is_x_private: bool,
+        is_y_private: bool,
+    ) -> Result<()> {
+        let c = join_context(
+            types_x.clone(),
+            types_y.clone(),
+            op,
+            is_x_private,
+            is_y_private,
+        )?;
+        let input_values = build_join_columns(types_x, types_y, values_x, values_y)?;
+
         let prng_seed: [u8; SEED_SIZE] = core::array::from_fn(|i| i as u8);
-        let result = evaluate_simple_evaluator(inlined_g.clone(), input_values, Some(prng_seed))?;
+        evaluate_join_helper(c, input_values, expected, Some(prng_seed), 1)
+    }
 
-        let result_type_vec = get_named_types(inlined_g.get_output_node()?.get_type()?);
+    fn probabilistic_join_helper(
+        types_x: Vec<(String, Type)>,
+        types_y: Vec<(String, Type)>,
+        op: Operation,
+        values_x: Vec<Vec<u64>>,
+        values_y: Vec<Vec<u64>>,
+        expected: Vec<(String, Vec<u64>)>,
+        is_x_private: bool,
+        is_y_private: bool,
+        num_trials: u64,
+    ) -> Result<()> {
+        let c = join_context(
+            types_x.clone(),
+            types_y.clone(),
+            op,
+            is_x_private,
+            is_y_private,
+        )?;
+        let input_values = build_join_columns(types_x, types_y, values_x, values_y)?;
 
-        let result_columns = result.to_vector()?;
-        assert_eq!(result_columns.len(), expected.len());
-        for (i, (expected_header, expected_column)) in expected.iter().enumerate() {
-            let result_array =
-                result_columns[i].to_flattened_array_u64(result_type_vec[i].1.clone())?;
-            assert_eq!(result_type_vec[i].0, *expected_header);
-            assert_eq!(result_array, *expected_column);
-        }
-
-        Ok(())
+        evaluate_join_helper(c, input_values, expected, None, num_trials)
     }
 
     #[test]
@@ -3038,7 +3120,7 @@ mod tests {
             for (h0, h1) in headers {
                 headers_map.insert(h0, h1);
             }
-            join_helper(
+            deterministic_join_helper(
                 types_x,
                 types_y,
                 Operation::Join(JoinType::Inner, headers_map),
@@ -3078,7 +3160,6 @@ mod tests {
                 ("d".to_owned(), vec![0, 0, 300, 400, 0]),
             ],
         )?;
-
         data_helper(
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
@@ -3418,6 +3499,146 @@ mod tests {
             ],
         )?;
 
+        let probabilistic_data_helper = |types_x: Vec<(String, Type)>,
+                                         types_y: Vec<(String, Type)>,
+                                         headers: Vec<(String, String)>,
+                                         values_x: Vec<Vec<u64>>,
+                                         values_y: Vec<Vec<u64>>,
+                                         expected: Vec<(String, Vec<u64>)>,
+                                         num_trials: u64|
+         -> Result<()> {
+            let mut headers_map = HashMap::new();
+            for (h0, h1) in headers {
+                headers_map.insert(h0, h1);
+            }
+            probabilistic_join_helper(
+                types_x,
+                types_y,
+                Operation::Join(JoinType::Inner, headers_map),
+                values_x,
+                values_y,
+                expected,
+                true,
+                true,
+                num_trials,
+            )
+        };
+
+        probabilistic_data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![2], BIT)),
+                ("a".to_owned(), array_type(vec![2], INT64)),
+                ("b".to_owned(), array_type(vec![2, 3], BIT)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![3], BIT)),
+                ("b".to_owned(), array_type(vec![3, 3], BIT)),
+                ("c".to_owned(), array_type(vec![3], INT16)),
+            ],
+            vec![("b".to_owned(), "b".to_owned())],
+            vec![
+                vec![1, 1],
+                vec![2, 3],
+                array!([[0, 1, 0], [0, 1, 1]]).into_raw_vec(),
+            ],
+            vec![
+                vec![1, 1, 1],
+                array!([[0, 1, 1], [1, 0, 0], [1, 0, 1]]).into_raw_vec(),
+                vec![300, 400, 500],
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), vec![0, 1]),
+                ("a".to_owned(), vec![0, 3]),
+                (
+                    "b".to_owned(),
+                    array!([[0, 0, 0], [0, 1, 1]]).into_raw_vec(),
+                ),
+                ("c".to_owned(), vec![0, 300]),
+            ],
+            50,
+        )?;
+        probabilistic_data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![2], BIT)),
+                ("a".to_owned(), array_type(vec![2, 2], BIT)),
+                ("b".to_owned(), array_type(vec![2, 3], BIT)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![3], BIT)),
+                ("b".to_owned(), array_type(vec![3, 3], BIT)),
+                ("c".to_owned(), array_type(vec![3, 2], BIT)),
+            ],
+            vec![
+                ("b".to_owned(), "b".to_owned()),
+                ("a".to_owned(), "c".to_owned()),
+            ],
+            vec![
+                vec![1, 1],
+                array!([[1, 0], [1, 1]]).into_raw_vec(),
+                array!([[0, 1, 0], [0, 1, 1]]).into_raw_vec(),
+            ],
+            vec![
+                vec![1, 1, 1],
+                array!([[0, 1, 1], [1, 0, 0], [1, 0, 1]]).into_raw_vec(),
+                array!([[1, 1], [0, 0], [0, 1]]).into_raw_vec(),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), vec![0, 1]),
+                ("a".to_owned(), array!([[0, 0], [1, 1]]).into_raw_vec()),
+                (
+                    "b".to_owned(),
+                    array!([[0, 0, 0], [0, 1, 1]]).into_raw_vec(),
+                ),
+            ],
+            50,
+        )?;
+
+        probabilistic_data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![600], BIT)),
+                ("b".to_owned(), array_type(vec![600], INT16)),
+                ("a".to_owned(), array_type(vec![600], INT16)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![100], BIT)),
+                ("a".to_owned(), array_type(vec![100], INT16)),
+                ("b".to_owned(), array_type(vec![100], INT16)),
+            ],
+            vec![
+                ("a".to_owned(), "a".to_owned()),
+                ("b".to_owned(), "b".to_owned()),
+            ],
+            vec![
+                vec![1; 600],
+                (1..=600).collect(),
+                (1..=600).map(|x| 2 * x).collect(),
+            ],
+            vec![
+                vec![1; 100],
+                (591..=690).map(|x| 2 * x).collect(),
+                (591..=690).collect(),
+            ],
+            vec![
+                (
+                    NULL_HEADER.to_owned(),
+                    vec![0; 600]
+                        .iter()
+                        .enumerate()
+                        .map(|(i, _)| if i >= 590 { 1 } else { 0 })
+                        .collect(),
+                ),
+                (
+                    "b".to_owned(),
+                    (1..=600).map(|x| if x > 590 { x } else { 0 }).collect(),
+                ),
+                (
+                    "a".to_owned(),
+                    (1..=600).map(|x| if x > 590 { 2 * x } else { 0 }).collect(),
+                ),
+            ],
+            1,
+        )?;
+
         Ok(())
     }
 
@@ -3483,7 +3704,7 @@ mod tests {
             ("c".to_owned(), vec![0, 0, 300, 400, 0]),
             ("f".to_owned(), vec![0, 0, 0, 0, 0, 0, 1, 1, 0, 0]),
         ];
-        join_helper(
+        deterministic_join_helper(
             types_x.clone(),
             types_y.clone(),
             op.clone(),
@@ -3493,7 +3714,7 @@ mod tests {
             true,
             false,
         )?;
-        join_helper(
+        deterministic_join_helper(
             types_x.clone(),
             types_y.clone(),
             op.clone(),
@@ -3503,8 +3724,47 @@ mod tests {
             false,
             true,
         )?;
-        join_helper(
+        deterministic_join_helper(
             types_x, types_y, op, values_x, values_y, expected, false, false,
+        )?;
+
+        let types_x = vec![
+            (NULL_HEADER.to_owned(), array_type(vec![3], BIT)),
+            ("a".to_owned(), array_type(vec![3, 2], BIT)),
+            ("b".to_owned(), array_type(vec![3, 3], BIT)),
+        ];
+        let types_y = vec![
+            (NULL_HEADER.to_owned(), array_type(vec![2], BIT)),
+            ("c".to_owned(), array_type(vec![2, 3], BIT)),
+            ("d".to_owned(), array_type(vec![2, 2], BIT)),
+        ];
+        let mut headers = HashMap::new();
+        headers.insert("a".to_owned(), "d".to_owned());
+        headers.insert("b".to_owned(), "c".to_owned());
+        let op = Operation::Join(JoinType::Inner, headers);
+        let values_x = vec![
+            vec![1, 1, 1],
+            array!([[0, 1], [1, 0], [1, 1]]).into_raw_vec(),
+            array!([[0, 1, 0], [1, 0, 0], [1, 1, 0]]).into_raw_vec(),
+        ];
+        let values_y = vec![
+            vec![1, 1],
+            array!([[1, 1, 0], [1, 0, 0]]).into_raw_vec(),
+            array!([[1, 1], [1, 0]]).into_raw_vec(),
+        ];
+        let expected = vec![
+            (NULL_HEADER.to_owned(), vec![0, 1, 1]),
+            (
+                "a".to_owned(),
+                array!([[0, 0], [1, 0], [1, 1]]).into_raw_vec(),
+            ),
+            (
+                "b".to_owned(),
+                array!([[0, 0, 0], [1, 0, 0], [1, 1, 0]]).into_raw_vec(),
+            ),
+        ];
+        probabilistic_join_helper(
+            types_x, types_y, op, values_x, values_y, expected, false, false, 50,
         )?;
 
         Ok(())
@@ -3523,7 +3783,7 @@ mod tests {
             for (h0, h1) in headers {
                 headers_map.insert(h0, h1);
             }
-            join_helper(
+            deterministic_join_helper(
                 types_x,
                 types_y,
                 Operation::Join(JoinType::Left, headers_map),
@@ -3534,6 +3794,7 @@ mod tests {
                 true,
             )
         };
+
         data_helper(
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
@@ -3968,7 +4229,7 @@ mod tests {
             ("c".to_owned(), vec![100, 200, 300, 400, 500]),
             ("f".to_owned(), vec![0, 0, 0, 0, 0, 0, 1, 1, 0, 0]),
         ];
-        join_helper(
+        deterministic_join_helper(
             types_x.clone(),
             types_y.clone(),
             op.clone(),
@@ -3978,7 +4239,7 @@ mod tests {
             true,
             false,
         )?;
-        join_helper(
+        deterministic_join_helper(
             types_x.clone(),
             types_y.clone(),
             op.clone(),
@@ -3988,7 +4249,7 @@ mod tests {
             false,
             true,
         )?;
-        join_helper(
+        deterministic_join_helper(
             types_x, types_y, op, values_x, values_y, expected, false, false,
         )?;
 
@@ -4008,7 +4269,7 @@ mod tests {
             for (h0, h1) in headers {
                 headers_map.insert(h0, h1);
             }
-            join_helper(
+            deterministic_join_helper(
                 types_x,
                 types_y,
                 Operation::Join(JoinType::Union, headers_map),
@@ -4123,7 +4384,6 @@ mod tests {
                 ),
             ],
         )?;
-
         data_helper(
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
@@ -4541,7 +4801,7 @@ mod tests {
                 ],
             ),
         ];
-        join_helper(
+        deterministic_join_helper(
             types_x.clone(),
             types_y.clone(),
             op.clone(),
@@ -4551,7 +4811,7 @@ mod tests {
             true,
             false,
         )?;
-        join_helper(
+        deterministic_join_helper(
             types_x.clone(),
             types_y.clone(),
             op.clone(),
@@ -4561,7 +4821,7 @@ mod tests {
             false,
             true,
         )?;
-        join_helper(
+        deterministic_join_helper(
             types_x, types_y, op, values_x, values_y, expected, false, false,
         )?;
 
@@ -4581,7 +4841,7 @@ mod tests {
             for (h0, h1) in headers {
                 headers_map.insert(h0, h1);
             }
-            join_helper(
+            deterministic_join_helper(
                 types_x,
                 types_y,
                 Operation::Join(JoinType::Full, headers_map),
@@ -4696,7 +4956,6 @@ mod tests {
                 ),
             ],
         )?;
-
         data_helper(
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
@@ -5031,7 +5290,6 @@ mod tests {
                 ("c".to_owned(), vec![0, 0, 0, 0, 0, 4]),
             ],
         )?;
-
         Ok(())
     }
 
@@ -5114,7 +5372,7 @@ mod tests {
                 ],
             ),
         ];
-        join_helper(
+        deterministic_join_helper(
             types_x.clone(),
             types_y.clone(),
             op.clone(),
@@ -5124,7 +5382,7 @@ mod tests {
             true,
             false,
         )?;
-        join_helper(
+        deterministic_join_helper(
             types_x.clone(),
             types_y.clone(),
             op.clone(),
@@ -5134,7 +5392,7 @@ mod tests {
             false,
             true,
         )?;
-        join_helper(
+        deterministic_join_helper(
             types_x, types_y, op, values_x, values_y, expected, false, false,
         )?;
 
