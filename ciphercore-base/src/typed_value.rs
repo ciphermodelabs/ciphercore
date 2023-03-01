@@ -1120,7 +1120,7 @@ fn extract_values(numbers: Vec<JsonValue>, st: ScalarType) -> Result<Value> {
 }
 
 fn json_reshape(shape: ArrayShape, j: &JsonValue) -> Result<JsonValue> {
-    let e = Err(runtime_error!("Can't JSON-reshape"));
+    let e = || Err(runtime_error!("Can't JSON-reshape"));
     if let JsonValue::Array(a) = j {
         if shape.is_empty() {
             return Ok(a[0].clone());
@@ -1140,10 +1140,10 @@ fn json_reshape(shape: ArrayShape, j: &JsonValue) -> Result<JsonValue> {
             }
             Ok(JsonValue::from(result))
         } else {
-            e
+            e()
         }
     } else {
-        e
+        e()
     }
 }
 
