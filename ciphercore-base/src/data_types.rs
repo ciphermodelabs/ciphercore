@@ -813,6 +813,21 @@ impl Type {
     }
 }
 
+// column header -> column type
+#[doc(hidden)]
+pub type HeadersTypes = Vec<(String, Arc<Type>)>;
+
+#[doc(hidden)]
+pub fn get_named_types(t: &Type) -> Result<&HeadersTypes> {
+    if let Type::NamedTuple(v) = t {
+        Ok(v)
+    } else {
+        Err(runtime_error!(
+            "Can't get named types. Input type must be NamedTuple."
+        ))
+    }
+}
+
 /// Returns a new type for scalars created from a given scalar type.
 ///
 /// This is a helper function to create a `Type::Scalar(_)`.

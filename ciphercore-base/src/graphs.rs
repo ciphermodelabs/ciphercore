@@ -90,6 +90,20 @@ impl PyBindingJoinType {
     }
 }
 
+/// Shard config contains the parameters of the Sharding operation, namely:
+///
+/// - number of shards into which input dataset will be split,
+/// - size of each shard, i.e., the number of rows in each shard,
+/// - headers of columns whose rows are hashed to find the index of a shard where the corresponding row will be placed.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "py-binding", struct_wrapper)]
+pub struct ShardConfig {
+    pub num_shards: u64,
+    pub shard_size: u64,
+    /// headers of columns whose rows are hashed to find the index of a shard where the corresponding row will be placed
+    pub shard_headers: Vec<String>,
+}
+
 #[doc(hidden)]
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Operation {
@@ -105,6 +119,7 @@ pub enum Operation {
     // Matmul operation follows the numpy matmul semantics: https://numpy.org/doc/stable/reference/generated/numpy.matmul.html
     // In particular, unlike Dot, it doesn't support scalar inputs.
     Matmul,
+    Gemm(bool, bool),
     Truncate(u64),
     Sum(ArrayShape),
     PermuteAxes(ArrayShape),
@@ -131,6 +146,7 @@ pub enum Operation {
     Iterate,
     ArrayToVector,
     VectorToArray,
+    // Operations that can't be compiled to MPC protocols
     RandomPermutation(u64),
     Gather(u64),
     CuckooHash,
@@ -138,8 +154,9 @@ pub enum Operation {
     CuckooToPermutation,
     DecomposeSwitchingMap(u64),
     SegmentCumSum,
+    Shard(ShardConfig),
+    // SQL joins
     Join(JoinType, HashMap<String, String>),
-    Gemm(bool, bool),
     Custom(CustomOperation),
     // Operations used for debugging graphs.
     Print(String),
@@ -904,6 +921,17 @@ impl Node {
     pub fn segment_cumsum(&self, binary_array: Node, first_row: Node) -> Result<Node> {
         self.get_graph()
             .segment_cumsum(self.clone(), binary_array, first_row)
+    }
+
+    /// Adds a node that computes sharding of a given table according to a given sharding config.
+    /// Sharding config contains names of the columns whose hashed values are used for sharding.
+    ///
+    /// Each shard is accompanied by a Boolean mask indicating whether a corresponding row stems from the input table or padded (1 if a row comes from input).
+    ///
+    /// Applies [Graph::shard] to the parent graph, `this` node and `shard_config`.
+    #[doc(hidden)]
+    pub fn shard(&self, shard_config: ShardConfig) -> Result<Node> {
+        self.get_graph().shard(self.clone(), shard_config)
     }
 
     /// Adds a node that converts a switching map array into a tuple of the following components:
@@ -1850,6 +1878,41 @@ impl Graph {
             vec![],
             Operation::SegmentCumSum,
         )
+    }
+
+    /// Adds a node that computes sharding of a given table according to a given sharding config.
+    /// Sharding config contains names of the columns whose hashed values are used for sharding.
+    /// The size of each shard (i.e., the number of rows) and the number of shards is given in the sharding config.
+    /// The number of shards should be smaller than 700.
+    ///
+    ///
+    /// If some resulting shards don't have `shard_size` elements, they're padded with zeros to reach this size.
+    /// If the size of some shards exceeds `shard_size`, sharding fails.
+    ///
+    /// To choose these parameters, consult [the following paper](http://wwwmayr.informatik.tu-muenchen.de/personen/raab/publ/balls.pdf).
+    /// Note that for large shard sizes and small number of shards, it holds that
+    ///
+    /// `shard_size = num_input_rows / num_shards + alpha * sqrt(2 * num_input_rows / num_shards * log(num_shards))`.
+    ///
+    /// With `alpha = 2`, it is possible to achieve failure probability 2^(-40) if `num_shards < 700` and `shard_size > 2^17`.
+    ///
+    ///
+    /// Each shard is accompanied by a Boolean mask indicating whether a corresponding row stems from the input table or padded (1 if a row comes from input).
+    /// The output is given in the form of a tuple of `(mask, shard)`, where `mask` is a binary array and `shard` is a table, i.e., named tuple.
+    ///
+    /// **WARNING**: this function cannot be compiled to an MPC protocol.
+    ///
+    /// # Arguments
+    ///
+    /// - `input_table` - named tuple of arrays containing data for sharding
+    /// - `shard_config` - parameters of sharding: number of shards, shard size and names of columns that are hashed in sharding
+    ///
+    /// # Returns
+    ///
+    /// New Shard node containing a tuple of shards
+    #[doc(hidden)]
+    pub fn shard(&self, input_table: Node, shard_config: ShardConfig) -> Result<Node> {
+        self.add_node(vec![input_table], vec![], Operation::Shard(shard_config))
     }
 
     /// Adds a node that converts a switching map array into a random tuple of the following components:

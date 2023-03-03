@@ -1,24 +1,13 @@
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
 use crate::{
-    data_types::{array_type, named_tuple_type, Type},
+    data_types::{array_type, get_named_types, named_tuple_type, HeadersTypes, Type},
     data_values::Value,
     errors::Result,
     graphs::JoinType,
     type_inference::NULL_HEADER,
     typed_value::TypedValue,
 };
-
-// column header -> column array type
-type HeadersTypes = Vec<(String, Arc<Type>)>;
-
-fn get_named_types(t: &Type) -> &HeadersTypes {
-    if let Type::NamedTuple(v) = t {
-        v
-    } else {
-        panic!("Can't get named types. Input type must be NamedTuple.")
-    }
-}
 
 struct ColumnsMap {
     // column header -> column array index
@@ -310,7 +299,7 @@ fn get_union_columns(join_input: &JoinInput) -> Vec<Vec<u64>> {
 }
 
 fn get_number_of_rows(set_t: &Type) -> Result<u64> {
-    let headers_types = get_named_types(set_t);
+    let headers_types = get_named_types(set_t)?;
     if headers_types.is_empty() {
         return Err(runtime_error!("The set is empty"));
     }
@@ -328,7 +317,7 @@ fn evaluate_full_join(
     // Resulting type of this left join. The columns of set1 go first, then the remaining columns of set0.
     let left_join_t = {
         let mut result_types_vec = vec![];
-        let headers_types1 = get_named_types(&set1.t);
+        let headers_types1 = get_named_types(&set1.t)?;
         for (h, sub_t) in headers_types1 {
             let mut shape = sub_t.get_shape();
             shape[0] = num_rows1;
@@ -336,7 +325,7 @@ fn evaluate_full_join(
             let res_sub_t = array_type(shape, st);
             result_types_vec.push((h.clone(), res_sub_t));
         }
-        let headers_types0 = get_named_types(&set0.t);
+        let headers_types0 = get_named_types(&set0.t)?;
         for (h, sub_t) in headers_types0 {
             if h != NULL_HEADER && !headers.contains_key(h) {
                 let mut shape = sub_t.get_shape();
@@ -370,7 +359,7 @@ fn evaluate_full_join(
     // The headers for union should contain the input headers and the remaining headers of set0 except for NULL_HEADER.
     // This avoids an error triggered on non-key columns with the same header.
     let mut union_headers = headers.clone();
-    let headers0: Vec<String> = get_named_types(&set0.t)
+    let headers0: Vec<String> = get_named_types(&set0.t)?
         .iter()
         .map(|ht| ht.0.clone())
         .collect();
@@ -395,7 +384,7 @@ pub(crate) fn evaluate_join(
     if join_t == JoinType::Full {
         return evaluate_full_join(set0, set1, headers, res_t);
     }
-    let headers_types1 = get_named_types(&set1.t);
+    let headers_types1 = get_named_types(&set1.t)?;
     // Extract columns of the second set
     let columns1 = extract_columns(&set1, headers_types1)?;
 
@@ -403,11 +392,11 @@ pub(crate) fn evaluate_join(
     // Key columns of the second set are merged and added to the hash map along with the corresponding rows
     let key_data_hashmap1 = get_hashmap_from_key_columns(&columns1, headers_types1, &key_headers1)?;
 
-    let headers_types0 = get_named_types(&set0.t);
+    let headers_types0 = get_named_types(&set0.t)?;
     // Extract columns of the first set
     let columns0 = extract_columns(&set0, headers_types0)?;
 
-    let result_headers_types = get_named_types(&res_t);
+    let result_headers_types = get_named_types(&res_t)?;
 
     let join_input = JoinInput {
         columns0,
