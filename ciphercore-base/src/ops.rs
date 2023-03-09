@@ -8,6 +8,7 @@ pub mod comparisons;
 pub mod fixed_precision;
 pub mod goldschmidt_division;
 pub mod inverse_sqrt;
+pub mod long_division;
 pub mod min_max;
 pub mod multiplexer;
 pub mod newton_inversion;

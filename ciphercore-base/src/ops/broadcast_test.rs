@@ -35,7 +35,13 @@ mod tests {
         ];
         for v1 in values.iter() {
             for v2 in values.iter() {
-                binary_helper(BinaryAdd {}, v1.clone(), v2.clone())?;
+                binary_helper(
+                    BinaryAdd {
+                        overflow_bit: false,
+                    },
+                    v1.clone(),
+                    v2.clone(),
+                )?;
                 binary_helper(Equal {}, v1.clone(), v2.clone())?;
                 binary_helper(NotEqual {}, v1.clone(), v2.clone())?;
                 macro_rules! comparison_op {

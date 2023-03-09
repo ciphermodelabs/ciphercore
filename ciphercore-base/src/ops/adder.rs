@@ -1,26 +1,24 @@
 //! Binary adder that adds two bitstrings.
-use crate::broadcast::broadcast_shapes;
 use crate::custom_ops::{CustomOperation, CustomOperationBody};
 use crate::data_types::{array_type, Type, BIT};
 use crate::errors::Result;
 use crate::graphs::{Context, Graph, Node, SliceElement};
-use crate::ops::utils::{constant_scalar, expand_dims, pull_out_bits, put_in_bits};
+use crate::ops::utils::{constant_scalar, expand_dims, put_in_bits};
 
 use serde::{Deserialize, Serialize};
 
-use super::utils::{validate_arguments_in_broadcast_bit_ops, zeros};
+use super::utils::{pull_out_bits_pair, validate_arguments_in_broadcast_bit_ops};
 
 /// A structure that defines the custom operation BinaryAdd that implements the binary adder.
 ///
-/// The binary adder takes two arrays of length-n bitstrings and returns the elementwise binary sum of these arrays, ignoring a possible overflow.
+/// The binary adder takes two arrays of length-n bitstrings and returns the elementwise binary sum of these arrays.
+/// If overflow_bit is true, the output is a tuple (sum, overflow_bit) instead.
 ///
 /// Only `n` which are powers of two are supported.
 ///
 /// The last dimension of both inputs must be the same; it defines the length of input bitstrings.
 /// If input shapes are different, the broadcasting rules are applied (see [the NumPy broadcasting rules](https://numpy.org/doc/stable/user/basics.broadcasting.html)).
 /// For example, if input arrays are of shapes `[2,3]`, and `[1,3]`, the resulting array has shape `[2,3]`.
-///
-/// Each bitstring of the output contains n bits; thus, this operation does not handle overflows.
 ///
 /// This operation is needed for conversion between arithmetic and boolean additive MPC shares
 /// (i.e. A2B and B2A operations in MPC).
@@ -48,10 +46,12 @@ use super::utils::{validate_arguments_in_broadcast_bit_ops, zeros};
 /// let t = array_type(vec![2, 4], BIT);
 /// let n1 = g.input(t.clone()).unwrap();
 /// let n2 = g.input(t.clone()).unwrap();
-/// let n3 = g.custom_op(CustomOperation::new(BinaryAdd {}), vec![n1, n2]).unwrap();
+/// let n3 = g.custom_op(CustomOperation::new(BinaryAdd { overflow_bit: false }), vec![n1, n2]).unwrap();
 /// ```
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
-pub struct BinaryAdd {}
+pub struct BinaryAdd {
+    pub overflow_bit: bool,
+}
 
 #[typetag::serde]
 impl CustomOperationBody for BinaryAdd {
@@ -59,44 +59,40 @@ impl CustomOperationBody for BinaryAdd {
         validate_arguments_in_broadcast_bit_ops(arguments_types.clone(), &self.get_name())?;
         let input_type0 = arguments_types[0].clone();
         let input_type1 = arguments_types[1].clone();
-        let output_type = array_type(
-            broadcast_shapes(input_type0.get_shape(), input_type1.get_shape())?,
-            BIT,
-        );
 
         // Adder input consists of two binary strings x and y
         let g = context.create_graph()?;
-        let input0 = pull_out_input_node_bits(&g, input_type0, output_type.clone())?;
-        let input1 = pull_out_input_node_bits(&g, input_type1, output_type)?;
+        let (input0, input1) = pull_out_bits_pair(g.input(input_type0)?, g.input(input_type1)?)?;
         let added = g.custom_op(
-            CustomOperation::new(BinaryAddTransposed {}),
+            CustomOperation::new(BinaryAddTransposed {
+                overflow_bit: self.overflow_bit,
+            }),
             vec![input0, input1],
         )?;
-        let output = put_in_bits(added)?;
+        let output = if self.overflow_bit {
+            g.create_tuple(vec![
+                put_in_bits(added.tuple_get(0)?)?,
+                put_in_bits(added.tuple_get(1)?)?,
+            ])?
+        } else {
+            put_in_bits(added)?
+        };
         output.set_as_output()?;
         g.finalize()?;
         Ok(g)
     }
 
     fn get_name(&self) -> String {
-        "BinaryAdd".to_owned()
+        format!("BinaryAdd(overflow_bit={})", self.overflow_bit)
     }
-}
-
-fn pull_out_input_node_bits(g: &Graph, input_type: Type, output_type: Type) -> Result<Node> {
-    let i = g.input(input_type.clone())?;
-    let i = if input_type == output_type {
-        i
-    } else {
-        zeros(g, output_type)?.add(i)?
-    };
-    pull_out_bits(i)
 }
 
 // Same as BinaryAdd, but expect that the first dimension is bits.
 // This is a performance optimization, it's easier to operate on the first dimension.
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
-pub(crate) struct BinaryAddTransposed {}
+pub(crate) struct BinaryAddTransposed {
+    pub overflow_bit: bool,
+}
 
 #[typetag::serde]
 impl CustomOperationBody for BinaryAddTransposed {
@@ -137,16 +133,21 @@ impl CustomOperationBody for BinaryAddTransposed {
         // Compute "generate" bits x_i AND y_i
         let and_bits = g.multiply(input0, input1)?;
 
-        let carries = calculate_carry_bits(xor_bits.clone(), and_bits)?;
+        let (carries, overflow_bit) =
+            calculate_carry_bits(xor_bits.clone(), and_bits, self.overflow_bit)?;
         // The last step is to XOR carries with "propagate" bits
-        let output = carries.add(xor_bits)?;
+        let added = carries.add(xor_bits)?;
+        let output = match overflow_bit {
+            Some(overflow_bit) => g.create_tuple(vec![added, overflow_bit])?,
+            None => added,
+        };
         output.set_as_output()?;
         g.finalize()?;
         Ok(g)
     }
 
     fn get_name(&self) -> String {
-        "BinaryAddTransposed".to_owned()
+        format!("BinaryAddTransposed(overflow_bit={})", self.overflow_bit)
     }
 }
 
@@ -164,10 +165,14 @@ impl CarryNode {
         Ok(self.propagate.get_type()?.get_shape()[0])
     }
 
-    fn shrink(&self) -> Result<CarryNode> {
+    fn shrink(&self, overflow_bit: bool) -> Result<CarryNode> {
         let bit_len = self.bit_len()? as i64;
 
-        let next_lvl_bits = (bit_len - 1) / 2;
+        let next_lvl_bits = if overflow_bit {
+            bit_len / 2
+        } else {
+            (bit_len - 1) / 2
+        };
         let use_bits = next_lvl_bits * 2;
         let lower = self.sub_slice(0, use_bits)?;
         let higher = self.sub_slice(1, use_bits)?;
@@ -232,67 +237,97 @@ fn interleave(first: Node, second: Node) -> Result<Node> {
 /// with bits dimension pulled out to the outermost level.
 /// It also assumes the number of bits is a power of two.
 ///
-/// Each node of the segment tree stores two bits `(propagate, generate)`.
-/// Based on the carry bit from the previous node, a new carry bit could be calculated
-/// as `generate + propagate * prev_carry`.
+/// Each node of the segment tree labeled `ij` stores two bits `(propagate, generate)` that
+/// are used to compute carry[j+1] given carry[i], as `generate + propagate * carry[i]`.
 ///
 /// The overall multiplicative depth of generated segment tree is `2*log(bits)`.
 /// First, we generate nodes for each separate bit.
-/// Then, we join neighboring nodes, until we have at most two nodes. We don't need
-/// to do the last join as we don't care about overflows.
+/// Then, we join neighboring nodes, until we have a single node.
 ///
-/// When the top node is calculated, we go top-down and push carry bits to the lower
-/// levels.
+/// When the top node is calculated, we go top-down and push carry bits to the lower layers.
+/// In the implementation, bits from nodes on the same tree layer are stored together in a
+/// single CarryNode in the nodes[] array.
 ///
 /// # Example
 /// Let's say we have 8 bits. First, we create a node for each bit:
 /// ```text
 /// | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 |    <- stored in `nodes[0]`
-///   \   /   \   /   \   /
-///    01      23      45                <- stored in `nodes[1]`
-///      \     /
-///        03                            <- stored in `nodes[2]`
+///   \   /   \   /   \   /   \   /
+///    01      23      45      67        <- stored in `nodes[1]`
+///      \    /          \    /
+///        03              47            <- stored in `nodes[2]`
+///           \          /  
+///                07                    <- stored in `nodes[3]`
 /// ```
 ///
-/// Then we calculate carry bits based on nodes from top to bottom. We know
+/// Then we calculate carry bits iterating over layers from bottom to top. We know
 /// that `carry[0] = 0`.
+///
+/// Based on `nodes[3]` we can calculate the overflow bit: carry[n].
 ///
 /// Based on `nodes[2]` we calculate `carry[4]`, interleave with `carry[0]`,
 /// and get `{carry[0], carry[4]}`.
 ///
 /// Then we use `nodes[1]` to generate `{carry[2], carry[6]}`, interleave with
 /// previous result, and get `{carry[0], carry[2], carry[4], carry[6]}`. Note
-/// that to do this we only need half of the values from `nodes[1]` (we don't need node `23`).
+/// that to do this we only need half of the values from `nodes[1]`
+/// (we don't need nodes `23` or `67`).
 ///
 /// And finally using (half of) `nodes[0]` we can calculate all odd indexes carries.
 ///
-fn calculate_carry_bits(propagate_bits: Node, generate_bits: Node) -> Result<Node> {
+/// As an optimization, if overflow_bit=false, we remove the last node from each layer
+/// (except layer 0) as they're not needed.
+///
+/// Returns (carry[0..n-1], Some(carry[n])) tuple if overflow_bit=true, or
+/// (carry[0..n-1], None) tuple if overflow_bit=false,
+/// representing carry bits and the overflow bit.
+fn calculate_carry_bits(
+    propagate_bits: Node,
+    generate_bits: Node,
+    overflow_bit: bool,
+) -> Result<(Node, Option<Node>)> {
     let graph = propagate_bits.get_graph();
 
     let mut nodes = vec![CarryNode {
         propagate: propagate_bits,
         generate: generate_bits,
     }];
-    if !nodes[0].bit_len()?.is_power_of_two() {
-        return Err(runtime_error!("BinaryAdd only supports numbers with number of bits, which is a power of 2. {} bits provided.", nodes[0].bit_len()?));
+    let bit_len = nodes[0].bit_len()?;
+    if !bit_len.is_power_of_two() {
+        return Err(runtime_error!("BinaryAdd only supports numbers with number of bits, which is a power of 2. {} bits provided.", bit_len));
     }
-    while nodes.last().unwrap().bit_len()? > 2 {
-        let last = nodes.last().unwrap();
-        nodes.push(last.shrink()?);
-    }
-
     let zero = constant_scalar(&graph, 0, BIT)?;
     let mut carries = nodes[0]
         .propagate
         .get_slice(vec![SliceElement::SubArray(Some(0), Some(1), None)])?
         .multiply(zero)?;
-    for node in nodes.iter().rev() {
+    // Two special cases for the overflow_bit=false optimization:
+    // If the input is 1 bit long: ignore input and just return zero:
+    if !overflow_bit && bit_len == 1 {
+        return Ok((carries, None));
+    }
+    // If the input is 2 bits long: we must not join the two nodes on the initial layer.
+    if overflow_bit || bit_len > 2 {
+        while nodes.last().unwrap().bit_len()? > 1 {
+            let last = nodes.last().unwrap();
+            nodes.push(last.shrink(overflow_bit)?);
+        }
+    }
+
+    let mut node_rev_iter = nodes.iter().rev();
+    let overflow_bit = if overflow_bit {
+        let root_node = node_rev_iter.next().unwrap();
+        Some(root_node.apply(carries.clone())?)
+    } else {
+        None
+    };
+    for node in node_rev_iter {
         let lower = node.sub_slice(0, node.bit_len()? as i64)?;
         let new_carries = lower.apply(carries.clone())?;
         carries = interleave(carries, new_carries)?;
     }
 
-    Ok(carries)
+    Ok((carries, overflow_bit))
 }
 
 #[cfg(test)]
@@ -302,7 +337,10 @@ mod tests {
     use super::*;
 
     use crate::custom_ops::{run_instantiation_pass, CustomOperation};
-    use crate::data_types::{array_type, create_scalar_type, tuple_type, INT16, INT64};
+    use crate::data_types::{
+        array_type, create_scalar_type, tuple_type, ScalarType, INT16, INT64, UINT16, UINT32,
+        UINT64, UINT8,
+    };
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
     use crate::graphs::create_context;
@@ -325,7 +363,18 @@ mod tests {
         let c = simple_context(|g| {
             let i1 = g.input(array_type(vec![bits], BIT))?;
             let i2 = g.input(array_type(vec![bits], BIT))?;
-            g.custom_op(CustomOperation::new(BinaryAdd {}), vec![i1, i2])
+            let o = g.custom_op(
+                CustomOperation::new(BinaryAdd {
+                    overflow_bit: false,
+                }),
+                vec![i1, i2],
+            )?;
+            assert_eq!(
+                o.get_type()?.get_dimensions(),
+                vec![bits],
+                "{first} + {second} with {bits} bits"
+            );
+            Ok(o)
         })?;
         let mapped_c = run_instantiation_pass(c)?;
         let scalar = create_scalar_type(false, modulus);
@@ -338,7 +387,10 @@ mod tests {
         .to_u64(scalar.clone())?;
 
         let expected_result = first.wrapping_add(second) & mask;
-        assert_eq!(result_v, expected_result);
+        assert_eq!(
+            result_v, expected_result,
+            "{first} + {second} with {bits} bits"
+        );
         Ok(())
     }
 
@@ -355,13 +407,64 @@ mod tests {
         Ok(())
     }
 
+    fn add_with_overflow_helper(first: u64, second: u64, st: ScalarType) -> Result<(u64, u64)> {
+        let bits = st.size_in_bits();
+        let c = simple_context(|g| {
+            let i1 = g.input(array_type(vec![bits], BIT))?;
+            let i2 = g.input(array_type(vec![bits], BIT))?;
+            g.custom_op(
+                CustomOperation::new(BinaryAdd { overflow_bit: true }),
+                vec![i1, i2],
+            )
+        })?;
+        let mapped_c = run_instantiation_pass(c)?;
+        let input0 = Value::from_scalar(first, st.clone())?;
+        let input1 = Value::from_scalar(second, st.clone())?;
+        let results = random_evaluate(
+            mapped_c.get_context().get_main_graph()?,
+            vec![input0, input1],
+        )?
+        .to_vector()?;
+        Ok((results[0].to_u64(st)?, results[1].to_u64(BIT)?))
+    }
+
+    #[test]
+    fn test_add_with_overflow_bit() -> Result<()> {
+        for (first, second, st, want_sum, want_overflow) in [
+            (0, 0, BIT, 0, 0),
+            (0, 1, BIT, 1, 0),
+            (1, 0, BIT, 1, 0),
+            (1, 1, BIT, 0, 1),
+            (127, 128, UINT8, 255, 0),
+            (127, 129, UINT8, 0, 1),
+            (128, 128, UINT8, 0, 1),
+            (255, 255, UINT8, 254, 1),
+            (1234, 4321, UINT16, 5555, 0),
+            (12345, 54321, UINT16, 1130, 1),
+            (12345, 54321, UINT32, 66666, 0),
+            (2000000000, 2000000000, UINT32, 4000000000, 0),
+            (2000000000, 3000000000, UINT32, 705032704, 1),
+            (u64::MAX, u64::MAX, UINT64, u64::MAX - 1, 1),
+        ] {
+            let (got_sum, got_overflow) = add_with_overflow_helper(first, second, st.clone())?;
+            assert_eq!(got_sum, want_sum, "{first} + {second}");
+            assert_eq!(got_overflow, want_overflow, "{first} + {second}");
+        }
+        Ok(())
+    }
+
     #[test]
     fn test_well_behaved() -> Result<()> {
         {
             let c = simple_context(|g| {
                 let i1 = g.input(array_type(vec![5, 16], BIT))?;
                 let i2 = g.input(array_type(vec![1, 16], BIT))?;
-                g.custom_op(CustomOperation::new(BinaryAdd {}), vec![i1, i2])
+                g.custom_op(
+                    CustomOperation::new(BinaryAdd {
+                        overflow_bit: false,
+                    }),
+                    vec![i1, i2],
+                )
             })?;
             let mapped_c = run_instantiation_pass(c)?;
             let inputs1 =
@@ -381,7 +484,12 @@ mod tests {
             let c = simple_context(|g| {
                 let i1 = g.input(array_type(vec![64], BIT))?;
                 let i2 = g.input(array_type(vec![64], BIT))?;
-                g.custom_op(CustomOperation::new(BinaryAdd {}), vec![i1, i2])
+                g.custom_op(
+                    CustomOperation::new(BinaryAdd {
+                        overflow_bit: false,
+                    }),
+                    vec![i1, i2],
+                )
             })?;
             let mapped_c = run_instantiation_pass(c)?;
             let input0 = Value::from_scalar(123456790, INT64)?;
@@ -406,28 +514,52 @@ mod tests {
         let i3 = g.input(array_type(vec![32], BIT))?;
         let i4 = g.input(array_type(vec![31], BIT))?;
         assert!(g
-            .custom_op(CustomOperation::new(BinaryAdd {}), vec![i.clone()])
+            .custom_op(
+                CustomOperation::new(BinaryAdd {
+                    overflow_bit: false
+                }),
+                vec![i.clone()]
+            )
             .is_err());
         assert!(g
             .custom_op(
-                CustomOperation::new(BinaryAdd {}),
+                CustomOperation::new(BinaryAdd {
+                    overflow_bit: false
+                }),
                 vec![i.clone(), i1.clone()]
             )
             .is_err());
         assert!(g
             .custom_op(
-                CustomOperation::new(BinaryAdd {}),
+                CustomOperation::new(BinaryAdd {
+                    overflow_bit: false
+                }),
                 vec![i1.clone(), i.clone()]
             )
             .is_err());
         assert!(g
-            .custom_op(CustomOperation::new(BinaryAdd {}), vec![i2])
+            .custom_op(
+                CustomOperation::new(BinaryAdd {
+                    overflow_bit: false
+                }),
+                vec![i2]
+            )
             .is_err());
         assert!(g
-            .custom_op(CustomOperation::new(BinaryAdd {}), vec![i.clone(), i3])
+            .custom_op(
+                CustomOperation::new(BinaryAdd {
+                    overflow_bit: false
+                }),
+                vec![i.clone(), i3]
+            )
             .is_err());
         assert!(g
-            .custom_op(CustomOperation::new(BinaryAdd {}), vec![i4.clone(), i4])
+            .custom_op(
+                CustomOperation::new(BinaryAdd {
+                    overflow_bit: false
+                }),
+                vec![i4.clone(), i4]
+            )
             .is_err());
         Ok(())
     }

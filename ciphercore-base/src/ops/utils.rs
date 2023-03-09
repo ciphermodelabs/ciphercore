@@ -1,6 +1,6 @@
 use std::ops::Not;
 
-use crate::data_types::{array_type, ScalarType, Type, BIT};
+use crate::data_types::{array_type, ArrayShape, ScalarType, Type, BIT};
 use crate::data_values::Value;
 use crate::errors::Result;
 use crate::graphs::{Context, Graph, Node, SliceElement};
@@ -66,6 +66,39 @@ pub fn pull_out_bits_for_type(t: Type) -> Result<Type> {
         let mut new_shape = vec![shape[shape.len() - 1]];
         new_shape.extend(&shape[0..shape.len() - 1]);
         Ok(array_type(new_shape, t.get_scalar_type()))
+    }
+}
+
+// Like pull_out_bits but for a pair of nodes, aligning the "bits dimension" before pulling out.
+pub fn pull_out_bits_pair(x: Node, y: Node) -> Result<(Node, Node)> {
+    let num_dims = std::cmp::max(
+        x.get_type()?.get_shape().len(),
+        y.get_type()?.get_shape().len(),
+    );
+    Ok((
+        pull_out_bits(reshape_prepending_dims(x, num_dims)?)?,
+        pull_out_bits(reshape_prepending_dims(y, num_dims)?)?,
+    ))
+}
+
+pub fn prepend_dims(shape: ArrayShape, num_dims: usize) -> Result<ArrayShape> {
+    match shape.len() {
+        len if len == num_dims => Ok(shape),
+        len if len < num_dims => Ok([vec![1; num_dims - shape.len()], shape].concat()),
+        _ => Err(runtime_error!(
+            "prepend_dims(num_dims={num_dims}): input shape {shape:?} too large"
+        )),
+    }
+}
+
+pub fn reshape_prepending_dims(node: Node, num_dims: usize) -> Result<Node> {
+    let t = node.get_type()?;
+    let shape = t.get_shape();
+    let new_shape = prepend_dims(shape.clone(), num_dims)?;
+    if shape == new_shape {
+        Ok(node)
+    } else {
+        Ok(node.reshape(array_type(new_shape, t.get_scalar_type()))?)
     }
 }
 

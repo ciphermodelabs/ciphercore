@@ -2431,26 +2431,29 @@ impl Graph {
     /// # Example
     ///
     /// ```
-    /// # use ciphercore_base::data_types::{INT32, scalar_type, vector_type};
+    /// # use ciphercore_base::data_types::{INT32, BIT, scalar_type, vector_type};
     /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::ops::utils::constant_scalar;
     /// let c = create_context().unwrap();
     ///
-    /// let t_s = scalar_type(INT32);
+    /// let t_s = scalar_type(BIT);
     /// let t = scalar_type(INT32);
     /// let vec_t = vector_type(10, t.clone());
     ///
+    /// // Graph that outputs 0 at even indices or input value at odd indices.
     /// let g1 = c.create_graph().unwrap();
     /// {
     ///     let old_state = g1.input(t_s.clone()).unwrap();
     ///     let input = g1.input(t.clone()).unwrap();
-    ///     let sum = g1.add(old_state.clone(), input).unwrap();
-    ///     let out_tuple = g1.create_tuple(vec![sum, old_state]).unwrap();
+    ///     let result = g1.mixed_multiply(input, old_state.clone()).unwrap();
+    ///     let new_state = g1.add(old_state, constant_scalar(&g1, 1, BIT).unwrap()).unwrap();
+    ///     let out_tuple = g1.create_tuple(vec![new_state, result]).unwrap();
     ///     out_tuple.set_as_output().unwrap();
     ///     g1.finalize().unwrap();
     /// }
     ///
     /// let g2 = c.create_graph().unwrap();
-    /// let initial_state = g2.input(t).unwrap();
+    /// let initial_state = constant_scalar(&g2, 0, BIT).unwrap();
     /// let input_vector = g2.input(vec_t).unwrap();
     /// g2.iterate(g1, initial_state, input_vector).unwrap();
     /// ```

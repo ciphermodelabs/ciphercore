@@ -359,7 +359,9 @@ fn get_binary_adder_graph(context: Context, bits_t: Type) -> Result<Graph> {
         let input1 = g.input(bits_t.clone())?;
         let input2 = g.input(bits_t)?;
         g.custom_op(
-            CustomOperation::new(BinaryAddTransposed {}),
+            CustomOperation::new(BinaryAddTransposed {
+                overflow_bit: false,
+            }),
             vec![input1, input2],
         )
     })?;
