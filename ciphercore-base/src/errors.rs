@@ -2,6 +2,7 @@
 use ciphercore_utils::errors::{CiphercoreErrorBody, ErrorWithBody};
 use json::JsonError;
 use ndarray::ShapeError;
+use openssl::error::ErrorStack;
 use std::num::ParseIntError;
 
 use serde::{Deserialize, Serialize};
@@ -104,6 +105,12 @@ impl From<std::ffi::NulError> for CiphercoreBaseError {
 impl From<std::str::Utf8Error> for CiphercoreBaseError {
     fn from(err: std::str::Utf8Error) -> CiphercoreBaseError {
         runtime_error!("Utf8Error: {}", err)
+    }
+}
+
+impl From<ErrorStack> for CiphercoreBaseError {
+    fn from(err: ErrorStack) -> CiphercoreBaseError {
+        runtime_error!("OpenSSL error: {}", err)
     }
 }
 /// Result type within CipherCore that is used for error handling.
