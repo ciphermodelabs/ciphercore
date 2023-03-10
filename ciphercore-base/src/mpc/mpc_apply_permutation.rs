@@ -454,10 +454,11 @@ mod tests {
         let perm = if permutations.len() == 1 {
             permutations[0].clone()
         } else {
-            let mut res = permutations[0].clone();
-            for p in 1..=2 {
+            let mut res: Vec<u64> = (0..n).map(|i| i as u64).collect();
+            // p = p2(p1(p0)), but to compose we actually need to traverse backwards.
+            for p in permutations.iter().rev() {
                 for i in 0..n {
-                    res[i] = permutations[p][res[i] as usize];
+                    res[i] = p[res[i] as usize];
                 }
             }
             res
@@ -482,7 +483,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         for i in 0..n {
-            assert_eq!(input_array[perm[i] as usize].len(), output_array[i].len());
+            assert_eq!(input_array[perm[i] as usize], output_array[i]);
         }
         Ok(())
     }
