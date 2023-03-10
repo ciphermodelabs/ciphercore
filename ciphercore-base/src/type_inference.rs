@@ -458,6 +458,7 @@ fn get_number_of_node_dependencies(operation: Operation) -> Option<u64> {
         | Operation::Gather(_)
         | Operation::Iterate
         | Operation::CuckooHash
+        | Operation::ApplyPermutation(_)
         | Operation::Join(_, _)
         | Operation::Gemm(_, _)
         | Operation::Assert(_) => Some(2),
@@ -691,6 +692,29 @@ impl TypeInferenceWorker {
                 )?;
                 self.register_result(node, result.clone())?;
                 Ok(result)
+            }
+            Operation::ApplyPermutation(_) => {
+                let t = node_dependencies_types[0].clone();
+                if !t.is_array() {
+                    return Err(runtime_error!(
+                        "ApplyPermutation supported only for Array. Found type: {t:?}"
+                    ));
+                }
+                let n = t.get_shape()[0];
+                let p = node_dependencies_types[1].clone();
+                if let Type::Array(shape, st) = p.clone() {
+                    if shape.len() != 1 || shape[0] != n || st != UINT64 {
+                        return Err(runtime_error!(
+                            "Permutation should be a 1D UINT64 array of shape [{n}]. Found type: {p:?}"
+                        ));
+                    }
+                } else {
+                    return Err(runtime_error!(
+                        "Permutation should be a 1D array of shape [{n}]. Found type: {p:?}"
+                    ));
+                }
+                self.register_result(node, t.clone())?;
+                Ok(t)
             }
             Operation::Truncate(d) => {
                 let t = node_dependencies_types[0].clone();
@@ -4316,6 +4340,42 @@ mod tests {
             },
         )?;
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_random_shuffle() -> Result<()> {
+        let context = create_unchecked_context()?;
+        let mut worker = create_type_inference_worker(context.clone());
+        let graph = context.create_graph()?;
+        // 2-d array.
+        let tin = array_type(vec![10, 20], UINT64);
+        let i = graph.input(tin.clone())?;
+        let p = graph.input(array_type(vec![10], UINT64))?;
+        let o = graph.apply_permutation(i, p.clone())?;
+        let tout = worker.process_node(o.clone())?;
+        assert_eq!(tout, tin);
+        // Incompatible shapes
+        let i = graph.input(tin.clone())?;
+        let p = graph.input(array_type(vec![11], UINT64))?;
+        let o = graph.apply_permutation(i, p)?;
+        assert!(worker.process_node(o.clone()).is_err());
+        // Incorrect permutation type.
+        let i = graph.input(tin.clone())?;
+        let p = graph.input(vector_type(10, scalar_type(UINT64)))?;
+        let o = graph.apply_permutation(i, p)?;
+        assert!(worker.process_node(o.clone()).is_err());
+        // Incorrect array type.
+        let tin = vector_type(10, scalar_type(UINT32));
+        let i = graph.input(tin.clone())?;
+        let p = graph.input(array_type(vec![10], UINT64))?;
+        let o = graph.apply_permutation(i, p)?;
+        assert!(worker.process_node(o.clone()).is_err());
+        // Incorrect permutation type.
+        let i = graph.input(tin.clone())?;
+        let p = graph.input(array_type(vec![10], UINT32))?;
+        let o = graph.apply_permutation(i, p)?;
+        assert!(worker.process_node(o.clone()).is_err());
         Ok(())
     }
 }

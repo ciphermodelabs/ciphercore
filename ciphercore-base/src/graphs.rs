@@ -157,6 +157,7 @@ pub enum Operation {
     Shard(ShardConfig),
     // SQL joins
     Join(JoinType, HashMap<String, String>),
+    ApplyPermutation(bool),
     Custom(CustomOperation),
     // Operations used for debugging graphs.
     Print(String),
@@ -584,6 +585,60 @@ impl Node {
     /// ```
     pub fn join(&self, b: Node, t: JoinType, headers: HashMap<String, String>) -> Result<Node> {
         self.get_graph().join(self.clone(), b, t, headers)
+    }
+
+    /// Adds a node that applies a permutation to the array along the first dimension.
+    ///
+    /// # Arguments
+    ///
+    /// * `p` - node containing a permutation.
+    ///
+    /// # Returns
+    ///
+    /// New permuted node
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{INT32, UINT64, array_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = array_type(vec![25, 3], INT32);
+    /// let a = g.input(t).unwrap();
+    /// let p = g.input(array_type(vec![25], UINT64)).unwrap();
+    /// let a = a.apply_permutation(p).unwrap();
+    /// ```
+    #[doc(hidden)]
+    pub fn apply_permutation(&self, p: Node) -> Result<Node> {
+        self.get_graph().apply_permutation(self.clone(), p)
+    }
+
+    /// Adds a node that applies an inverse permutation to the array along the first dimension.
+    ///
+    /// # Arguments
+    ///
+    /// * `p` - node containing a permutation.
+    ///
+    /// # Returns
+    ///
+    /// New permuted node
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{INT32, UINT64, array_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = array_type(vec![25, 3], INT32);
+    /// let a = g.input(t).unwrap();
+    /// let p = g.input(array_type(vec![25], UINT64)).unwrap();
+    /// let a = a.apply_inverse_permutation(p).unwrap();
+    /// ```
+    #[doc(hidden)]
+    pub fn apply_inverse_permutation(&self, p: Node) -> Result<Node> {
+        self.get_graph().apply_inverse_permutation(self.clone(), p)
     }
 
     /// Adds a node to the parent graph that divides a scalar or each entry of the array associated with the node by a positive constant integer `scale`.
@@ -1548,6 +1603,62 @@ impl Graph {
         headers: HashMap<String, String>,
     ) -> Result<Node> {
         self.add_node(vec![a, b], vec![], Operation::Join(t, headers))
+    }
+
+    /// Adds a node that applies a permutation to the array along the first dimension.
+    ///
+    /// # Arguments
+    ///
+    /// * `a` - node containing an array to permute.
+    /// * `p` - node containing a permutation.
+    ///
+    /// # Returns
+    ///
+    /// New permuted node
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{INT32, UINT64, array_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = array_type(vec![25, 3], INT32);
+    /// let a = g.input(t).unwrap();
+    /// let p = g.input(array_type(vec![25], UINT64)).unwrap();
+    /// let a = g.apply_permutation(a, p).unwrap();
+    /// ```
+    #[doc(hidden)]
+    pub fn apply_permutation(&self, a: Node, p: Node) -> Result<Node> {
+        self.add_node(vec![a, p], vec![], Operation::ApplyPermutation(false))
+    }
+
+    /// Adds a node that applies an inverse permutation to the array along the first dimension.
+    ///
+    /// # Arguments
+    ///
+    /// * `a` - node containing an array to permute.
+    /// * `p` - node containing a permutation.
+    ///
+    /// # Returns
+    ///
+    /// New permuted node
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{INT32, UINT64, array_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = array_type(vec![25, 3], INT32);
+    /// let a = g.input(t).unwrap();
+    /// let p = g.input(array_type(vec![25], UINT64)).unwrap();
+    /// let a = g.apply_inverse_permutation(a, p).unwrap();
+    /// ```
+    #[doc(hidden)]
+    pub fn apply_inverse_permutation(&self, a: Node, p: Node) -> Result<Node> {
+        self.add_node(vec![a, p], vec![], Operation::ApplyPermutation(true))
     }
 
     /// Adds a node that divides a scalar or each entry of an array by a positive constant integer `scale`.

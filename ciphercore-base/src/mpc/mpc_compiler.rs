@@ -7,6 +7,7 @@ use crate::graphs::{
     copy_node_name, create_context, Context, Graph, Node, NodeAnnotation, Operation,
 };
 use crate::inline::inline_ops::{inline_operations, InlineConfig};
+use crate::mpc::mpc_apply_permutation::ApplyPermutationMPC;
 use crate::mpc::mpc_arithmetic::{
     AddMPC, DotMPC, MatmulMPC, MixedMultiplyMPC, MultiplyMPC, SubtractMPC,
 };
@@ -214,6 +215,7 @@ pub(super) fn get_zero_shares(g: Graph, prf_keys: Node, t: Type) -> Result<Vec<N
 /// Returns the hash set of the private nodes of the given graph,
 /// a Boolean value indicating whether PRF keys should be used for multiplication,
 /// a Boolean value indicating whether PRF keys should be used for B2A.
+/// a Boolean value indicating whether PRF keys should be used for Truncate2k.
 fn propagate_private_annotations(
     graph: Graph,
     is_input_private: Vec<bool>,
@@ -255,6 +257,7 @@ fn propagate_private_annotations(
             | Operation::CreateNamedTuple(_)
             | Operation::CreateVector(_)
             | Operation::Stack(_)
+            | Operation::ApplyPermutation(_)
             | Operation::Concatenate(_)
             | Operation::Zip
             | Operation::Repeat(_) => {
@@ -282,6 +285,11 @@ fn propagate_private_annotations(
                 {
                     use_prf_for_mul = true;
                     use_prf_for_b2a = true;
+                }
+                if matches!(op, Operation::ApplyPermutation(_))
+                    && private_nodes.contains(&dependencies[1])
+                {
+                    use_prf_for_mul = true;
                 }
                 if matches!(op, Operation::MixedMultiply)
                     && private_nodes.contains(&dependencies[1])
@@ -549,6 +557,30 @@ pub(super) fn compile_to_mpc_graph(
                     )?
                 } else {
                     out_graph.custom_op(custom_op, vec![new_input0.clone(), new_input1.clone()])?
+                }
+            }
+            Operation::ApplyPermutation(inverse_permutation) => {
+                let dependencies = node.get_node_dependencies();
+                let input = dependencies[0].clone();
+                let permutation = dependencies[1].clone();
+                let new_input = out_mapping.get_node(input.clone());
+                let new_permutation = out_mapping.get_node(permutation.clone());
+                let custom_op = CustomOperation::new(ApplyPermutationMPC {
+                    inverse_permutation,
+                    reveal_output: false,
+                });
+                if private_nodes.contains(&permutation) {
+                    // If the permutation is private, MPC protocols requires invoking PRFs.
+                    // Thus, PRF keys must be provided.
+                    let keys = match prf_keys_mul {
+                        Some(ref k) => k.clone(),
+                        None => {
+                            return Err(runtime_error!("Propagation of annotations failed"));
+                        }
+                    };
+                    out_graph.custom_op(custom_op, vec![new_input, new_permutation, keys])?
+                } else {
+                    out_graph.custom_op(custom_op, vec![new_input, new_permutation])?
                 }
             }
             Operation::Truncate(scale) => {

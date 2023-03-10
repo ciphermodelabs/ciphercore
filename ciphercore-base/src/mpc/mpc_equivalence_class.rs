@@ -410,6 +410,9 @@ pub(super) fn generate_equivalence_class(
                     }
                     result_class
                 }
+                Operation::ApplyPermutation(_) => {
+                    combine_class(dependencies_class[0].clone(), dependencies_class[1].clone())?
+                }
                 Operation::RandomPermutation(_) | Operation::CuckooToPermutation => private_class(),
                 Operation::DecomposeSwitchingMap(_) => vector_class(vec![
                     private_class(),

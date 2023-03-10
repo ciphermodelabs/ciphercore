@@ -16,7 +16,7 @@ use crate::typed_value::TypedValue;
 
 use std::cmp::min;
 use std::collections::hash_map::Entry;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::iter::repeat;
 
 use super::join::evaluate_join;
@@ -541,7 +541,7 @@ fn evaluate_cuckoo(
 }
 
 // Fisher-Yates shuffle (<https://en.wikipedia.org/wiki/Fisher%E2%80%93Yates_shuffle>)
-fn shuffle_array(array: &mut Vec<u64>, prng: &mut PRNG) -> Result<()> {
+pub(crate) fn shuffle_array(array: &mut Vec<u64>, prng: &mut PRNG) -> Result<()> {
     for i in (1..array.len() as u64).rev() {
         let j = prng.get_random_in_range(Some(i + 1))?;
         array.swap(j as usize, i as usize);
@@ -845,16 +845,7 @@ impl Evaluator for SimpleEvaluator {
                         "Input array doesn't contain a valid permutation"
                     ));
                 }
-                let mut result = vec![0u64; values.len()];
-                for i in 0..values.len() {
-                    let value = values[i] as usize;
-                    if value >= values.len() {
-                        return Err(runtime_error!(
-                            "Input array doesn't contain a valid permutation"
-                        ));
-                    }
-                    result[value] = i as u64;
-                }
+                let result = execute_inverse_permutation(values)?;
                 Value::from_flattened_array(&result, t.get_scalar_type())
             }
             Operation::Sum(axes) => evaluate_sum(node, dependencies_values[0].clone(), axes),
@@ -863,6 +854,39 @@ impl Evaluator for SimpleEvaluator {
                 let dependency_value_flattened = flatten_value(dependency_value);
                 let new_value = unflatten_value(&dependency_value_flattened, &mut 0, new_type);
                 Ok(new_value)
+            }
+            Operation::ApplyPermutation(inverse_permutation) => {
+                // TODO: consider to optimize it once we have a use case for it.
+                let t = node.get_type()?;
+                let n = t.get_shape()[0];
+
+                let indexes_permutation = dependencies_values[1]
+                    .to_flattened_array_u64(node.get_node_dependencies()[1].get_type()?)?;
+                if indexes_permutation
+                    .iter()
+                    .cloned()
+                    .filter(|&x| x < n)
+                    .collect::<HashSet<u64>>()
+                    .len()
+                    != n as usize
+                {
+                    return Err(runtime_error!(
+                        "Argument 1 doesn't contain a valid permutation."
+                    ));
+                }
+                let permutation = if inverse_permutation {
+                    execute_inverse_permutation(indexes_permutation)?
+                } else {
+                    indexes_permutation
+                };
+                evaluate_gather(
+                    vec![
+                        dependencies_values[0].clone(),
+                        Value::from_flattened_array(&permutation, UINT64)?,
+                    ],
+                    node,
+                    0,
+                )
             }
             Operation::Truncate(scale) => {
                 // For signed scalar type, we interpret a number 0 <= x < modulus as follows:
@@ -1204,48 +1228,7 @@ impl Evaluator for SimpleEvaluator {
 
                 Value::from_flattened_array(&result_array, input_st)
             }
-            Operation::Gather(axis) => {
-                let input_value = dependencies_values[0].clone();
-                let indices_value = dependencies_values[1].clone();
-
-                let input_t = node.get_node_dependencies()[0].get_type()?;
-                let input_entries = input_value.to_flattened_array_u64(input_t.clone())?;
-                let indices_t = node.get_node_dependencies()[1].get_type()?;
-                let indices_entries = indices_value.to_flattened_array_u64(indices_t)?;
-
-                let mut output_entries = vec![];
-
-                let input_shape = input_t.get_shape();
-
-                // Number of subarrays whose indices are selected
-                let num_arrays = input_shape[..axis as usize]
-                    .to_vec()
-                    .iter()
-                    .product::<u64>();
-
-                // Number of elements in each row indexed by the indices
-                let row_size = input_shape[(axis + 1) as usize..]
-                    .to_vec()
-                    .iter()
-                    .product::<u64>();
-
-                for array_i in 0..num_arrays {
-                    for index_entry in indices_entries.iter() {
-                        if *index_entry >= input_shape[axis as usize] {
-                            return Err(runtime_error!("Incorrect index"));
-                        }
-                        let input_flat_index =
-                            (array_i * input_shape[axis as usize] + index_entry) * row_size;
-                        output_entries.extend_from_slice(
-                            &input_entries
-                                [input_flat_index as usize..(input_flat_index + row_size) as usize],
-                        );
-                    }
-                }
-
-                let result_type = node.get_type()?;
-                Value::from_flattened_array(&output_entries, result_type.get_scalar_type())
-            }
+            Operation::Gather(axis) => evaluate_gather(dependencies_values, node, axis),
             Operation::Concatenate(axis) => {
                 let dependencies = node.get_node_dependencies();
                 let result_t = node.get_type()?;
@@ -1304,6 +1287,61 @@ impl Evaluator for SimpleEvaluator {
             _ => Err(runtime_error!("Not implemented")),
         }
     }
+}
+
+fn execute_inverse_permutation(values: Vec<u64>) -> Result<Vec<u64>> {
+    let mut result = vec![0u64; values.len()];
+    for i in 0..values.len() {
+        let value = values[i] as usize;
+        if value >= values.len() {
+            return Err(runtime_error!(
+                "Input array doesn't contain a valid permutation"
+            ));
+        }
+        result[value] = i as u64;
+    }
+    Ok(result)
+}
+
+fn evaluate_gather(dependencies_values: Vec<Value>, node: Node, axis: u64) -> Result<Value> {
+    let input_value = dependencies_values[0].clone();
+    let indices_value = dependencies_values[1].clone();
+
+    let input_t = node.get_node_dependencies()[0].get_type()?;
+    let input_entries = input_value.to_flattened_array_u64(input_t.clone())?;
+    let indices_t = node.get_node_dependencies()[1].get_type()?;
+    let indices_entries = indices_value.to_flattened_array_u64(indices_t)?;
+
+    let mut output_entries = vec![];
+
+    let input_shape = input_t.get_shape();
+
+    // Number of subarrays whose indices are selected
+    let num_arrays = input_shape[..axis as usize]
+        .to_vec()
+        .iter()
+        .product::<u64>();
+
+    // Number of elements in each row indexed by the indices
+    let row_size = input_shape[(axis + 1) as usize..]
+        .to_vec()
+        .iter()
+        .product::<u64>();
+
+    for array_i in 0..num_arrays {
+        for index_entry in indices_entries.iter() {
+            if *index_entry >= input_shape[axis as usize] {
+                return Err(runtime_error!("Incorrect index"));
+            }
+            let input_flat_index = (array_i * input_shape[axis as usize] + index_entry) * row_size;
+            output_entries.extend_from_slice(
+                &input_entries[input_flat_index as usize..(input_flat_index + row_size) as usize],
+            );
+        }
+    }
+
+    let result_type = node.get_type()?;
+    Value::from_flattened_array(&output_entries, result_type.get_scalar_type())
 }
 
 #[cfg(test)]
@@ -1703,6 +1741,87 @@ mod tests {
             Ok(())
         }()
         .unwrap();
+    }
+
+    #[test]
+    fn test_apply_permutation() -> Result<()> {
+        let helper = |input_shape: Vec<u64>,
+                      permutation_shape: Vec<u64>,
+                      inputs: Vec<Value>|
+         -> Result<Vec<u64>> {
+            let c = simple_context(|g| {
+                let inp = g.input(array_type(input_shape.clone(), UINT32))?;
+                let permutation = g.input(array_type(permutation_shape.clone(), UINT64))?;
+                inp.apply_permutation(permutation)
+            })?;
+            let g = c.get_main_graph()?;
+            let o = g.get_output_node()?;
+            let result_value = random_evaluate(g, inputs)?;
+            let result_type = o.get_type()?;
+            result_value.to_flattened_array_u64(result_type)
+        };
+        let input = Value::from_flattened_array(&[1, 2, 3, 4, 5], UINT32)?;
+        let permutation = Value::from_flattened_array(&[0, 4, 2, 1, 3], UINT64)?;
+        let expected = vec![1, 5, 3, 2, 4];
+        assert_eq!(
+            helper(vec![5], vec![5], vec![input, permutation])?,
+            expected
+        );
+
+        // Not a valid permutation.
+        let input = Value::from_flattened_array(&[1, 2, 3, 4, 5], UINT32)?;
+        let permutation = Value::from_flattened_array(&[4, 3, 2, 1, 5], UINT64)?;
+        assert!(helper(vec![5], vec![5], vec![input, permutation]).is_err());
+
+        // [3,2,2]-array
+        let input = Value::from_flattened_array(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], UINT32)?;
+        // [3]-array
+        let permutation = Value::from_flattened_array(&[2, 0, 1], UINT64)?;
+        // output [3,2,2]-array
+        let expected = vec![9, 10, 11, 12, 1, 2, 3, 4, 5, 6, 7, 8];
+        assert_eq!(
+            helper(vec![3, 2, 2], vec![3], vec![input, permutation])?,
+            expected
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_apply_inverse_permutation() -> Result<()> {
+        let helper = |input_shape: Vec<u64>,
+                      permutation_shape: Vec<u64>,
+                      inputs: Vec<Value>|
+         -> Result<Vec<u64>> {
+            let c = simple_context(|g| {
+                let inp = g.input(array_type(input_shape.clone(), UINT32))?;
+                let permutation = g.input(array_type(permutation_shape.clone(), UINT64))?;
+                inp.apply_inverse_permutation(permutation)
+            })?;
+            let g = c.get_main_graph()?;
+            let o = g.get_output_node()?;
+            let result_value = random_evaluate(g, inputs)?;
+            let result_type = o.get_type()?;
+            result_value.to_flattened_array_u64(result_type)
+        };
+        let input = Value::from_flattened_array(&[1, 2, 3, 4, 5], UINT32)?;
+        let permutation = Value::from_flattened_array(&[0, 4, 2, 1, 3], UINT64)?;
+        let expected = vec![1, 4, 3, 5, 2];
+        assert_eq!(
+            helper(vec![5], vec![5], vec![input, permutation])?,
+            expected
+        );
+
+        // [4,3]-array
+        let input = Value::from_flattened_array(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], UINT32)?;
+        // [4]-array
+        let permutation = Value::from_flattened_array(&[2, 0, 3, 1], UINT64)?;
+        // output [4,3]-array
+        let expected = vec![4, 5, 6, 10, 11, 12, 1, 2, 3, 7, 8, 9];
+        assert_eq!(
+            helper(vec![4, 3], vec![4], vec![input, permutation])?,
+            expected
+        );
+        Ok(())
     }
 
     fn random_permutation_helper(n: u64) -> Result<()> {
