@@ -215,12 +215,16 @@ impl Prf {
 
     #[cfg(test)]
     fn output_bytes(&mut self, input: u64, n: u64) -> Result<Vec<u8>> {
-        let mut res = vec![];
         let ext_input = (input as u128) << 64;
+        Ok(self.generate_random_bytes(ext_input, n)?.0)
+    }
+
+    fn generate_random_bytes(&mut self, iv: u128, n: u64) -> Result<(Vec<u8>, u128)> {
+        let mut res = vec![];
         let calls = (n - 1) / SEED_SIZE as u64 + 1;
         let rem = n - (calls - 1) * SEED_SIZE as u64;
         for i in 0..calls as u128 {
-            let ext_i = ext_input + i;
+            let ext_i = iv + i;
             self.generate_one_batch(ext_i)?;
             if i == calls as u128 - 1 {
                 res.extend(&self.out_vec[0..rem as usize]);
@@ -228,7 +232,7 @@ impl Prf {
                 res.extend(&self.out_vec[0..SEED_SIZE]);
             }
         }
-        Ok(res)
+        Ok((res, iv + calls as u128))
     }
 
     fn recursively_generate_value(&mut self, iv: u128, tp: Type) -> Result<(Value, u128)> {
@@ -238,23 +242,12 @@ impl Prf {
                 let byte_size = (bit_size + 7) / 8;
                 // the last random byte should contain bits_to_flush zeros
                 let bits_to_flush = 8 * byte_size - bit_size;
-                let mut bytes = vec![];
-                let calls = (byte_size - 1) / SEED_SIZE as u64 + 1;
-                let rem = byte_size - (calls - 1) * SEED_SIZE as u64;
-                for i in 0..calls as u128 {
-                    let ext_iv = iv + i;
-                    self.generate_one_batch(ext_iv)?;
-                    if i == calls as u128 - 1 {
-                        bytes.extend(&self.out_vec[0..rem as usize]);
-                    } else {
-                        bytes.extend(&self.out_vec[0..SEED_SIZE]);
-                    }
-                }
+                let (mut bytes, next_iv) = self.generate_random_bytes(iv, byte_size)?;
                 // Remove unused random bits
                 if !bytes.is_empty() {
                     *bytes.last_mut().unwrap() >>= bits_to_flush;
                 }
-                Ok((Value::from_bytes(bytes), iv + calls as u128))
+                Ok((Value::from_bytes(bytes), next_iv))
             }
             Type::Tuple(_) | Type::Vector(_, _) | Type::NamedTuple(_) => {
                 let ts = get_types_vector(tp)?;
@@ -275,6 +268,44 @@ impl Prf {
         let ext_input = (input as u128) << 64;
         let value = self.recursively_generate_value(ext_input, t)?.0;
         Ok(value)
+    }
+
+    // Generates a random 64-bit integer modulo a given modulus.
+    // To avoid modulo bias, rejection sampling is performed.
+    // Rejection sampling bound is 2^64 - (2^64 mod modulus).
+    // Each sampling attempt can succeed with probability 1 - (2^64 mod modulus)/2^64.
+    // Thus, the expected number of sampling rounds is  2^64/(2^64 - (2^64 mod modulus)) < 2 according to the geometric distribution.
+    //
+    // **WARNING**: this function might leak modulus bits. Don't use it if you want to hide the modulus.
+    fn get_random_in_range(&mut self, mut iv: u128, modulus: Option<u64>) -> Result<(u64, u128)> {
+        if let Some(m) = modulus {
+            let rem = ((u64::MAX % m) + 1) % m;
+            let rejection_bound = u64::MAX - rem;
+            let mut r;
+            loop {
+                let (bytes, next_iv) = self.generate_random_bytes(iv, 8)?;
+                iv = next_iv;
+                r = vec_from_bytes(&bytes, UINT64)?[0];
+                if r <= rejection_bound {
+                    break;
+                }
+            }
+            Ok((r % m, iv))
+        } else {
+            let (bytes, next_iv) = self.generate_random_bytes(iv, 8)?;
+            Ok((vec_from_bytes(&bytes, UINT64)?[0], next_iv))
+        }
+    }
+
+    pub(super) fn output_permutation(&mut self, input: u64, n: u64) -> Result<Value> {
+        let mut ext_input = (input as u128) << 64;
+        let mut array = (0..n).collect::<Vec<u64>>();
+        for i in (1..n).rev() {
+            let (j, next_iv) = self.get_random_in_range(ext_input, Some(i + 1))?;
+            array.swap(j as usize, i as usize);
+            ext_input = next_iv;
+        }
+        Value::from_flattened_array(&array, UINT64)
     }
 }
 
@@ -310,6 +341,8 @@ pub fn chi_statistics(counters: &[u64], expected_count_per_element: u64) -> f64 
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use crate::data_types::{
         array_type, named_tuple_type, scalar_type, tuple_type, vector_type, BIT, INT32, UINT64,
@@ -551,5 +584,52 @@ mod tests {
             helper_flush(scalar_type(BIT), 2)
         }()
         .unwrap();
+    }
+
+    #[test]
+    fn test_prf_output_permutation() -> Result<()> {
+        let mut prf = Prf::new(None)?;
+        let mut helper = |n: u64| -> Result<()> {
+            let result_type = array_type(vec![n], UINT64);
+            let mut perm_statistics: HashMap<Vec<u64>, u64> = HashMap::new();
+            let expected_count_per_perm = 100;
+            let n_factorial: u64 = (2..=n).product();
+            let runs = expected_count_per_perm * n_factorial;
+            for input in 0..runs {
+                let result_value = prf.output_permutation(input, n)?;
+                let perm = result_value.to_flattened_array_u64(result_type.clone())?;
+
+                let mut perm_sorted = perm.clone();
+                perm_sorted.sort();
+                let range_vec: Vec<u64> = (0..n).collect();
+                assert_eq!(perm_sorted, range_vec);
+
+                perm_statistics
+                    .entry(perm)
+                    .and_modify(|counter| *counter += 1)
+                    .or_insert(0);
+            }
+
+            // Check that all permutations occurred in the experiments
+            assert_eq!(perm_statistics.len() as u64, n_factorial);
+
+            // Chi-square test with significance level 10^(-6)
+            // <https://www.itl.nist.gov/div898/handbook/eda/section3/eda35f.htm>
+            if n > 1 {
+                let counters: Vec<u64> = perm_statistics.values().map(|c| *c).collect();
+                let chi2 = chi_statistics(&counters, expected_count_per_perm);
+                // Critical value is computed with n!-1 degrees of freedom
+                if n == 4 {
+                    assert!(chi2 < 70.5496_f64);
+                }
+                if n == 5 {
+                    assert!(chi2 < 207.1986_f64);
+                }
+            }
+            Ok(())
+        };
+        helper(1)?;
+        helper(4)?;
+        helper(5)
     }
 }

@@ -1177,6 +1177,26 @@ impl Evaluator for SimpleEvaluator {
                 };
                 Ok(new_value)
             }
+            Operation::PermutationFromPRF(iv, n) => {
+                let key_value = dependencies_values[0].clone();
+                let key = key_value.access_bytes(|bytes| Ok(bytes.to_vec()))?;
+                // at this point the PRF map should be of the Some type
+                let new_value = match self.prfs.entry(key.clone()) {
+                    Entry::Vacant(e) => {
+                        let mut key_slice = [0u8; SEED_SIZE];
+                        key_slice.copy_from_slice(&key[0..SEED_SIZE]);
+                        let mut prf = Prf::new(Some(key_slice))?;
+                        let val = prf.output_permutation(iv, n)?;
+                        e.insert(prf);
+                        val
+                    }
+                    Entry::Occupied(mut e) => {
+                        let prf = e.get_mut();
+                        prf.output_permutation(iv, n)?
+                    }
+                };
+                Ok(new_value)
+            }
             Operation::CuckooHash => {
                 let input_value = dependencies_values[0].clone();
                 let hash_matrices_value = dependencies_values[1].clone();
@@ -3523,5 +3543,37 @@ mod tests {
             Ok(())
         }()
         .unwrap();
+    }
+
+    fn permutation_from_prf_helper(n: u64) -> Result<()> {
+        let c = simple_context(|g| {
+            let k = g.random(array_type(vec![128], BIT))?;
+            g.permutation_from_prf(k, 0, n)
+        })?;
+        let g = c.get_main_graph()?;
+        let o = g.get_output_node()?;
+        let result_type = o.get_type()?;
+
+        let mut evaluator = SimpleEvaluator {
+            prng: PRNG::new(None)?,
+            prfs: HashMap::new(),
+        };
+
+        let result_value = evaluator.evaluate_context(c.clone(), Vec::new())?;
+        let perm = result_value.to_flattened_array_u64(result_type.clone())?;
+
+        let mut perm_sorted = perm.clone();
+        perm_sorted.sort();
+        let range_vec: Vec<u64> = (0..n).collect();
+        assert_eq!(perm_sorted, range_vec);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_permutation_from_prf() -> Result<()> {
+        permutation_from_prf_helper(10)?;
+        permutation_from_prf_helper(40)?;
+        permutation_from_prf_helper(500)
     }
 }
