@@ -3544,8 +3544,6 @@ mod tests {
         }()
         .unwrap();
     }
-<<<<<<< HEAD
-=======
 
     fn permutation_from_prf_helper(n: u64) -> Result<()> {
         let c = simple_context(|g| {
@@ -3578,5 +3576,4 @@ mod tests {
         permutation_from_prf_helper(40)?;
         permutation_from_prf_helper(500)
     }
->>>>>>> bffe48dc4c0d71f0a033309b8bfae80f1a8e2cc8
 }
