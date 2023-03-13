@@ -7,6 +7,7 @@ use crate::graphs::{
     copy_node_name, create_context, Context, Graph, Node, NodeAnnotation, Operation,
 };
 use crate::inline::inline_ops::{inline_operations, InlineConfig};
+use crate::mpc::mpc_apply_permutation::ApplyPermutationMPC;
 use crate::mpc::mpc_arithmetic::{
     AddMPC, DotMPC, MatmulMPC, MixedMultiplyMPC, MultiplyMPC, SubtractMPC,
 };
@@ -18,7 +19,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 use super::mpc_arithmetic::GemmMPC;
-use super::mpc_psi::SetIntersectionMPC;
+use super::mpc_psi::JoinMPC;
 
 // We implement the ABY3 protocol, which has 3 parties involved
 pub const PARTIES: usize = 3;
@@ -97,9 +98,20 @@ fn recursively_generate_node_shares(
                 let alpha = g.subtract(random_shares[i].clone(), random_shares[ip1].clone())?;
                 node_shares.push(alpha);
             }
-            // add node_to_share
-            if let Some((node, IOStatus::Party(id))) = node_to_share {
-                node_shares[id as usize] = node_shares[id as usize].add(node)?;
+
+            match node_to_share {
+                Some((node, IOStatus::Party(id))) => {
+                    node_shares[id as usize] = node_shares[id as usize].add(node)?;
+                }
+                Some((node, IOStatus::Public)) => {
+                    node_shares[0] = node_shares[0].add(node)?;
+                }
+                Some((_, IOStatus::Shared)) => {
+                    return Err(runtime_error!(
+                        "Given node must belong to a party or be public"
+                    ));
+                }
+                None => (),
             }
             Ok(node_shares)
         }
@@ -182,7 +194,7 @@ fn recursively_generate_node_shares(
     }
 }
 
-fn get_node_shares(
+pub(crate) fn get_node_shares(
     g: Graph,
     prf_keys: Node,
     t: Type,
@@ -203,6 +215,7 @@ pub(super) fn get_zero_shares(g: Graph, prf_keys: Node, t: Type) -> Result<Vec<N
 /// Returns the hash set of the private nodes of the given graph,
 /// a Boolean value indicating whether PRF keys should be used for multiplication,
 /// a Boolean value indicating whether PRF keys should be used for B2A.
+/// a Boolean value indicating whether PRF keys should be used for Truncate2k.
 fn propagate_private_annotations(
     graph: Graph,
     is_input_private: Vec<bool>,
@@ -228,7 +241,7 @@ fn propagate_private_annotations(
             | Operation::Dot
             | Operation::Matmul
             | Operation::Gemm(_, _)
-            | Operation::SetIntersection(_)
+            | Operation::Join(_, _)
             | Operation::A2B
             | Operation::B2A(_)
             | Operation::PermuteAxes(_)
@@ -244,12 +257,14 @@ fn propagate_private_annotations(
             | Operation::CreateNamedTuple(_)
             | Operation::CreateVector(_)
             | Operation::Stack(_)
+            | Operation::ApplyPermutation(_)
+            | Operation::Concatenate(_)
             | Operation::Zip
             | Operation::Repeat(_) => {
                 let dependencies = node.get_node_dependencies();
                 if is_one_node_private(&dependencies, &private_nodes) {
                     private_nodes.insert(node.clone());
-                    if matches!(op, Operation::SetIntersection(_)) {
+                    if matches!(op, Operation::Join(_, _)) {
                         use_prf_for_mul = true;
                     }
                 }
@@ -270,6 +285,11 @@ fn propagate_private_annotations(
                 {
                     use_prf_for_mul = true;
                     use_prf_for_b2a = true;
+                }
+                if matches!(op, Operation::ApplyPermutation(_))
+                    && private_nodes.contains(&dependencies[1])
+                {
+                    use_prf_for_mul = true;
                 }
                 if matches!(op, Operation::MixedMultiply)
                     && private_nodes.contains(&dependencies[1])
@@ -466,7 +486,7 @@ pub(super) fn compile_to_mpc_graph(
                     let keys = match prf_keys_mul {
                         Some(ref k) => k.clone(),
                         None => {
-                            panic!("Propagation of annotations failed")
+                            return Err(runtime_error!("Propagation of annotations failed"));
                         }
                     };
                     out_graph.custom_op(
@@ -496,7 +516,7 @@ pub(super) fn compile_to_mpc_graph(
                     let keys = match prf_keys_mul {
                         Some(ref k) => k.clone(),
                         None => {
-                            panic!("Propagation of annotations failed")
+                            return Err(runtime_error!("Propagation of annotations failed"));
                         }
                     };
                     out_graph.custom_op(
@@ -507,7 +527,7 @@ pub(super) fn compile_to_mpc_graph(
                     out_graph.custom_op(custom_op, vec![new_input0.clone(), new_input1.clone()])?
                 }
             }
-            Operation::SetIntersection(headers) => {
+            Operation::Join(join_t, headers) => {
                 let dependencies = node.get_node_dependencies();
                 let input0 = dependencies[0].clone();
                 let input1 = dependencies[1].clone();
@@ -517,17 +537,18 @@ pub(super) fn compile_to_mpc_graph(
                 for headers_pair in headers {
                     headers_vec.push(headers_pair);
                 }
-                let custom_op = CustomOperation::new(SetIntersectionMPC {
+                let custom_op = CustomOperation::new(JoinMPC {
+                    join_t,
                     headers: headers_vec,
                 });
 
                 if private_nodes.contains(&node) {
-                    // If one input set is private, the MPC protocol requires invoking PRFs.
+                    // If one input set is private, MPC protocols requires invoking PRFs.
                     // Thus, PRF keys must be provided.
                     let keys = match prf_keys_mul {
                         Some(ref k) => k.clone(),
                         None => {
-                            panic!("Propagation of annotations failed")
+                            return Err(runtime_error!("Propagation of annotations failed"));
                         }
                     };
                     out_graph.custom_op(
@@ -536,6 +557,30 @@ pub(super) fn compile_to_mpc_graph(
                     )?
                 } else {
                     out_graph.custom_op(custom_op, vec![new_input0.clone(), new_input1.clone()])?
+                }
+            }
+            Operation::ApplyPermutation(inverse_permutation) => {
+                let dependencies = node.get_node_dependencies();
+                let input = dependencies[0].clone();
+                let permutation = dependencies[1].clone();
+                let new_input = out_mapping.get_node(input.clone());
+                let new_permutation = out_mapping.get_node(permutation.clone());
+                let custom_op = CustomOperation::new(ApplyPermutationMPC {
+                    inverse_permutation,
+                    reveal_output: false,
+                });
+                if private_nodes.contains(&permutation) {
+                    // If the permutation is private, MPC protocols requires invoking PRFs.
+                    // Thus, PRF keys must be provided.
+                    let keys = match prf_keys_mul {
+                        Some(ref k) => k.clone(),
+                        None => {
+                            return Err(runtime_error!("Propagation of annotations failed"));
+                        }
+                    };
+                    out_graph.custom_op(custom_op, vec![new_input, new_permutation, keys])?
+                } else {
+                    out_graph.custom_op(custom_op, vec![new_input, new_permutation])?
                 }
             }
             Operation::Truncate(scale) => {
@@ -554,7 +599,7 @@ pub(super) fn compile_to_mpc_graph(
                     let prf_mul_keys = match prf_keys_mul {
                         Some(ref k) => k.clone(),
                         None => {
-                            panic!("Propagation of annotations failed")
+                            return Err(runtime_error!("Propagation of annotations failed"));
                         }
                     };
 
@@ -562,7 +607,7 @@ pub(super) fn compile_to_mpc_graph(
                         let prf_truncate_keys = match prf_keys_truncate2k {
                             Some(ref k) => k.clone(),
                             None => {
-                                panic!("Propagation of annotations failed")
+                                return Err(runtime_error!("Propagation of annotations failed"));
                             }
                         };
 
@@ -588,7 +633,7 @@ pub(super) fn compile_to_mpc_graph(
                     let keys = match prf_keys_mul {
                         Some(ref k) => k.clone(),
                         None => {
-                            panic!("Propagation of annotations failed")
+                            return Err(runtime_error!("Propagation of annotations failed"));
                         }
                     };
                     out_graph.custom_op(custom_op, vec![new_input.clone(), keys])?
@@ -607,13 +652,13 @@ pub(super) fn compile_to_mpc_graph(
                     let keys_mul = match prf_keys_mul {
                         Some(ref k) => k.clone(),
                         None => {
-                            panic!("Propagation of annotations failed")
+                            return Err(runtime_error!("Propagation of annotations failed"));
                         }
                     };
                     let keys_b2a = match prf_keys_b2a {
                         Some(ref k) => k.clone(),
                         None => {
-                            panic!("Propagation of annotations failed")
+                            return Err(runtime_error!("Propagation of annotations failed"));
                         }
                     };
                     out_graph.custom_op(custom_op, vec![new_input.clone(), keys_mul, keys_b2a])?
@@ -650,6 +695,7 @@ pub(super) fn compile_to_mpc_graph(
             | Operation::CreateNamedTuple(_)
             | Operation::CreateVector(_)
             | Operation::Stack(_)
+            | Operation::Concatenate(_)
             | Operation::Zip => {
                 let dependencies = node.get_node_dependencies();
                 let new_dependencies: Vec<Node> = dependencies
@@ -1172,8 +1218,8 @@ where
             input_parties.len()
         ));
     }
-    eprintln!("input_parties = {:?}", input_parties);
-    eprintln!("output_parties = {:?}", output_parties);
+    eprintln!("input_parties = {input_parties:?}");
+    eprintln!("output_parties = {output_parties:?}");
     let compiled_context0 = prepare_for_mpc_evaluation(
         context4,
         vec![input_parties],
@@ -1199,6 +1245,7 @@ mod tests {
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
     use crate::evaluators::simple_evaluator::evaluate_add_subtract_multiply;
+    use crate::graphs::util::simple_context;
     use crate::graphs::SliceElement::{Ellipsis, SubArray};
     use crate::inline::inline_ops::{inline_operations, InlineConfig, InlineMode};
     use crate::random::PRNG;
@@ -1283,14 +1330,7 @@ mod tests {
         let mut prng = PRNG::new(Some(*seed)).unwrap();
         let mut helper =
             |t: Type, input_status: IOStatus, output_parties: Vec<IOStatus>| -> Result<()> {
-                let c = create_context()?;
-                let g = c.create_graph()?;
-                let i = g.input(t.clone())?;
-                g.set_output_node(i)?;
-                g.finalize()?;
-                c.set_main_graph(g)?;
-                c.finalize()?;
-
+                let c = simple_context(|g| g.input(t.clone()))?;
                 let mpc_mapped_context = compile_to_mpc(
                     c,
                     vec![vec![input_status.clone()]],
@@ -1485,26 +1525,24 @@ mod tests {
         input_party_map: Vec<IOStatus>,
         output_parties: Vec<IOStatus>,
     ) -> Result<()> {
-        let c = create_context()?;
-        let g = c.create_graph()?;
-        let mut input_nodes = vec![];
-        for i in 0..input_types.len() {
-            let input_node = g.input(input_types[i].clone())?;
-            input_node.set_name(&format!("Input {}", i))?;
-            input_nodes.push(input_node);
-        }
-        let o = if op != Operation::VectorGet {
-            g.add_node(input_nodes, vec![], op)?
-        } else {
-            let index = g.constant(scalar_type(UINT64), Value::from_scalar(0, UINT64)?)?;
-            input_nodes[0].vector_get(index)?
-        };
-        o.set_name("Plaintext operation")?;
-        let output_type = o.get_type()?;
-        g.set_output_node(o.clone())?;
-        g.finalize()?;
-        c.set_main_graph(g.clone())?;
-        c.finalize()?;
+        let c = simple_context(|g| {
+            let mut input_nodes = vec![];
+            for i in 0..input_types.len() {
+                let input_node = g.input(input_types[i].clone())?;
+                input_node.set_name(&format!("Input {}", i))?;
+                input_nodes.push(input_node);
+            }
+            let o = if op != Operation::VectorGet {
+                g.add_node(input_nodes, vec![], op)?
+            } else {
+                let index = g.constant(scalar_type(UINT64), Value::from_scalar(0, UINT64)?)?;
+                input_nodes[0].vector_get(index)?
+            };
+            o.set_name("Plaintext operation")?;
+            Ok(o)
+        })?;
+        let g = c.get_main_graph()?;
+        let output_type = g.get_output_node()?.get_type()?;
 
         let inline_config = InlineConfig {
             default_mode: InlineMode::Simple,
@@ -1885,6 +1923,13 @@ mod tests {
     fn test_stack() {
         let t = array_type(vec![10, 128], INT32);
         test_helper_create_ops(vec![t.clone(); 3], Operation::Stack(vec![3])).unwrap();
+    }
+    #[test]
+    fn test_concatenate() {
+        let t1 = array_type(vec![10, 1, 10], INT32);
+        let t2 = array_type(vec![10, 2, 10], INT32);
+        let t3 = array_type(vec![10, 3, 10], INT32);
+        test_helper_create_ops(vec![t1, t2, t3], Operation::Concatenate(1)).unwrap();
     }
 
     // Checks that every PRF node of a context has a unique input.

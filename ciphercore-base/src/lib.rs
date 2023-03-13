@@ -900,7 +900,6 @@
 //!     Input         2
 //!     Matmul        1
 //! ```
-#![cfg_attr(feature = "nightly-features", feature(backtrace))]
 #![allow(clippy::needless_doctest_main)]
 
 #[macro_use]

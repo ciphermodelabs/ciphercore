@@ -20,4 +20,3 @@ features = ["extension-module"]
 
 [features]
 default = []
-nightly-features = []

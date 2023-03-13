@@ -48,12 +48,23 @@ macro_rules! to_json_array_aux {
 /// [Clone] trait duplicates the pointer, not the underlying value (see [Value::deep_clone] for deep cloning).
 ///
 /// [PartialEq] trait performs the deep recursive comparison.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "py-binding", struct_wrapper)]
 pub struct TypedValue {
     pub value: Value,
     pub t: Type,
     pub name: Option<String>,
+}
+
+impl std::fmt::Debug for TypedValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.to_json() {
+            Ok(json) => f.write_str(&json.to_string()),
+            Err(err) => f.write_fmt(format_args!(
+                "Failed to convert TypedValue to json: {err:?}"
+            )),
+        }
+    }
 }
 
 #[cfg(feature = "py-binding")]
@@ -230,7 +241,11 @@ impl TypedValueOperations<TypedValue> for TypedValue {
         match &self.t {
             Type::Tuple(ts) => {
                 if ts.len() != vec_val.len() {
-                    return Err(runtime_error!("Inconsistent number of elements!"));
+                    return Err(runtime_error!(
+                        "Inconsistent number of elements: {} vs {}",
+                        ts.len(),
+                        vec_val.len()
+                    ));
                 }
                 for (t, value) in ts.iter().zip(vec_val.iter()) {
                     res.push(TypedValue::new(t.as_ref().clone(), value.clone())?);
@@ -239,7 +254,11 @@ impl TypedValueOperations<TypedValue> for TypedValue {
             }
             Type::Vector(n, t) => {
                 if *n != (vec_val.len() as u64) {
-                    return Err(runtime_error!("Inconsistent number of elements!"));
+                    return Err(runtime_error!(
+                        "Inconsistent number of elements: {} vs {}",
+                        *n,
+                        vec_val.len()
+                    ));
                 }
                 let mut res = vec![];
                 for val in vec_val {
@@ -249,7 +268,11 @@ impl TypedValueOperations<TypedValue> for TypedValue {
             }
             Type::NamedTuple(n_ts) => {
                 if n_ts.len() != vec_val.len() {
-                    return Err(runtime_error!("Inconsistent number of elements!"));
+                    return Err(runtime_error!(
+                        "Inconsistent number of elements: {} vs {}",
+                        n_ts.len(),
+                        vec_val.len()
+                    ));
                 }
                 for (n_t, value) in n_ts.iter().zip(vec_val.iter()) {
                     res.push(TypedValue::new_named(
@@ -260,7 +283,7 @@ impl TypedValueOperations<TypedValue> for TypedValue {
                 }
                 Ok(res)
             }
-            _ => Err(runtime_error!("Not a vector!")),
+            _ => Err(runtime_error!("Not a vector: {:?}", self.t)),
         }
     }
 
@@ -594,11 +617,13 @@ impl TypedValue {
         match type_check {
             Ok(flag) => {
                 if !flag {
-                    return Err(runtime_error!("Value doesn't match type"));
+                    return Err(runtime_error!(
+                        "Value doesn't match type. Type is: {t:?}, value is: {value:?}"
+                    ));
                 }
             }
             Err(_) => {
-                return Err(runtime_error!("Cannot check type: {:?}", type_check));
+                return Err(runtime_error!("Cannot check type: {type_check:?}"));
             }
         };
         Ok(TypedValue {
@@ -636,11 +661,13 @@ impl TypedValue {
         match type_check {
             Ok(flag) => {
                 if !flag {
-                    return Err(runtime_error!("Value doesn't match type"));
+                    return Err(runtime_error!(
+                        "Value doesn't match type. Type is: {t:?}, value is: {value:?}"
+                    ));
                 }
             }
             Err(_) => {
-                return Err(runtime_error!("Cannot check type: {:?}", type_check));
+                return Err(runtime_error!("Cannot check type: {type_check:?}"));
             }
         };
         Ok(TypedValue {
@@ -858,7 +885,7 @@ impl TypedValue {
                     };
                     Ok(TypedValue::new(result_type, Value::from_vector(values))?)
                 }
-                _ => Err(runtime_error!("Unknown kind: {}", kind)),
+                _ => Err(runtime_error!("Unknown kind: {kind}")),
             }
         } else {
             Err(runtime_error!("JSON object expected"))
@@ -868,7 +895,7 @@ impl TypedValue {
     pub fn to_json(&self) -> Result<JsonValue> {
         match &self.t {
             Type::Scalar(st) => {
-                let string_type = format!("{}", st);
+                let string_type = format!("{st}");
                 let value = match *st {
                     BIT => to_json_aux!(self.value, st, to_u8),
                     UINT8 => to_json_aux!(self.value, st, to_u8),
@@ -886,7 +913,7 @@ impl TypedValue {
                 Ok(object! {"kind": "scalar", "type": string_type, "value": value})
             }
             Type::Array(shape, st) => {
-                let string_type = format!("{}", st);
+                let string_type = format!("{st}");
                 let flattened_array = match *st {
                     BIT => to_json_array_aux!(self.value, self.t, to_flattened_array_u8),
                     UINT8 => to_json_array_aux!(self.value, self.t, to_flattened_array_u8),
@@ -1093,7 +1120,7 @@ fn extract_values(numbers: Vec<JsonValue>, st: ScalarType) -> Result<Value> {
 }
 
 fn json_reshape(shape: ArrayShape, j: &JsonValue) -> Result<JsonValue> {
-    let e = Err(runtime_error!("Can't JSON-reshape"));
+    let e = || Err(runtime_error!("Can't JSON-reshape"));
     if let JsonValue::Array(a) = j {
         if shape.is_empty() {
             return Ok(a[0].clone());
@@ -1113,10 +1140,10 @@ fn json_reshape(shape: ArrayShape, j: &JsonValue) -> Result<JsonValue> {
             }
             Ok(JsonValue::from(result))
         } else {
-            e
+            e()
         }
     } else {
-        e
+        e()
     }
 }
 

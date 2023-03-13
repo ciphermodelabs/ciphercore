@@ -1,5 +1,4 @@
 //! Code of a binary that takes typed inputs and splits them between the parties
-#![cfg_attr(feature = "nightly-features", feature(backtrace))]
 #[macro_use]
 extern crate ciphercore_base;
 

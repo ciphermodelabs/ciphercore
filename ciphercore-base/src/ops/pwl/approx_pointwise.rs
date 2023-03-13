@@ -225,17 +225,13 @@ mod tests {
     use crate::custom_ops::run_instantiation_pass;
     use crate::data_types::INT64;
     use crate::evaluators::random_evaluate;
-    use crate::graphs::create_context;
+    use crate::graphs::util::simple_context;
 
     fn scalar_helper(arg: f32, conf: PWLConfig) -> Result<f32> {
-        let c = create_context()?;
-        let g = c.create_graph()?;
-        let i = g.input(scalar_type(INT64))?;
-        let o = create_approximation(i, |x| x * x, -2.0, 2.0, 10, conf)?;
-        o.set_as_output()?;
-        g.finalize()?;
-        g.set_as_main()?;
-        c.finalize()?;
+        let c = simple_context(|g| {
+            let i = g.input(scalar_type(INT64))?;
+            create_approximation(i, |x| x * x, -2.0, 2.0, 10, conf)
+        })?;
         let mapped_c = run_instantiation_pass(c)?;
         let result = random_evaluate(
             mapped_c.get_context().get_main_graph()?,
@@ -249,15 +245,11 @@ mod tests {
     }
 
     fn array_helper(arg: Vec<f32>, shape: Vec<u64>, conf: PWLConfig) -> Result<Vec<f32>> {
-        let c = create_context()?;
-        let g = c.create_graph()?;
         let array_t = array_type(shape, INT64);
-        let i = g.input(array_t.clone())?;
-        let o = create_approximation(i, |x| x * x, -2.0, 2.0, 10, conf)?;
-        o.set_as_output()?;
-        g.finalize()?;
-        g.set_as_main()?;
-        c.finalize()?;
+        let c = simple_context(|g| {
+            let i = g.input(array_t.clone())?;
+            create_approximation(i, |x| x * x, -2.0, 2.0, 10, conf)
+        })?;
         let mapped_c = run_instantiation_pass(c)?;
         let mut arr = vec![];
         for x in arg {

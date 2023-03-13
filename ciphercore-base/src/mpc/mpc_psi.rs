@@ -1,25 +1,28 @@
 use std::collections::HashMap;
 
 use crate::custom_ops::{
-    run_instantiation_pass, ContextMappings, CustomOperation, CustomOperationBody, Or,
+    run_instantiation_pass, ContextMappings, CustomOperation, CustomOperationBody,
 };
 use crate::data_types::{
-    array_type, get_size_in_bits, get_types_vector, named_tuple_type, scalar_type, tuple_type,
-    vector_type, Type, BIT, UINT64,
+    array_type, get_size_in_bits, get_types_vector, named_tuple_type, tuple_type, Type, BIT, UINT64,
 };
 use crate::errors::Result;
-use crate::graphs::{create_context, Context, Graph, Node, NodeAnnotation, SliceElement};
+use crate::graphs::util::simple_context;
+use crate::graphs::{Context, Graph, JoinType, Node, NodeAnnotation, SliceElement};
 use crate::inline::inline_common::DepthOptimizationLevel;
 use crate::inline::inline_ops::{inline_operations, InlineConfig, InlineMode};
 use crate::ops::comparisons::Equal;
-use crate::ops::utils::{pull_out_bits, put_in_bits, zeros, zeros_like};
+use crate::ops::utils::{extend_with_zeros, zeros, zeros_like};
 use crate::type_inference::NULL_HEADER;
 
 use serde::{Deserialize, Serialize};
 
 use super::low_mc::{LowMC, LowMCBlockSize, LOW_MC_KEY_SIZE};
 use super::mpc_arithmetic::{AddMPC, GemmMPC, MixedMultiplyMPC, MultiplyMPC, SubtractMPC};
-use super::mpc_compiler::{check_private_tuple, compile_to_mpc_graph, KEY_LENGTH, PARTIES};
+use super::mpc_compiler::{
+    check_private_tuple, compile_to_mpc_graph, get_node_shares, get_zero_shares, IOStatus,
+    KEY_LENGTH, PARTIES,
+};
 use super::utils::select_node;
 
 type ColumnHeaderTypes = Vec<(String, Type)>;
@@ -36,6 +39,10 @@ fn get_named_types(t: Type) -> Vec<(String, Type)> {
     } else {
         panic!("Can't get named types. Input type must be NamedTuple.")
     }
+}
+
+fn is_type_shared(t: &Type) -> bool {
+    t.is_tuple()
 }
 
 fn generate_shared_random_array(t: Type, prf_keys: &[Node]) -> Result<Node> {
@@ -56,12 +63,28 @@ fn get_column(named_tuple_shares: &[Node], header: String) -> Result<Node> {
     } else if named_tuple_shares.len() == 1 {
         named_tuple_shares[0].named_tuple_get(header)
     } else {
-        panic!("Shouldn't be here");
+        Err(runtime_error!(
+            "Wrong number of shares {}",
+            named_tuple_shares.len()
+        ))
     }
 }
 
+fn get_column_type(column: &Node) -> Result<Type> {
+    let t = column.get_type()?;
+    if is_type_shared(&t) {
+        Ok((*get_types_vector(t)?[0]).clone())
+    } else {
+        Ok(t)
+    }
+}
+
+fn is_shared(column: &Node) -> Result<bool> {
+    Ok(is_type_shared(&column.get_type()?))
+}
+
 fn reshape_shared_array(a: Node, new_t: Type) -> Result<Node> {
-    if a.get_type()?.is_tuple() {
+    if is_shared(&a)? {
         let mut shares = vec![];
         for share_id in 0..PARTIES as u64 {
             shares.push(a.tuple_get(share_id)?.reshape(new_t.clone())?);
@@ -72,41 +95,82 @@ fn reshape_shared_array(a: Node, new_t: Type) -> Result<Node> {
     }
 }
 
-fn multiply_mpc(a: Node, b: Node, prf_keys: Node) -> Result<Node> {
-    let args = if a.get_type()?.is_tuple() && b.get_type()?.is_tuple() {
+fn concatenate_mpc(arrays: &[Node], axis: u64) -> Result<Node> {
+    if arrays.is_empty() {
+        panic!("Can't concatenate empty vector of nodes");
+    }
+    if arrays.len() == 1 {
+        return Ok(arrays[0].clone());
+    }
+    let g = arrays[0].get_graph();
+    let mut contains_private = false;
+    for arr in arrays {
+        contains_private |= is_shared(arr)?;
+    }
+    if !contains_private {
+        return g.concatenate(arrays.to_vec(), axis);
+    }
+    let mut res_shares = vec![];
+    for share_id in 0..PARTIES as u64 {
+        let mut share_vec = vec![];
+        for arr in arrays {
+            if is_shared(arr)? {
+                share_vec.push(arr.tuple_get(share_id)?);
+            } else {
+                // if node is public, fake its sharing, i.e., create a sharing (node, 0, 0).
+                if share_id == 0 {
+                    share_vec.push(arr.clone())
+                } else {
+                    let zeros = zeros_like(arr.clone())?;
+                    share_vec.push(zeros);
+                }
+            }
+        }
+        res_shares.push(g.concatenate(share_vec, axis)?);
+    }
+    g.create_tuple(res_shares)
+}
+
+fn general_multiply_mpc(
+    op: CustomOperation,
+    a: Node,
+    b: Node,
+    prf_keys: Node,
+    is_mixed_multiply: bool,
+) -> Result<Node> {
+    let args = if (is_shared(&a)? || is_mixed_multiply) && is_shared(&b)? {
         vec![a, b, prf_keys]
     } else {
         vec![a, b]
     };
-    args[0]
-        .get_graph()
-        .custom_op(CustomOperation::new(MultiplyMPC {}), args)
+    args[0].get_graph().custom_op(op, args)
+}
+
+fn multiply_mpc(a: Node, b: Node, prf_keys: Node) -> Result<Node> {
+    general_multiply_mpc(CustomOperation::new(MultiplyMPC {}), a, b, prf_keys, false)
 }
 
 fn gemm_mpc(a: Node, b: Node, prf_keys: Node) -> Result<Node> {
-    let args = if a.get_type()?.is_tuple() && b.get_type()?.is_tuple() {
-        vec![a, b, prf_keys]
-    } else {
-        vec![a, b]
-    };
-    args[0].get_graph().custom_op(
+    general_multiply_mpc(
         CustomOperation::new(GemmMPC {
             transpose_a: false,
             transpose_b: true,
         }),
-        args,
+        a,
+        b,
+        prf_keys,
+        false,
     )
 }
 
 fn mixed_multiply_mpc(a: Node, b: Node, prf_keys: Node) -> Result<Node> {
-    let args = if b.get_type()?.is_tuple() {
-        vec![a, b, prf_keys]
-    } else {
-        vec![a, b]
-    };
-    args[0]
-        .get_graph()
-        .custom_op(CustomOperation::new(MixedMultiplyMPC {}), args)
+    general_multiply_mpc(
+        CustomOperation::new(MixedMultiplyMPC {}),
+        a,
+        b,
+        prf_keys,
+        true,
+    )
 }
 
 fn add_mpc(a: Node, b: Node) -> Result<Node> {
@@ -147,58 +211,81 @@ fn sum_named_columns(a: Node, b: Node) -> Result<Node> {
     a.get_graph().create_named_tuple(result_columns)
 }
 
-fn subtract_named_columns(a: Node, b: Node) -> Result<Node> {
-    let header_types = get_named_types(a.get_type()?);
-    let mut result_columns = vec![];
-    for (header, _) in header_types {
-        let c = a
-            .named_tuple_get(header.clone())?
-            .subtract(b.named_tuple_get(header.clone())?)?;
-        result_columns.push((header, c));
-    }
-    a.get_graph().create_named_tuple(result_columns)
-}
-
-fn pad_columns(columns: Node, num_extra_rows: u64, prf_keys: &[Node]) -> Result<Node> {
+fn random_pad_columns(columns: Node, num_extra_rows: u64, prf_keys: &[Node]) -> Result<Node> {
     let graph = columns.get_graph();
     let header_types = {
         let tuple_types_vec = get_types_vector(columns.get_type()?)?;
         get_named_types((*tuple_types_vec[0]).clone())
     };
+    // Null header should contain zeros to avoid false positives while comparing the rows
+    let null_header_shares = get_zero_shares(
+        graph.clone(),
+        graph.create_tuple(prf_keys.to_vec())?,
+        array_type(vec![num_extra_rows], BIT),
+    )?;
     let mut shares = vec![];
     for (share_id, prf_key) in prf_keys.iter().enumerate() {
         let data_share = columns.tuple_get(share_id as u64)?;
         let mut result_columns = vec![];
         for (header, t) in header_types.clone() {
             let column = data_share.named_tuple_get(header.clone())?;
-            let num_input_entries = t.get_shape()[0];
-            let mut extra_rows_shape = t.get_shape();
-            extra_rows_shape[0] = num_extra_rows;
-            let st = t.get_scalar_type();
-            let extra_rows = prf_key.prf(0, array_type(extra_rows_shape.clone(), st.clone()))?;
-            // Merge input rows and extra rows
-            let mut padded_column = graph.create_tuple(vec![
-                column.array_to_vector()?,
-                extra_rows.array_to_vector()?,
-            ])?;
-            padded_column = if extra_rows_shape.len() > 1 {
-                padded_column.reshape(vector_type(
-                    num_extra_rows + num_input_entries,
-                    array_type(extra_rows_shape[1..].to_vec(), st),
-                ))?
+            let padded_column = if header == NULL_HEADER {
+                // Merge input rows and extra rows
+                graph.concatenate(vec![column, null_header_shares[share_id].clone()], 0)?
             } else {
-                padded_column.reshape(vector_type(
-                    num_extra_rows + num_input_entries,
-                    scalar_type(st),
-                ))?
-            }
-            .vector_to_array()?;
+                let mut extra_rows_shape = t.get_shape();
+                extra_rows_shape[0] = num_extra_rows;
+                let st = t.get_scalar_type();
+                let extra_rows =
+                    prf_key.prf(0, array_type(extra_rows_shape.clone(), st.clone()))?;
+                // Merge input rows and extra rows
+                graph.concatenate(vec![column, extra_rows], 0)?
+            };
             result_columns.push((header, padded_column));
         }
         let share = graph.create_named_tuple(result_columns)?;
         shares.push(share);
     }
     graph.create_tuple(shares)
+}
+
+fn zero_pad_column(
+    column: Node,
+    num_extra_rows: u64,
+    in_front: bool,
+    prf_keys: Node,
+) -> Result<Node> {
+    let g = column.get_graph();
+    let t = get_column_type(&column)?;
+    if is_shared(&column)? {
+        let mut extra_rows_shape = t.get_shape();
+        extra_rows_shape[0] = num_extra_rows;
+        let st = t.get_scalar_type();
+        let zero_rows = get_zero_shares(g.clone(), prf_keys, array_type(extra_rows_shape, st))?;
+
+        let mut shares = vec![];
+        for (share_id, zero_rows_share) in zero_rows.iter().cloned().enumerate() {
+            let column_share = column.tuple_get(share_id as u64)?;
+            // Merge input rows and extra rows
+            let share = if in_front {
+                g.concatenate(vec![zero_rows_share, column_share], 0)?
+            } else {
+                g.concatenate(vec![column_share, zero_rows_share], 0)?
+            };
+            shares.push(share);
+        }
+        g.create_tuple(shares)
+    } else {
+        let mut extra_rows_shape = t.get_shape();
+        extra_rows_shape[0] = num_extra_rows;
+        let st = t.get_scalar_type();
+        let zero_rows = zeros(&g, array_type(extra_rows_shape, st))?;
+        if in_front {
+            g.concatenate(vec![zero_rows, column], 0)
+        } else {
+            g.concatenate(vec![column, zero_rows], 0)
+        }
+    }
 }
 
 fn convert_main_graph_to_mpc(
@@ -236,31 +323,23 @@ fn get_equality_graph(
     is_input1_private: bool,
     is_input2_private: bool,
 ) -> Result<Graph> {
-    let eq_context = create_context()?;
-    let g = eq_context.create_graph()?;
+    let eq_context = simple_context(|g| {
+        let i0 = g.input(type1)?;
+        let i1 = g.input(type2)?;
 
-    let i0 = g.input(type1)?;
-    let i1 = g.input(type2)?;
+        let key_columns_0 = i0.named_tuple_get(key_header.clone())?;
+        let key_columns_1 = i1.named_tuple_get(key_header)?;
 
-    let key_columns_0 = i0.named_tuple_get(key_header.clone())?;
-    let key_columns_1 = i1.named_tuple_get(key_header)?;
+        let eq_bits = g.custom_op(
+            CustomOperation::new(Equal {}),
+            vec![key_columns_0, key_columns_1],
+        )?;
 
-    let eq_bits = g.custom_op(
-        CustomOperation::new(Equal {}),
-        vec![key_columns_0, key_columns_1],
-    )?;
+        let null_0 = i0.named_tuple_get(NULL_HEADER.to_owned())?;
+        let null_1 = i1.named_tuple_get(NULL_HEADER.to_owned())?;
 
-    let null_0 = i0.named_tuple_get(NULL_HEADER.to_owned())?;
-    let null_1 = i1.named_tuple_get(NULL_HEADER.to_owned())?;
-
-    let res = null_0.multiply(null_1)?.multiply(eq_bits)?;
-
-    res.set_as_output()?;
-
-    g.finalize()?;
-
-    eq_context.set_main_graph(g)?;
-    eq_context.finalize()?;
+        null_0.multiply(null_1)?.multiply(eq_bits)
+    })?;
 
     convert_main_graph_to_mpc(
         eq_context,
@@ -269,105 +348,71 @@ fn get_equality_graph(
     )
 }
 
-fn get_or_graph(context: Context, num_entries: u64) -> Result<Graph> {
-    let or_context = create_context()?;
-    let g = or_context.create_graph()?;
-
-    let t = array_type(vec![num_entries], BIT);
-
-    let i0 = g.input(t.clone())?;
-    let i1 = g.input(t)?;
-
-    let res = g.custom_op(CustomOperation::new(Or {}), vec![i0, i1])?;
-
-    res.set_as_output()?;
-
-    g.finalize()?;
-
-    or_context.set_main_graph(g)?;
-    or_context.finalize()?;
-
-    convert_main_graph_to_mpc(or_context, context, vec![true, true])
-}
-
 fn get_select_graph(
     context: Context,
     column_header_types: Vec<(String, Type)>,
     num_entries: u64,
     key_header: String,
 ) -> Result<Graph> {
-    let select_context = create_context()?;
-    let g = select_context.create_graph()?;
+    let select_context = simple_context(|g| {
+        let data_t = named_tuple_type(column_header_types.clone());
+        let data_columns = g.input(data_t)?;
 
-    let data_t = named_tuple_type(column_header_types.clone());
-    let data_columns = g.input(data_t)?;
+        let mask_t = array_type(vec![num_entries], BIT);
+        let mask = g.input(mask_t)?;
 
-    let mask_t = array_type(vec![num_entries], BIT);
-    let mask = g.input(mask_t)?;
+        let mut result_columns = vec![];
+        for (header, t) in column_header_types {
+            if header == NULL_HEADER || header == key_header {
+                continue;
+            }
+            let column = data_columns.named_tuple_get(header.clone())?;
+            let column_shape = t.get_shape();
+            // Reshape the mask to multiply row-wise
+            let mut mask_shape = vec![num_entries];
+            if column_shape.len() > 1 {
+                mask_shape.extend(vec![1; column_shape.len() - 1]);
+            }
+            let column_mask = mask.reshape(array_type(mask_shape, BIT))?;
+            // Multiply the column by the mask
+            let result_column = if t.get_scalar_type() == BIT {
+                column.multiply(column_mask)?
+            } else {
+                column.mixed_multiply(column_mask)?
+            };
 
-    let mut result_columns = vec![];
-    for (header, t) in column_header_types {
-        if header == NULL_HEADER || header == key_header {
-            continue;
+            result_columns.push((header, result_column));
         }
-        let column = data_columns.named_tuple_get(header.clone())?;
-        let column_shape = t.get_shape();
-        // Reshape the mask to multiply row-wise
-        let mut mask_shape = vec![num_entries];
-        if column_shape.len() > 1 {
-            mask_shape.extend(vec![1; column_shape.len() - 1]);
-        }
-        let column_mask = mask.reshape(array_type(mask_shape, BIT))?;
-        // Multiply the column by the mask
-        let result_column = if t.get_scalar_type() == BIT {
-            column.multiply(column_mask)?
-        } else {
-            column.mixed_multiply(column_mask)?
-        };
-
-        result_columns.push((header, result_column));
-    }
-    g.create_named_tuple(result_columns)?.set_as_output()?;
-
-    g.finalize()?;
-
-    select_context.set_main_graph(g)?;
-    select_context.finalize()?;
+        g.create_named_tuple(result_columns)
+    })?;
 
     convert_main_graph_to_mpc(select_context, context, vec![true, true])
 }
 
 fn get_lowmc_graph(context: Context, input_t: Type, key_t: Type) -> Result<Graph> {
-    let lowmc_context = create_context()?;
-    let g = lowmc_context.create_graph()?;
+    let lowmc_context = simple_context(|g| {
+        // Compute OPRF of hashed key columns in both sets
+        // Set the parameters of the LowMC block cipher serving here as PRF.
+        // TODO: these parameters can be further optimized with great caution.
+        // See `low_mc.rs` for guidelines.
+        let block_size = match PRF_OUTPUT_SIZE {
+            80 => LowMCBlockSize::SIZE80,
+            128 => LowMCBlockSize::SIZE128,
+            _ => {
+                return Err(runtime_error!("LowMC doesn't support this block size"));
+            }
+        };
+        let low_mc_op = CustomOperation::new(LowMC {
+            s_boxes_per_round: 16,
+            rounds: 11,
+            block_size,
+        });
 
-    // Compute OPRF of hashed key columns in both sets
-    // Set the parameters of the LowMC block cipher serving here as PRF.
-    // TODO: these parameters can be further optimized with great caution.
-    // See `low_mc.rs` for guidelines.
-    let block_size = match PRF_OUTPUT_SIZE {
-        80 => LowMCBlockSize::SIZE80,
-        128 => LowMCBlockSize::SIZE128,
-        _ => {
-            panic!("LowMC doesn't support this block size");
-        }
-    };
-    let low_mc_op = CustomOperation::new(LowMC {
-        s_boxes_per_round: 16,
-        rounds: 11,
-        block_size,
-    });
+        let input_data = g.input(input_t)?;
+        let key = g.input(key_t)?;
 
-    let input_data = g.input(input_t)?;
-    let key = g.input(key_t)?;
-
-    g.custom_op(low_mc_op, vec![input_data, key])?
-        .set_as_output()?;
-
-    g.finalize()?;
-
-    lowmc_context.set_main_graph(g)?;
-    lowmc_context.finalize()?;
+        g.custom_op(low_mc_op, vec![input_data, key])
+    })?;
 
     convert_main_graph_to_mpc(lowmc_context, context, vec![true, true])
 }
@@ -384,61 +429,184 @@ fn get_merging_graph(
         headers_map.insert((*h).clone(), (*t).clone());
     }
 
-    let merging_context = create_context()?;
-    let g = merging_context.create_graph()?;
+    let merging_context = simple_context(|g| {
+        let data = g.input(named_tuple_type(header_types.clone()))?;
 
-    let data = g.input(named_tuple_type(header_types.clone()))?;
+        let num_entries = header_types[0].1.get_shape()[0];
 
-    let num_entries = header_types[0].1.get_shape()[0];
-    let mut key_entry_bitlength = 0;
+        let mut bit_columns = vec![];
+        for header in key_headers {
+            let t = headers_map.get(header).unwrap();
 
-    let mut bit_columns = vec![];
-    for header in key_headers {
-        let t = headers_map.get(header).unwrap();
-
-        let column = data.named_tuple_get((*header).clone())?;
-        let mut bit_column = if t.get_scalar_type() != BIT {
-            column.a2b()?
+            let column = data.named_tuple_get((*header).clone())?;
+            let mut bit_column = if t.get_scalar_type() != BIT {
+                column.a2b()?
+            } else {
+                column
+            };
+            // Flatten all the bits per entry
+            let flattened_shape = vec![num_entries, get_size_in_bits((*t).clone())? / num_entries];
+            bit_column = bit_column.reshape(array_type(flattened_shape, BIT))?;
+            // Pull out bits to simplify merging of columns
+            bit_columns.push(bit_column);
+        }
+        // Merge key columns
+        let merged_columns = if bit_columns.len() > 1 {
+            g.concatenate(bit_columns, 1)?
         } else {
-            column
+            bit_columns[0].clone()
         };
-        // Flatten all the bits per entry
-        let flattened_shape = vec![num_entries, get_size_in_bits((*t).clone())? / num_entries];
-        key_entry_bitlength += flattened_shape[1];
-        bit_column = bit_column.reshape(array_type(flattened_shape, BIT))?;
-        // Pull out bits to simplify merging of columns
-        bit_columns.push(pull_out_bits(bit_column)?.array_to_vector()?);
-    }
-    // Merge key columns
-    let merged_columns = g
-        .create_tuple(bit_columns)?
-        .reshape(vector_type(
-            key_entry_bitlength,
-            array_type(vec![num_entries], BIT),
-        ))?
-        .vector_to_array()?;
 
-    put_in_bits(merged_columns)?.set_as_output()?;
-
-    g.finalize()?;
-
-    merging_context.set_main_graph(g)?;
-    merging_context.finalize()?;
+        Ok(merged_columns)
+    })?;
 
     convert_main_graph_to_mpc(merging_context, context, vec![is_private])
 }
 
-/// Adds a node returning the intersection of given databases along given column keys.
+// Multiply the column by the mask/null column
+// Assumes that column mask is binary and it has the same number of rows as the column
+fn mask_column(column: Node, column_mask: Node, prf_keys: Node) -> Result<Node> {
+    let t = get_column_type(&column)?;
+    let column_shape = t.get_shape();
+    // Reshape the mask to multiply row-wise
+    let mut mask_shape = vec![column_shape[0]];
+    if column_shape.len() > 1 {
+        mask_shape.extend(vec![1; column_shape.len() - 1]);
+    }
+    let column_mask = reshape_shared_array(column_mask, array_type(mask_shape, BIT))?;
+
+    if t.get_scalar_type() == BIT {
+        multiply_mpc(column, column_mask, prf_keys)
+    } else {
+        mixed_multiply_mpc(column, column_mask, prf_keys)
+    }
+}
+
+// Share a column if it is public
+fn share_column(column: Node, prf_keys: Node) -> Result<Node> {
+    if is_shared(&column)? {
+        Ok(column)
+    } else {
+        let g = column.get_graph();
+        let column_shares = get_node_shares(
+            g.clone(),
+            prf_keys,
+            column.get_type()?,
+            Some((column, IOStatus::Public)),
+        )?;
+        g.create_tuple(column_shares)
+    }
+}
+
+enum Columns {
+    Public(Vec<(String, Node)>),
+    Shared(Vec<Vec<(String, Node)>>),
+}
+
+impl Columns {
+    fn new_shared() -> Self {
+        Columns::Shared(vec![vec![]; 3])
+    }
+
+    fn new_public() -> Self {
+        Columns::Public(vec![])
+    }
+
+    fn is_shared(&self) -> bool {
+        matches!(self, Columns::Shared(_))
+    }
+
+    // Attach a given shared column to shares of columns
+    fn attach_column(&mut self, header: &str, column: Node) -> Result<()> {
+        match self {
+            Columns::Public(columns) => {
+                if is_shared(&column)? {
+                    return Err(runtime_error!("New columns should be public"));
+                }
+                columns.push((header.to_owned(), column));
+            }
+            Columns::Shared(shares) => {
+                if is_shared(&column)? {
+                    for (share_id, share) in shares.iter_mut().enumerate() {
+                        share.push((header.to_owned(), column.tuple_get(share_id as u64)?));
+                    }
+                } else {
+                    // If column is public, fake its sharing as (column, 0, 0).
+                    let zero_share = zeros_like(column.clone())?;
+                    for (share_id, share) in shares.iter_mut().enumerate() {
+                        if share_id == 0 {
+                            share.push((header.to_owned(), column.clone()));
+                        } else {
+                            share.push((header.to_owned(), zero_share.clone()));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn extract_and_attach(&mut self, header: &str, columns: Node) -> Result<()> {
+        if !self.is_shared() && is_shared(&columns)? {
+            return Err(runtime_error!("New columns should be public"));
+        }
+        let column = if is_shared(&columns)? {
+            let mut column_vec = vec![];
+            for share_id in 0..PARTIES as u64 {
+                column_vec.push(
+                    columns
+                        .tuple_get(share_id)?
+                        .named_tuple_get(header.to_owned())?,
+                );
+            }
+            columns.get_graph().create_tuple(column_vec)?
+        } else {
+            columns.named_tuple_get(header.to_owned())?
+        };
+        self.attach_column(header, column)
+    }
+
+    fn is_empty(&self) -> bool {
+        match self {
+            Columns::Public(v) => v.is_empty(),
+            Columns::Shared(v) => v[0].is_empty(),
+        }
+    }
+
+    fn into_node(self) -> Result<Node> {
+        if self.is_empty() {
+            return Err(runtime_error!("Can't turn empty shares into a node"));
+        }
+        match self {
+            Columns::Public(columns) => {
+                let g = columns[0].1.get_graph();
+                g.create_named_tuple(columns)
+            }
+            Columns::Shared(shares) => {
+                let g = shares[0][0].1.get_graph();
+                let mut result_shares = vec![];
+                for share_vec in shares {
+                    let share = g.create_named_tuple(share_vec.clone())?;
+                    result_shares.push(share);
+                }
+                g.create_tuple(result_shares)
+            }
+        }
+    }
+}
+
+/// Adds a node returning a join of a given type on given databases along given column keys.
 ///
 /// Databases are represented as named tuples of integer arrays.
 /// Each database should contain a special binary column named "null" that contains bits indicating whether the corresponding row has a zero content after previous operations (0 if yes).
 /// Non-key column names must be unique in both databases.
 ///
-/// The intersection of these named tuples is another named tuple containing the inner join of both input databases.
-/// Namely, it contains only the database rows whose values are equal in given key columns.
+/// A join of these named tuples is another named tuple containing a join of both input databases.
+/// Namely, it contains only the database rows whose values match in given key columns according to the join type.
 /// The content of non-key columns is attached to these rows from both sets.
 ///
-/// The protocol follows the description of the InnerJoin protocol from <https://eprint.iacr.org/2019/518.pdf>.
+/// The protocol follows the description of the Join protocol from <https://eprint.iacr.org/2019/518.pdf>.
 /// Let X be the first database and Y be the second one.
 /// 1. Key columns of both sets are converted to binary and merged row-wise.
 /// 2. If the bitsize of merged entries is bigger than the block size of the LowMC block cipher, hash them via multiplication by a random matrix obliviously generated by all parties.
@@ -460,8 +628,7 @@ fn get_merging_graph(
 /// 13. For each simple hash map h, parties 2 and 1 perform the Switching protocol (SwitchingMPC) to get 2-out-of-2 shares of Y_h, which is an arrangement of several Cuckoo table elements such that elements of the intersection are located at the same positions as elements of X belonging to the intersection.
 /// As a result, Parties 2 and 0 have 2-out-of-2 shares of Y_h.
 /// 14. All parties convert the 2-out-of-2 shares of each Y_h to 2-out-of-3 shares.
-/// 15. Compare X with all Y_h row-wise and select the rows of Y_h that match rows in X.
-/// The resulting "null" column has 1 entry if there is at least one Y_h, whose corresponding entry is equal to X in key columns and whose "null" column values is 1.
+/// 15. Compare X with all Y_h row-wise and select the rows of Y_h that match rows in X according to the join type.
 /// 16. Combine the selected rows along the columns of X and Y.
 ///
 /// # Custom operation arguments
@@ -472,11 +639,68 @@ fn get_merging_graph(
 ///
 /// # Custom operation returns
 ///
-/// Node containing a named tuple containing the inner join of both databases
+/// Node containing a named tuple containing the join of both databases
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
-pub struct SetIntersectionMPC {
+pub struct JoinMPC {
+    // Type of join
+    pub join_t: JoinType,
     // Instead of HashMap, Vector is used to support the Hash trait
     pub headers: Vec<(String, String)>,
+}
+
+impl JoinMPC {
+    // FullJoin (X, Y) = Union(set0, LeftJoin(Y, X))
+    fn create_full_join_graph(
+        &self,
+        context: Context,
+        data_x_t: Type,
+        data_y_t: Type,
+        prf_t: Type,
+    ) -> Result<Graph> {
+        let g = context.create_graph()?;
+        let data_x = g.input(data_x_t.clone())?;
+        let data_y = g.input(data_y_t)?;
+        let prf_keys = g.input(prf_t)?;
+        // The headers of the left join are the reversed input headers.
+        let mut left_join_headers = vec![];
+        for (h0, h1) in &self.headers {
+            left_join_headers.push((h1.clone(), h0.clone()));
+        }
+        let left_join = g.custom_op(
+            CustomOperation::new(JoinMPC {
+                join_t: JoinType::Left,
+                headers: left_join_headers,
+            }),
+            vec![data_y, data_x.clone(), prf_keys.clone()],
+        )?;
+        // The headers for union should contain the input headers and the remaining headers of X except for NULL_HEADER.
+        // This avoids an error triggered on non-key columns with the same header.
+        let mut union_headers = self.headers.clone();
+        let (_, column_header_types_x) =
+            check_and_extract_dataset_parameters(data_x_t.clone(), is_type_shared(&data_x_t))?;
+        let headers_x: Vec<String> = column_header_types_x
+            .iter()
+            .map(|ht| ht.0.clone())
+            .collect();
+        let key_headers_x: Vec<String> = self.headers.iter().map(|ht| ht.0.clone()).collect();
+        for h in &headers_x {
+            if h == NULL_HEADER {
+                continue;
+            }
+            if !key_headers_x.contains(h) {
+                union_headers.push((h.clone(), h.clone()));
+            }
+        }
+        let res = g.custom_op(
+            CustomOperation::new(JoinMPC {
+                join_t: JoinType::Union,
+                headers: union_headers,
+            }),
+            vec![data_x, left_join, prf_keys],
+        )?;
+        res.set_as_output()?;
+        g.finalize()
+    }
 }
 
 fn check_and_extract_dataset_parameters(
@@ -484,8 +708,8 @@ fn check_and_extract_dataset_parameters(
     is_private: bool,
 ) -> Result<(u64, ColumnHeaderTypes)> {
     let column_header_types = if is_private {
-        if !t.is_tuple() {
-            panic!("Private database must be a tuple of shares");
+        if !is_type_shared(&t) {
+            return Err(runtime_error!("Private database must be a tuple of shares"));
         }
 
         let t_vec = get_types_vector(t)?;
@@ -501,7 +725,7 @@ fn check_and_extract_dataset_parameters(
 }
 
 #[typetag::serde]
-impl CustomOperationBody for SetIntersectionMPC {
+impl CustomOperationBody for JoinMPC {
     fn instantiate(&self, context: Context, argument_types: Vec<Type>) -> Result<Graph> {
         if argument_types.len() == 2 {
             if argument_types[0].is_named_tuple() && argument_types[1].is_named_tuple() {
@@ -512,45 +736,52 @@ impl CustomOperationBody for SetIntersectionMPC {
                 for (h0, h1) in &self.headers {
                     headers.insert((*h0).clone(), (*h1).clone());
                 }
-                set0.set_intersection(set1, headers)?.set_as_output()?;
+                set0.join(set1, self.join_t, headers)?.set_as_output()?;
                 g.finalize()?;
                 return Ok(g);
             } else {
                 // Panics since:
                 // - the user has no direct access to this function.
-                // - the MPC compiler should pass the correct number of arguments
+                // - the MPC compiler should pass correct arguments
                 // and this panic should never happen.
                 panic!("Inconsistency with type checker");
             }
         }
         if argument_types.len() != 3 {
-            panic!("PSI protocol should have 3 inputs");
+            return Err(runtime_error!("Join protocol should have 3 inputs"));
         }
 
         let data_x_t = argument_types[0].clone();
         let data_y_t = argument_types[1].clone();
         let prf_t = argument_types[2].clone();
 
-        let is_x_private = data_x_t.is_tuple();
-        let is_y_private = data_y_t.is_tuple();
+        let is_x_private = is_type_shared(&data_x_t);
+        let is_y_private = is_type_shared(&data_y_t);
 
         let (num_entries_x, column_header_types_x) =
             check_and_extract_dataset_parameters(data_x_t.clone(), is_x_private)?;
         let (num_entries_y, column_header_types_y) =
             check_and_extract_dataset_parameters(data_y_t.clone(), is_y_private)?;
 
+        // FullJoin (X, Y) = Union(set0, LeftJoin(Y, X))
+        if self.join_t == JoinType::Full {
+            return self.create_full_join_graph(context, data_x_t, data_y_t, prf_t);
+        }
+
         // Name of the "key" column containing bits of compared columns
         // To avoid a collision with input headers, the key header is the join of all input headers
-        let mut all_headers: Vec<String> = column_header_types_x
-            .iter()
-            .map(|v| ((*v).0).clone())
-            .collect();
-        let headers_y: Vec<String> = column_header_types_y
-            .iter()
-            .map(|v| ((*v).0).clone())
-            .collect();
+        let mut all_headers: Vec<String> =
+            column_header_types_x.iter().map(|v| v.0.clone()).collect();
+        let headers_y: Vec<String> = column_header_types_y.iter().map(|v| v.0.clone()).collect();
         all_headers.extend(headers_y);
+        // This reduces the collision probability with a non-key header
+        all_headers.push("merged-key-columns-750a7826-a23c-11ed-b543-9f91976d37c4".to_owned());
         let key_header = all_headers.join("-");
+
+        let mut headers_map = HashMap::new();
+        for (h0, h1) in &self.headers {
+            headers_map.insert((*h0).clone(), (*h1).clone());
+        }
 
         let mut key_headers_x = vec![];
         let mut key_headers_y = vec![];
@@ -603,19 +834,32 @@ impl CustomOperationBody for SetIntersectionMPC {
             array_type(vec![num_entries_y, PRF_OUTPUT_SIZE], BIT),
             array_type(vec![LOW_MC_KEY_SIZE], BIT),
         )?;
-        // Graph that compares null and merged key columns of X and compatible datasets created from Y containing, in addition, merged key columns of Y (Y_h)
+        // Graph that compares null and merged key columns of X and Y contained in several named tuples called Y_h.
+        // For inner and left join, Y_h contains full rows of Y such that they can be later extracted and attached to the result.
+        // In union join, the rows of Y can be extracted directly from Y.
         let mut y_h_types = vec![(
             key_header.clone(),
             array_type(vec![num_entries_x, key_columns_entry_bitlength], BIT),
         )];
-        for (header, t) in &column_header_types_y {
-            let mut column_shape = t.get_shape();
-            column_shape[0] = num_entries_x;
-            y_h_types.push((
-                (*header).clone(),
-                array_type(column_shape, t.get_scalar_type()),
-            ))
+        match self.join_t {
+            JoinType::Inner | JoinType::Left => {
+                for (header, t) in &column_header_types_y {
+                    let mut column_shape = t.get_shape();
+                    column_shape[0] = num_entries_x;
+                    y_h_types.push((
+                        (*header).clone(),
+                        array_type(column_shape, t.get_scalar_type()),
+                    ))
+                }
+            }
+            JoinType::Union => {
+                y_h_types.push((NULL_HEADER.to_owned(), array_type(vec![num_entries_x], BIT)));
+            }
+            JoinType::Full => {
+                panic!("Shouldn't be here");
+            }
         }
+
         let y_h_type = named_tuple_type(y_h_types.clone());
         let merged_key_columns_x_type = named_tuple_type(vec![
             (NULL_HEADER.to_owned(), array_type(vec![num_entries_x], BIT)),
@@ -632,8 +876,6 @@ impl CustomOperationBody for SetIntersectionMPC {
             true,
             is_x_private,
         )?;
-        // Graph that computes OR of bit columns
-        let or_g = get_or_graph(context.clone(), num_entries_x)?;
         // Graph that selects rows of Y_h according to the given mask
         let select_g_y = get_select_graph(
             context.clone(),
@@ -742,7 +984,12 @@ impl CustomOperationBody for SetIntersectionMPC {
 
         // Compute OPRF(Y) = PRF(key columns of Y) * Y_null_column XOR R_Y * ~Y_null_column where R_Y is a random matrix generated by all parties
         let null_y = get_column(&data_y_shares, NULL_HEADER.to_owned())?;
-        let oprf_set_y = compute_oprf(merged_columns_y.clone(), null_y, lowmc_g_y, num_entries_y)?;
+        let oprf_set_y = compute_oprf(
+            merged_columns_y.clone(),
+            null_y.clone(),
+            lowmc_g_y,
+            num_entries_y,
+        )?;
 
         // 4. Reveal OPRF(X) to party 2
         let revealed_oprf_set_x = reveal_array(oprf_set_x, 2)?;
@@ -750,9 +997,19 @@ impl CustomOperationBody for SetIntersectionMPC {
         let revealed_oprf_set_y = reveal_array(oprf_set_y, 1)?;
 
         // 6. Parties 1 and 2 generate random matrices for hashing of shape [3, m, LOW_MC_BLOCK_SIZE],
-        // where m = ceil(log(num_entries_y)+1).
+        // where m = ceil(log(max(num_entries_y, num_entries_x)+1).
         // TODO: quantify probability of success of Cuckoo hashing with these parameters
-        let log_num_cuckoo_entries = ((num_entries_y as f64).log2() + 1f64).ceil() as u64;
+        let max_num_entries = num_entries_y.max(num_entries_x);
+        let log_num_cuckoo_entries = if max_num_entries >= 512 {
+            // here we use the empirical results from the paper, see Appendix B, https://eprint.iacr.org/2018/579.pdf.
+            // This should result in failure probability smaller than 2^(-40).
+            ((max_num_entries as f64).log2() + 1f64).ceil() as u64
+        } else {
+            // The approximation from the paper fails here.
+            // Therefore, we assume the conservative failure probability equal to the probability that there is a pair of elements with all hashes equal.
+            // This event is dominant over other failure events such as the existense of 3 elements hashed to only 2 values, 4 elements hashed to 3 etc.
+            ((max_num_entries as f64).log2() + 7f64).ceil() as u64
+        };
         let num_hash_functions = 3;
         let hash_matrices = prf_keys_vec[2].prf(
             0,
@@ -768,36 +1025,29 @@ impl CustomOperationBody for SetIntersectionMPC {
 
         // 8. Attach the merged key columns to Y
         // HACK: If Y is public, we create fake shares containing zeros such that the next operation generating random padding can accept it
-        let extended_shares_y = if is_y_private {
-            let mut res = vec![];
-            for (share_id, share) in data_y_shares.iter().enumerate() {
-                let mut columns_vec = vec![(
-                    key_header.clone(),
-                    merged_columns_y.tuple_get(share_id as u64)?,
-                )];
+        let mut extended_y_shares = Columns::new_shared();
+        extended_y_shares.attach_column(&key_header, merged_columns_y)?;
+        match self.join_t {
+            JoinType::Inner | JoinType::Left => {
+                // Attach all the columns of Y as they're later extracted from Y_h
                 for (header, _) in &column_header_types_y {
-                    let column = share.named_tuple_get((*header).clone())?;
-                    columns_vec.push(((*header).clone(), column));
+                    extended_y_shares.extract_and_attach(header, data_y.clone())?;
                 }
-                let share = g.create_named_tuple(columns_vec)?;
-                res.push(share);
             }
-            g.create_tuple(res)?
-        } else {
-            let mut columns_vec = vec![(key_header.clone(), merged_columns_y)];
-            for (header, _) in &column_header_types_y {
-                let column = data_y.named_tuple_get((*header).clone())?;
-                columns_vec.push(((*header).clone(), column));
+            JoinType::Union => {
+                // The resulting rows are extracted directly from Y, so only the null column should be attached to Y_h
+                extended_y_shares.extract_and_attach(NULL_HEADER, data_y)?;
             }
-            let first_share = g.create_named_tuple(columns_vec)?;
-            let zero_share = zeros_like(first_share.clone())?;
-            g.create_tuple(vec![first_share, zero_share.clone(), zero_share])?
-        };
+            JoinType::Full => {
+                panic!("Shouldn't be here");
+            }
+        }
+        let extended_y = extended_y_shares.into_node()?;
 
         // 9. Pad columns of Y with random data such that the number of entries is equal to the cuckoo table size
         let padded_shares_y = {
             let num_extra_rows = (1 << log_num_cuckoo_entries) - num_entries_y;
-            pad_columns(extended_shares_y, num_extra_rows, &prf_keys_vec)?
+            random_pad_columns(extended_y, num_extra_rows, &prf_keys_vec)?
         };
 
         // 10. Switch from 2-out-of-3 shares of dataset Y to 2-out-of-2 shares owned by parties 0 and 1
@@ -855,63 +1105,67 @@ impl CustomOperationBody for SetIntersectionMPC {
             // One named tuple corresponding to one 2-out-of-2 share
             let share_2outof2_t = (*get_types_vector(y_h_t)?[0]).clone();
             for y_h in all_y_h {
-                // Parties 0 and 2 generate common randomness R_h to mask the second share of Y_h known to Party 0. The first PRF key is used since it's owned by both parties.
-                let r_h = prf_keys_vec[0].prf(0, share_2outof2_t.clone())?;
-                // Party 0 computes (share 1 of Y_h - R_h) and sends it to Party 1.
-                // This is the first share of 2-out-of-3 shares of Y_h.
-                let dif = subtract_named_columns(y_h.tuple_get(1)?, r_h.clone())?
-                    .nop()?
-                    .add_annotation(NodeAnnotation::Send(0, 1))?;
-                // Party 2 sends its 2-out-of-2 share to Party 1.
-                // This is the third share of 2-out-of-3 shares of Y_h.
-                let last_share = y_h
-                    .tuple_get(0)?
+                // Parties generate a 3-out-of-3 sharing of zero
+                let zero_shares =
+                    get_zero_shares(g.clone(), prf_keys.clone(), share_2outof2_t.clone())?;
+                // Party 2 adds its input share (share 0 of Y_h) to the zero share and sends the result to Party 1
+                let third_share = sum_named_columns(y_h.tuple_get(0)?, zero_shares[2].clone())?
                     .nop()?
                     .add_annotation(NodeAnnotation::Send(2, 1))?;
+                // Party 0 adds its input share ((share 1 of Y_h)) to the zero share and sends the result to Party 2
+                let first_share = sum_named_columns(y_h.tuple_get(1)?, zero_shares[0].clone())?
+                    .nop()?
+                    .add_annotation(NodeAnnotation::Send(0, 2))?;
+                // Party 1 sends its share of zero to Party 0
+                let second_share = zero_shares[1]
+                    .nop()?
+                    .add_annotation(NodeAnnotation::Send(1, 0))?;
                 // Create 2-out-of-3 shares of one Y_h
-                let y_h_share = g.create_tuple(vec![r_h, dif, last_share])?;
+                let y_h_share = g.create_tuple(vec![first_share, second_share, third_share])?;
                 res.push(y_h_share);
             }
             res
         };
 
-        // 15. Compare X with all Y_h and select the rows of Y_h that match rows in X.
-        // The resulting null column has 1 entry if there is at least one Y_h, whose corresponding entry is equal to X in key columns.
+        // 15. Compare X with all Y_h and select the rows of Y_h that match rows in X according to the join type.
 
         // Attach the null column to the merged key columns of X.
-        let null_merged_columns_x_shares = if is_x_private {
-            let mut res = vec![];
-            for share_id in 0..PARTIES as u64 {
-                let share = g.create_named_tuple(vec![
-                    (NULL_HEADER.to_owned(), null_x.tuple_get(share_id)?),
-                    (key_header.clone(), merged_columns_x.tuple_get(share_id)?),
-                ])?;
-                res.push(share);
-            }
-            g.create_tuple(res)?
+        let mut null_merged_columns_x_shares = if is_x_private {
+            Columns::new_shared()
         } else {
-            g.create_named_tuple(vec![
-                (NULL_HEADER.to_owned(), null_x),
-                (key_header.clone(), merged_columns_x),
-            ])?
+            Columns::new_public()
         };
+        null_merged_columns_x_shares.attach_column(NULL_HEADER, null_x.clone())?;
+        null_merged_columns_x_shares.attach_column(&key_header, merged_columns_x)?;
+        let null_merged_columns_x = null_merged_columns_x_shares.into_node()?;
 
-        let mut res_null_column = g.call(
+        // Compare first Y_h with key columns of X
+        let mut match_bits = g.call(
             eq_g.clone(),
             vec![
                 prf_keys.clone(),
                 y_h_shares[0].clone(),
-                null_merged_columns_x_shares.clone(),
+                null_merged_columns_x.clone(),
             ],
         )?;
-        let mut selected_columns_y = g.call(
-            select_g_y.clone(),
-            vec![
-                prf_keys.clone(),
-                y_h_shares[0].clone(),
-                res_null_column.clone(),
-            ],
-        )?;
+        // There is no need to select columns from Y_h for union join
+        let mut selected_columns_y = match self.join_t {
+            JoinType::Inner | JoinType::Left => {
+                let node = g.call(
+                    select_g_y.clone(),
+                    vec![prf_keys.clone(), y_h_shares[0].clone(), match_bits.clone()],
+                )?;
+                let mut node_vec = vec![];
+                for share_id in 0..PARTIES as u64 {
+                    node_vec.push(node.tuple_get(share_id)?);
+                }
+                node_vec
+            }
+            JoinType::Union => vec![],
+            JoinType::Full => {
+                panic!("Shouldn't be here");
+            }
+        };
         for shares in y_h_shares.iter().skip(1) {
             // Compare elements of Y_h and X
             let eq_bits = g.call(
@@ -919,97 +1173,145 @@ impl CustomOperationBody for SetIntersectionMPC {
                 vec![
                     prf_keys.clone(),
                     (*shares).clone(),
-                    null_merged_columns_x_shares.clone(),
+                    null_merged_columns_x.clone(),
                 ],
             )?;
             // Compute selection bits.
             // Selection bits must satisfy the following rules:
-            // - if the current null column entry is 0 (the corresponding entry of X hasn't been matched) and the corresponding equality bits is 1 (matching occurred in this iteration), then the corresponding selection bit should be 1;
+            // - if the current match bit is 0 (the corresponding entry of X hasn't been matched) and the corresponding equality bit is 1 (matching occurred in this iteration), then the corresponding selection bit should be 1;
             // - in other cases, the selection bit must be 0.
-            // This can be computed as select_bit = eq_bit AND null_column_bit XOR eq_bit.
+            // This can be computed as select_bit = eq_bit AND match_bits XOR eq_bit.
             let select_bits = add_mpc(
-                multiply_mpc(eq_bits.clone(), res_null_column.clone(), prf_keys.clone())?,
+                multiply_mpc(eq_bits.clone(), match_bits.clone(), prf_keys.clone())?,
                 eq_bits.clone(),
             )?;
-            // Select rows of Y_h
-            let selected_rows = g.call(
-                select_g_y.clone(),
-                vec![prf_keys.clone(), (*shares).clone(), select_bits],
-            )?;
-            // Sum named tuples
-            selected_columns_y = {
-                let mut columns_shares = vec![];
-                for share_id in 0..PARTIES as u64 {
-                    let share = sum_named_columns(
-                        selected_rows.tuple_get(share_id)?,
-                        selected_columns_y.tuple_get(share_id)?,
+
+            match self.join_t {
+                JoinType::Inner | JoinType::Left => {
+                    // Select rows of Y_h
+                    let selected_rows = g.call(
+                        select_g_y.clone(),
+                        vec![prf_keys.clone(), (*shares).clone(), select_bits.clone()],
                     )?;
-                    columns_shares.push(share);
+                    // Sum named tuples
+                    selected_columns_y = {
+                        let mut columns_shares = vec![];
+                        for (share_id, selected_column) in selected_columns_y.iter().enumerate() {
+                            let share = sum_named_columns(
+                                selected_rows.tuple_get(share_id as u64)?,
+                                selected_column.clone(),
+                            )?;
+                            columns_shares.push(share);
+                        }
+                        columns_shares
+                    };
                 }
-                g.create_tuple(columns_shares)?
-            };
-            // OR equality bits
-            res_null_column = g.call(
-                or_g.clone(),
-                vec![prf_keys.clone(), res_null_column.clone(), eq_bits],
-            )?;
+                JoinType::Union => (),
+                JoinType::Full => {
+                    panic!("Shouldn't be here");
+                }
+            }
+            // match bits are equal to OR of eq_bits over all Y_h
+            // Namely, we have new match_bits = match_bits OR eq_bits = match_bits * eq_bits + match_bits + eq_bits = match_bits + select_bits
+            match_bits = add_mpc(match_bits, select_bits)?;
         }
 
         // 16. Combine the selected rows along the columns of X and Y
-        let mut res_named_tuple_vec = vec![];
-        for share_id in 0..PARTIES as u64 {
-            res_named_tuple_vec.push(vec![(
-                NULL_HEADER.to_owned(),
-                res_null_column.tuple_get(share_id)?,
-            )]);
-        }
-        // Multiply columns of X by the intersection null column
-        for (header, t) in &column_header_types_x {
-            if header == NULL_HEADER || header == &key_header {
+        let mut result_shares = Columns::new_shared();
+        // Compute the null column and attach to the result
+        let res_null_column = match self.join_t {
+            JoinType::Inner => {
+                // The resulting null column is equal to match bits indicating intersection elements.
+                result_shares.attach_column(NULL_HEADER, match_bits.clone())?;
+                match_bits
+            }
+            JoinType::Left => {
+                // The resulting null column is equal to that of X.
+                // Note that X might be public, so we might need to share it.
+                let null_x_shared = share_column(null_x, prf_keys.clone())?;
+                result_shares.attach_column(NULL_HEADER, null_x_shared.clone())?;
+                null_x_shared
+            }
+            JoinType::Union => {
+                // The resulting null column should consist of two parts:
+                // - the null column of X with zeros in the intersection rows.
+                //   Note that if null_x[i] = 0, then match_bits[i] = 0 with overwhelming probability.
+                //   Thus, res_null[i] = match_bits[i] + null_x[i] satisfies the above condition.
+                // - the null column of Y
+                let res_null_half_x = add_mpc(match_bits, null_x)?;
+                let res_null_half_y = share_column(null_y.clone(), prf_keys.clone())?;
+
+                // Concatenate both halfs of the resulting null column
+                let res_null = concatenate_mpc(&[res_null_half_x, res_null_half_y], 0)?;
+                result_shares.attach_column(NULL_HEADER, res_null.clone())?;
+                res_null
+            }
+            JoinType::Full => {
+                panic!("Shouldn't be here");
+            }
+        };
+
+        // Add resulting data in the columns of X
+        for (header_x, _) in &column_header_types_x {
+            // the null column is already added, the merged key column shouldn't show up in the result
+            if header_x == NULL_HEADER || header_x == &key_header {
                 continue;
             }
-            let mut column = get_column(&data_x_shares, header.clone())?;
-
-            let column_shape = t.get_shape();
-            // Reshape the mask to multiply row-wise
-            let mut mask_shape = vec![num_entries_x];
-            if column_shape.len() > 1 {
-                mask_shape.extend(vec![1; column_shape.len() - 1]);
-            }
-            let column_mask =
-                reshape_shared_array(res_null_column.clone(), array_type(mask_shape, BIT))?;
-
-            column = if t.get_scalar_type() == BIT {
-                multiply_mpc(column, column_mask, prf_keys.clone())?
-            } else {
-                mixed_multiply_mpc(column, column_mask, prf_keys.clone())?
+            let mut column = match self.join_t {
+                JoinType::Inner | JoinType::Left => get_column(&data_x_shares, header_x.clone())?,
+                JoinType::Union => {
+                    // For the union, we need to concatenate rows of X and Y appropriately
+                    if key_headers_x.contains(header_x) {
+                        // If the column is key, concatenate it with the related column of Y
+                        let column_x = get_column(&data_x_shares, header_x.clone())?;
+                        let y_header = headers_map[header_x].clone();
+                        let column_y = get_column(&data_y_shares, y_header)?;
+                        concatenate_mpc(&[column_x, column_y], 0)?
+                    } else {
+                        // If the column is non-key, append it with zeros
+                        let column = get_column(&data_x_shares, header_x.clone())?;
+                        zero_pad_column(column, num_entries_y, false, prf_keys.clone())?
+                    }
+                }
+                JoinType::Full => {
+                    panic!("Shouldn't be here");
+                }
             };
-            for (share_id, share_vec) in res_named_tuple_vec.iter_mut().enumerate() {
-                share_vec.push(((*header).clone(), column.tuple_get(share_id as u64)?));
-            }
+            // Mask out rows
+            column = mask_column(column, res_null_column.clone(), prf_keys.clone())?;
+            // X might be public, so we might need to share it.
+            column = share_column(column, prf_keys.clone())?;
+            result_shares.attach_column(header_x, column)?;
         }
-        // Attach selected rows of Y
-        for (header, _) in &column_header_types_y {
+        // Attach non-key columns of Y
+        for (header_y, _) in &column_header_types_y {
             // If the current column has been already attached to the result, ignore it
-            if key_headers_y.contains(header) || NULL_HEADER == header {
+            if key_headers_y.contains(header_y) || NULL_HEADER == header_y {
                 continue;
             }
-            for (share_id, share_vec) in res_named_tuple_vec.iter_mut().enumerate() {
-                share_vec.push((
-                    (*header).clone(),
-                    selected_columns_y
-                        .tuple_get(share_id as u64)?
-                        .named_tuple_get((*header).clone())?,
-                ));
-            }
+            let res_column = match self.join_t {
+                // For inner and left joins, columns of Y are precomputed from Y_h's
+                JoinType::Inner | JoinType::Left => {
+                    get_column(&selected_columns_y, header_y.clone())?
+                }
+                JoinType::Union => {
+                    // For union, we need to prepend columns of Y by zeros
+                    let mut column = get_column(&data_y_shares, header_y.clone())?;
+                    column = mask_column(column, null_y.clone(), prf_keys.clone())?;
+                    // Prepend the column with zeros
+                    column = zero_pad_column(column, num_entries_x, true, prf_keys.clone())?;
+                    // Y might be public, so we might need to share it
+                    share_column(column, prf_keys.clone())?
+                }
+                JoinType::Full => {
+                    panic!("Shouldn't be here");
+                }
+            };
+            result_shares.attach_column(header_y, res_column)?;
         }
 
-        let mut result_shares = vec![];
-        for share_vec in res_named_tuple_vec {
-            let share = g.create_named_tuple(share_vec)?;
-            result_shares.push(share);
-        }
-        let result = g.create_tuple(result_shares)?;
+        // Collect the resulting columns
+        let result = result_shares.into_node()?;
         result.set_as_output()?;
 
         g.finalize()?;
@@ -1017,7 +1319,7 @@ impl CustomOperationBody for SetIntersectionMPC {
     }
 
     fn get_name(&self) -> String {
-        format!("PSI(keys:{:?})", self.headers)
+        format!("Join(type:{:?},keys:{:?})", self.join_t, self.headers)
     }
 }
 
@@ -1054,7 +1356,7 @@ impl CustomOperationBody for SimpleHash {
             // - the user has no direct access to this function.
             // - the MPC compiler should pass the correct number of arguments
             // and this panic should never happen.
-            panic!("SimpleHash should have 2 inputs.");
+            return Err(runtime_error!("SimpleHash should have 2 inputs."));
         }
 
         let input_type = argument_types[0].clone();
@@ -1132,20 +1434,10 @@ impl CustomOperationBody for SimpleHash {
         permuted_axes[len_output_shape as usize - 2] = len_output_shape - 3;
         hash_tables = hash_tables.permute_axes(permuted_axes)?;
 
-        hash_tables = pull_out_bits(hash_tables)?;
-        let hash_suffix_type = hash_tables.get_type()?.get_shape()[1..].to_vec();
         let num_zeros = 64 - hash_shape[1];
-        let zeros_type = vector_type(num_zeros, array_type(hash_suffix_type.clone(), BIT));
-        let zeros = zeros(&g, zeros_type)?;
+        let res = extend_with_zeros(&g, hash_tables, num_zeros, false)?;
 
-        hash_tables = g
-            .create_tuple(vec![hash_tables.array_to_vector()?, zeros])?
-            .reshape(vector_type(64, array_type(hash_suffix_type, BIT)))?
-            .vector_to_array()?;
-
-        hash_tables = put_in_bits(hash_tables)?.b2a(UINT64)?;
-
-        hash_tables.set_as_output()?;
+        res.b2a(UINT64)?.set_as_output()?;
 
         g.finalize()?;
         Ok(g)
@@ -1163,55 +1455,61 @@ fn check_and_extract_map_input_parameters(
     programmer_id: u64,
 ) -> Result<(u64, ColumnHeaderTypes)> {
     if argument_types.len() != 3 {
-        panic!("This map should have 3 input types");
+        return Err(runtime_error!("This map should have 3 input types"));
     }
     let shares_t = argument_types[0].clone();
-    if !shares_t.is_tuple() {
-        panic!("Input shares must be a tuple of 2 elements");
+    if !is_type_shared(&shares_t) {
+        return Err(runtime_error!("Input shares must be a tuple of 2 elements"));
     }
     let shares_type_vector = get_types_vector(shares_t)?;
     if shares_type_vector.len() != 2 {
-        panic!("There should be only 2 shares in the input tuple");
+        return Err(runtime_error!(
+            "There should be only 2 shares in the input tuple"
+        ));
     }
     let share_t = (*shares_type_vector[0]).clone();
     if share_t != (*shares_type_vector[1]).clone() {
-        panic!("Input shares must be of the same type");
+        return Err(runtime_error!("Input shares must be of the same type"));
     }
     if !share_t.is_named_tuple() {
-        panic!("Each share must be a named tuple");
+        return Err(runtime_error!("Each share must be a named tuple"));
     }
     let column_header_types = get_named_types(share_t);
     let mut num_entries = 0;
     for v in &column_header_types {
         let column_type = v.1.clone();
         if !column_type.is_array() {
-            panic!("Column must be an array");
+            return Err(runtime_error!("Column must be an array"));
         }
         let column_shape = column_type.get_dimensions();
         if num_entries == 0 {
             num_entries = column_shape[0];
         }
         if num_entries != column_shape[0] {
-            panic!("Number of entries should be the same in all columns");
+            return Err(runtime_error!(
+                "Number of entries should be the same in all columns"
+            ));
         }
     }
 
     let prf_t = argument_types[2].clone();
     let expected_key_type = tuple_type(vec![array_type(vec![KEY_LENGTH], BIT); 3]);
     if prf_t != expected_key_type {
-        panic!(
+        return Err(runtime_error!(
             "PRF key type should be a tuple of 3 binary arrays of length {}",
             KEY_LENGTH
-        );
+        ));
     }
     if sender_id >= PARTIES as u64 {
-        panic!("Sender ID is incorrect");
+        return Err(runtime_error!("Sender ID is incorrect"));
     }
     if programmer_id >= PARTIES as u64 {
-        panic!("Programmer ID is incorrect");
+        return Err(runtime_error!("Programmer ID is incorrect"));
     }
     if sender_id == programmer_id {
-        panic!("Programmer ID should be different from the Sender ID");
+        return Err(runtime_error!(
+            "Programmer ID should be different from the Sender ID"
+        ));
     }
 
     Ok((num_entries, column_header_types))
@@ -1276,10 +1574,12 @@ impl CustomOperationBody for PermutationMPC {
         // Check that the permutation map is of the correct form
         let permutation_t = argument_types[1].clone();
         if !permutation_t.is_array() {
-            panic!("Permutation map must be an array");
+            return Err(runtime_error!("Permutation map must be an array"));
         }
         if permutation_t.get_shape()[0] > num_entries {
-            panic!("Permutation map length can't be bigger than the number of entries");
+            return Err(runtime_error!(
+                "Permutation map length can't be bigger than the number of entries"
+            ));
         }
 
         let shares_t = argument_types[0].clone();
@@ -1455,26 +1755,32 @@ impl CustomOperationBody for DuplicationMPC {
             let dup_indices_t = dup_map_types[0].clone();
             let dup_bits_t = dup_map_types[1].clone();
             if !dup_indices_t.is_array() || !dup_bits_t.is_array() {
-                panic!("Duplication map should contain two arrays");
+                return Err(runtime_error!("Duplication map should contain two arrays"));
             }
             if dup_indices_t.get_scalar_type() != UINT64 {
-                panic!("Duplication map indices should be of the UINT64 type");
+                return Err(runtime_error!(
+                    "Duplication map indices should be of the UINT64 type"
+                ));
             }
             if dup_bits_t.get_scalar_type() != BIT {
-                panic!("Duplication map bits should be of the BIT type");
+                return Err(runtime_error!(
+                    "Duplication map bits should be of the BIT type"
+                ));
             }
             let num_dup_indices = dup_indices_t.get_shape()[0];
             let num_dup_bits = dup_bits_t.get_shape()[0];
             if num_dup_indices != num_entries {
-                panic!(
+                return Err(runtime_error!(
                     "Duplication map indices should be of length equal to the number of entries"
-                );
+                ));
             }
             if num_dup_bits != num_entries {
-                panic!("Duplication map bits should be of length equal to the number of entries");
+                return Err(runtime_error!(
+                    "Duplication map bits should be of length equal to the number of entries"
+                ));
             }
         } else {
-            panic!("Duplication map should be a tuple");
+            return Err(runtime_error!("Duplication map should be a tuple"));
         }
 
         let sender_id = self.sender_id;
@@ -1549,16 +1855,16 @@ impl CustomOperationBody for DuplicationMPC {
             // The result is assigned to B_r[0] and sent to Receiver.
             let entry0 = sender_column.get(vec![0])?;
             let b0_p = prf_key_s_p.prf(0, entry0.get_type()?)?;
+            let mut first_entry_shape = column_shape.clone();
+            first_entry_shape[0] = 1;
             let b0_r = entry0
                 .subtract(b0_p.clone())?
+                .reshape(array_type(first_entry_shape, column_t.get_scalar_type()))?
                 .nop()?
                 .add_annotation(NodeAnnotation::Send(sender_id, receiver_id))?;
 
             // Merge B_r[0] and B_r[i] for i in [1,num_entries]
-            let b_r = g
-                .create_tuple(vec![b0_r.clone(), bi_r.array_to_vector()?])?
-                .reshape(vector_type(num_entries, b0_r.get_type()?))?
-                .vector_to_array()?;
+            let b_r = g.concatenate(vec![b0_r.clone(), bi_r], 0)?;
 
             // Sender and programmer generate a random mask phi of the duplication map
             let mut phi = prf_key_s_p.prf(0, array_type(vec![num_entries - 1], BIT))?;
@@ -1713,17 +2019,19 @@ impl CustomOperationBody for SwitchingMPC {
         // An additional check that the switching map is of the correct form
         let switch_map_t = argument_types[1].clone();
         if !switch_map_t.is_array() {
-            panic!("Switching map should be an array");
+            return Err(runtime_error!("Switching map should be an array"));
         }
         if switch_map_t.get_scalar_type() != UINT64 {
-            panic!("Switching map indices should be of the UINT64 type");
+            return Err(runtime_error!(
+                "Switching map indices should be of the UINT64 type"
+            ));
         }
         let num_switch_indices = switch_map_t.get_shape()[0];
         if num_switch_indices > num_entries {
-            panic!(
+            return Err(runtime_error!(
                 "Switching map cannot have more than {} indices",
                 num_entries
-            );
+            ));
         }
 
         let receiver_id = get_receiver_id(self.sender_id, self.programmer_id);
@@ -1799,7 +2107,9 @@ mod tests {
     use crate::data_types::{scalar_type, ArrayShape, INT16, INT32, INT64};
     use crate::data_values::Value;
     use crate::evaluators::{evaluate_simple_evaluator, random_evaluate};
-    use crate::graphs::create_context;
+
+    use crate::graphs::util::simple_context;
+    use crate::graphs::Operation;
     use crate::inline::inline_ops::{inline_operations, InlineConfig, InlineMode};
     use crate::mpc::mpc_compiler::{generate_prf_key_triple, prepare_for_mpc_evaluation, IOStatus};
     use crate::mpc::mpc_equivalence_class::{
@@ -1813,15 +2123,12 @@ mod tests {
         hash_shape: ArrayShape,
         inputs: Vec<Value>,
     ) -> Result<Vec<u64>> {
-        let c = create_context()?;
-        let g = c.create_graph()?;
-        let i = g.input(array_type(input_shape.clone(), BIT))?;
-        let hash_matrix = g.input(array_type(hash_shape.clone(), BIT))?;
-        let o = g.custom_op(CustomOperation::new(SimpleHash), vec![i, hash_matrix])?;
-        g.set_output_node(o)?;
-        g.finalize()?;
-        c.set_main_graph(g.clone())?;
-        c.finalize()?;
+        let c = simple_context(|g| {
+            let i = g.input(array_type(input_shape.clone(), BIT))?;
+            let hash_matrix = g.input(array_type(hash_shape.clone(), BIT))?;
+            g.custom_op(CustomOperation::new(SimpleHash), vec![i, hash_matrix])
+        })?;
+
         let mapped_c = run_instantiation_pass(c)?.context;
         let result_value = random_evaluate(mapped_c.get_main_graph()?, inputs)?;
         let mut result_shape = input_shape[0..input_shape.len() - 1].to_vec();
@@ -1831,115 +2138,108 @@ mod tests {
     }
 
     fn simple_hash_helper_fails(input_t: Type, hash_t: Type) -> Result<()> {
-        let c = create_context()?;
-        let g = c.create_graph()?;
-        let i = g.input(input_t)?;
-        let hash_matrix = g.input(hash_t)?;
-        let o = g.custom_op(CustomOperation::new(SimpleHash), vec![i, hash_matrix])?;
-        g.set_output_node(o)?;
-        g.finalize()?;
-        c.set_main_graph(g.clone())?;
-        c.finalize()?;
+        let c = simple_context(|g| {
+            let i = g.input(input_t)?;
+            let hash_matrix = g.input(hash_t)?;
+            g.custom_op(CustomOperation::new(SimpleHash), vec![i, hash_matrix])
+        })?;
         run_instantiation_pass(c)?;
         Ok(())
     }
 
     #[test]
-    fn test_simple_hash() {
-        || -> Result<()> {
-            // no collision
-            {
-                // [2,3]-array
-                let input = Value::from_flattened_array(&[1, 0, 1, 0, 0, 1], BIT)?;
-                // [3,2,3]-array
-                let hash_matrix = Value::from_flattened_array(
-                    &[1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 0, 0, 1],
-                    BIT,
-                )?;
-                // output [3,2]-array
-                let expected = vec![0, 1, 0, 2, 3, 2];
-                assert_eq!(
-                    simple_hash_helper(vec![2, 3], vec![3, 2, 3], vec![input, hash_matrix])?,
-                    expected
-                );
-            }
-            // collisions
-            {
-                // [2,3]-array
-                let input = Value::from_flattened_array(&[1, 0, 1, 0, 0, 0], BIT)?;
-                // [3,2,3]-array
-                let hash_matrix = Value::from_flattened_array(
-                    &[1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 0, 0, 1],
-                    BIT,
-                )?;
-                // output [3,2]-array
-                let expected = vec![0, 0, 0, 0, 3, 0];
-                assert_eq!(
-                    simple_hash_helper(vec![2, 3], vec![3, 2, 3], vec![input, hash_matrix])?,
-                    expected
-                );
-            }
-            {
-                // [2,2,2]-array
-                let input = Value::from_flattened_array(&[1, 0, 0, 0, 1, 1, 0, 1], BIT)?;
-                // [2,3,2]-array
-                let hash_matrix =
-                    Value::from_flattened_array(&[1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1], BIT)?;
-                // output [2,2,2]-array
-                let expected = vec![3, 0, 2, 0, 7, 4, 7, 5];
-                assert_eq!(
-                    simple_hash_helper(vec![2, 2, 2], vec![2, 3, 2], vec![input, hash_matrix])?,
-                    expected
-                );
-            }
-            // malformed input
-            {
-                let input_t = scalar_type(BIT);
-                let hash_t = array_type(vec![2, 3, 4], BIT);
-                assert!(simple_hash_helper_fails(input_t, hash_t).is_err());
-            }
-            {
-                let input_t = array_type(vec![5, 4], UINT64);
-                let hash_t = array_type(vec![2, 3, 4], BIT);
-                assert!(simple_hash_helper_fails(input_t, hash_t).is_err());
-            }
-            {
-                let input_t = array_type(vec![4], BIT);
-                let hash_t = array_type(vec![2, 3, 4], BIT);
-                assert!(simple_hash_helper_fails(input_t, hash_t).is_err());
-            }
-            {
-                let input_t = array_type(vec![5, 4], BIT);
-                let hash_t = scalar_type(BIT);
-                assert!(simple_hash_helper_fails(input_t, hash_t).is_err());
-            }
-            {
-                let input_t = array_type(vec![5, 4], BIT);
-                let hash_t = array_type(vec![3, 4], BIT);
-                assert!(simple_hash_helper_fails(input_t, hash_t).is_err());
-            }
-            {
-                let input_t = array_type(vec![5, 4], BIT);
-                let hash_t = array_type(vec![2, 3, 4], UINT64);
-                assert!(simple_hash_helper_fails(input_t, hash_t).is_err());
-            }
-            {
-                let input_t = array_type(vec![5, 4], BIT);
-                let hash_t = array_type(vec![2, 64, 4], BIT);
-                assert!(simple_hash_helper_fails(input_t, hash_t).is_err());
-            }
-            {
-                let input_t = array_type(vec![5, 4], BIT);
-                let hash_t = array_type(vec![2, 3, 5], BIT);
-                assert!(simple_hash_helper_fails(input_t, hash_t).is_err());
-            }
-            Ok(())
-        }()
-        .unwrap();
+    fn test_simple_hash() -> Result<()> {
+        // no collision
+        {
+            // [2,3]-array
+            let input = Value::from_flattened_array(&[1, 0, 1, 0, 0, 1], BIT)?;
+            // [3,2,3]-array
+            let hash_matrix = Value::from_flattened_array(
+                &[1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 0, 0, 1],
+                BIT,
+            )?;
+            // output [3,2]-array
+            let expected = vec![0, 1, 0, 2, 3, 2];
+            assert_eq!(
+                simple_hash_helper(vec![2, 3], vec![3, 2, 3], vec![input, hash_matrix])?,
+                expected
+            );
+        }
+        // collisions
+        {
+            // [2,3]-array
+            let input = Value::from_flattened_array(&[1, 0, 1, 0, 0, 0], BIT)?;
+            // [3,2,3]-array
+            let hash_matrix = Value::from_flattened_array(
+                &[1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 0, 0, 1],
+                BIT,
+            )?;
+            // output [3,2]-array
+            let expected = vec![0, 0, 0, 0, 3, 0];
+            assert_eq!(
+                simple_hash_helper(vec![2, 3], vec![3, 2, 3], vec![input, hash_matrix])?,
+                expected
+            );
+        }
+        {
+            // [2,2,2]-array
+            let input = Value::from_flattened_array(&[1, 0, 0, 0, 1, 1, 0, 1], BIT)?;
+            // [2,3,2]-array
+            let hash_matrix =
+                Value::from_flattened_array(&[1, 0, 1, 0, 0, 1, 0, 1, 1, 0, 0, 1], BIT)?;
+            // output [2,2,2]-array
+            let expected = vec![3, 0, 2, 0, 7, 4, 7, 5];
+            assert_eq!(
+                simple_hash_helper(vec![2, 2, 2], vec![2, 3, 2], vec![input, hash_matrix])?,
+                expected
+            );
+        }
+        // malformed input
+        {
+            let input_t = scalar_type(BIT);
+            let hash_t = array_type(vec![2, 3, 4], BIT);
+            assert!(simple_hash_helper_fails(input_t, hash_t).is_err());
+        }
+        {
+            let input_t = array_type(vec![5, 4], UINT64);
+            let hash_t = array_type(vec![2, 3, 4], BIT);
+            assert!(simple_hash_helper_fails(input_t, hash_t).is_err());
+        }
+        {
+            let input_t = array_type(vec![4], BIT);
+            let hash_t = array_type(vec![2, 3, 4], BIT);
+            assert!(simple_hash_helper_fails(input_t, hash_t).is_err());
+        }
+        {
+            let input_t = array_type(vec![5, 4], BIT);
+            let hash_t = scalar_type(BIT);
+            assert!(simple_hash_helper_fails(input_t, hash_t).is_err());
+        }
+        {
+            let input_t = array_type(vec![5, 4], BIT);
+            let hash_t = array_type(vec![3, 4], BIT);
+            assert!(simple_hash_helper_fails(input_t, hash_t).is_err());
+        }
+        {
+            let input_t = array_type(vec![5, 4], BIT);
+            let hash_t = array_type(vec![2, 3, 4], UINT64);
+            assert!(simple_hash_helper_fails(input_t, hash_t).is_err());
+        }
+        {
+            let input_t = array_type(vec![5, 4], BIT);
+            let hash_t = array_type(vec![2, 64, 4], BIT);
+            assert!(simple_hash_helper_fails(input_t, hash_t).is_err());
+        }
+        {
+            let input_t = array_type(vec![5, 4], BIT);
+            let hash_t = array_type(vec![2, 3, 5], BIT);
+            assert!(simple_hash_helper_fails(input_t, hash_t).is_err());
+        }
+        Ok(())
     }
 
     #[test]
-    fn test_permutation() {
+    fn test_permutation() -> Result<()> {
         let data_helper = |a_type: Type,
                            b_type: Type,
                            a_values: &[u64],
@@ -1950,74 +2250,69 @@ mod tests {
          -> Result<()> {
             // test correct inputs
             let roles_helper = |sender_id: u64, programmer_id: u64| -> Result<()> {
-                let c = create_context()?;
+                let c = simple_context(|g| {
+                    let column_a = g.input(a_type.clone())?;
+                    let column_b = g.input(b_type.clone())?;
 
-                let g = c.create_graph()?;
+                    // Generate PRF keys
+                    let key_t = array_type(vec![KEY_LENGTH], BIT);
+                    let keys_vec = generate_prf_key_triple(g.clone())?;
+                    let keys = g.create_tuple(keys_vec)?;
+                    // PRF key known only to Sender.
+                    let key_s = g.random(key_t.clone())?;
+                    // Split input into two shares between Sender and Programmer
+                    // Sender generates Programmer's shares
+                    let column_a_programmer_share = g.prf(key_s.clone(), 0, a_type.clone())?;
+                    let column_b_programmer_share = g.prf(key_s.clone(), 0, b_type.clone())?;
+                    // Sender computes its shares
+                    let column_a_sender_share =
+                        column_a.subtract(column_a_programmer_share.clone())?;
+                    let column_b_sender_share =
+                        column_b.subtract(column_b_programmer_share.clone())?;
 
-                let column_a = g.input(a_type.clone())?;
-                let column_b = g.input(b_type.clone())?;
+                    // Sender packs shares in named tuples and send one of them to Programmer
+                    let programmer_share = g
+                        .create_named_tuple(vec![
+                            ("a".to_owned(), column_a_programmer_share),
+                            ("b".to_owned(), column_b_programmer_share),
+                        ])?
+                        .nop()?
+                        .add_annotation(NodeAnnotation::Send(sender_id, programmer_id))?;
+                    let sender_share = g.create_named_tuple(vec![
+                        ("a".to_owned(), column_a_sender_share),
+                        ("b".to_owned(), column_b_sender_share),
+                    ])?;
 
-                // Generate PRF keys
-                let key_t = array_type(vec![KEY_LENGTH], BIT);
-                let keys_vec = generate_prf_key_triple(g.clone())?;
-                let keys = g.create_tuple(keys_vec)?;
-                // PRF key known only to Sender.
-                let key_s = g.random(key_t.clone())?;
-                // Split input into two shares between Sender and Programmer
-                // Sender generates Programmer's shares
-                let column_a_programmer_share = g.prf(key_s.clone(), 0, a_type.clone())?;
-                let column_b_programmer_share = g.prf(key_s.clone(), 0, b_type.clone())?;
-                // Sender computes its shares
-                let column_a_sender_share = column_a.subtract(column_a_programmer_share.clone())?;
-                let column_b_sender_share = column_b.subtract(column_b_programmer_share.clone())?;
+                    // Pack shares together
+                    let shares = g.create_tuple(vec![programmer_share, sender_share])?;
 
-                // Sender packs shares in named tuples and send one of them to Programmer
-                let programmer_share = g
-                    .create_named_tuple(vec![
-                        ("a".to_owned(), column_a_programmer_share),
-                        ("b".to_owned(), column_b_programmer_share),
-                    ])?
-                    .nop()?
-                    .add_annotation(NodeAnnotation::Send(sender_id, programmer_id))?;
-                let sender_share = g.create_named_tuple(vec![
-                    ("a".to_owned(), column_a_sender_share),
-                    ("b".to_owned(), column_b_sender_share),
-                ])?;
+                    // Permutation input
+                    let permutation =
+                        g.input(array_type(vec![permutation_values.len() as u64], UINT64))?;
 
-                // Pack shares together
-                let shares = g.create_tuple(vec![programmer_share, sender_share])?;
+                    // Permuted shares
+                    let permuted_shares = g.custom_op(
+                        CustomOperation::new(PermutationMPC {
+                            sender_id,
+                            programmer_id,
+                        }),
+                        vec![shares, permutation, keys],
+                    )?;
 
-                // Permutation input
-                let permutation =
-                    g.input(array_type(vec![permutation_values.len() as u64], UINT64))?;
+                    // Sum permuted shares
+                    let receiver_permuted_share = permuted_shares.tuple_get(1)?;
+                    let programmer_permuted_share = permuted_shares.tuple_get(0)?;
 
-                // Permuted shares
-                let permuted_shares = g.custom_op(
-                    CustomOperation::new(PermutationMPC {
-                        sender_id,
-                        programmer_id,
-                    }),
-                    vec![shares, permutation, keys],
-                )?;
+                    let permuted_column_a = receiver_permuted_share
+                        .named_tuple_get("a".to_owned())?
+                        .add(programmer_permuted_share.named_tuple_get("a".to_owned())?)?;
+                    let permuted_column_b = receiver_permuted_share
+                        .named_tuple_get("b".to_owned())?
+                        .add(programmer_permuted_share.named_tuple_get("b".to_owned())?)?;
 
-                // Sum permuted shares
-                let receiver_permuted_share = permuted_shares.tuple_get(1)?;
-                let programmer_permuted_share = permuted_shares.tuple_get(0)?;
-
-                let permuted_column_a = receiver_permuted_share
-                    .named_tuple_get("a".to_owned())?
-                    .add(programmer_permuted_share.named_tuple_get("a".to_owned())?)?;
-                let permuted_column_b = receiver_permuted_share
-                    .named_tuple_get("b".to_owned())?
-                    .add(programmer_permuted_share.named_tuple_get("b".to_owned())?)?;
-
-                // Combine permuted columns
-                g.create_tuple(vec![permuted_column_a, permuted_column_b])?
-                    .set_as_output()?;
-
-                g.finalize()?;
-                g.set_as_main()?;
-                c.finalize()?;
+                    // Combine permuted columns
+                    g.create_tuple(vec![permuted_column_a, permuted_column_b])
+                })?;
 
                 let instantiated_c = run_instantiation_pass(c)?.context;
                 let inlined_c = inline_operations(
@@ -2225,8 +2520,7 @@ mod tests {
             &[1, 0, 3, 4, 2],
             &[2, 1, 4, 5, 3],
             &[20, 10, 40, 50, 30],
-        )
-        .unwrap();
+        )?;
 
         data_helper(
             array_type(vec![5], INT32),
@@ -2236,8 +2530,7 @@ mod tests {
             &[0, 1, 2],
             &[1, 2, 3],
             &[10, 20, 30],
-        )
-        .unwrap();
+        )?;
 
         data_helper(
             array_type(vec![5, 2], BIT),
@@ -2247,12 +2540,13 @@ mod tests {
             &[0, 2, 4, 1],
             &[0, 0, 1, 0, 0, 1, 0, 1],
             &[10, 30, 50, 20],
-        )
-        .unwrap();
+        )?;
+
+        Ok(())
     }
 
     #[test]
-    fn test_duplication() {
+    fn test_duplication() -> Result<()> {
         let data_helper = |a_type: Type,
                            b_type: Type,
                            a_values: &[u64],
@@ -2263,79 +2557,74 @@ mod tests {
          -> Result<()> {
             // test correct inputs
             let roles_helper = |sender_id: u64, programmer_id: u64| -> Result<()> {
-                let c = create_context()?;
-
-                let g = c.create_graph()?;
-
-                let column_a = g.input(a_type.clone())?;
-                let column_b = g.input(b_type.clone())?;
-
-                // Generate PRF keys
-                let key_t = array_type(vec![KEY_LENGTH], BIT);
-                let keys_vec = generate_prf_key_triple(g.clone())?;
-                let keys = g.create_tuple(keys_vec)?;
-                // PRF key known only to Sender.
-                let key_s = g.random(key_t.clone())?;
-                // Split input into two shares between Sender and Programmer
-                // Sender generates Programmer's shares
-                let column_a_programmer_share = g.prf(key_s.clone(), 0, a_type.clone())?;
-                let column_b_programmer_share = g.prf(key_s.clone(), 0, b_type.clone())?;
-                // Sender computes its shares
-                let column_a_sender_share = column_a.subtract(column_a_programmer_share.clone())?;
-                let column_b_sender_share = column_b.subtract(column_b_programmer_share.clone())?;
-
-                // Sender packs shares in named tuples and send one of them to Programmer
-                let programmer_share = g
-                    .create_named_tuple(vec![
-                        ("a".to_owned(), column_a_programmer_share),
-                        ("b".to_owned(), column_b_programmer_share),
-                    ])?
-                    .nop()?
-                    .add_annotation(NodeAnnotation::Send(sender_id, programmer_id))?;
-                let sender_share = g.create_named_tuple(vec![
-                    ("a".to_owned(), column_a_sender_share),
-                    ("b".to_owned(), column_b_sender_share),
-                ])?;
-
-                // Pack shares together
-                let shares = g.create_tuple(vec![programmer_share, sender_share])?;
-
-                // Duplication map input
                 let num_entries = duplication_indices.len();
-                let duplication_map = g.input(tuple_type(vec![
-                    array_type(vec![num_entries as u64], UINT64),
-                    array_type(vec![num_entries as u64], BIT),
-                ]))?;
+                let c = simple_context(|g| {
+                    let column_a = g.input(a_type.clone())?;
+                    let column_b = g.input(b_type.clone())?;
 
-                // Duplicated shares
-                let duplicated_shares = g
-                    .custom_op(
-                        CustomOperation::new(DuplicationMPC {
-                            sender_id,
-                            programmer_id,
-                        }),
-                        vec![shares, duplication_map, keys],
-                    )?
-                    .set_name("Duplication output")?;
+                    // Generate PRF keys
+                    let key_t = array_type(vec![KEY_LENGTH], BIT);
+                    let keys_vec = generate_prf_key_triple(g.clone())?;
+                    let keys = g.create_tuple(keys_vec)?;
+                    // PRF key known only to Sender.
+                    let key_s = g.random(key_t.clone())?;
+                    // Split input into two shares between Sender and Programmer
+                    // Sender generates Programmer's shares
+                    let column_a_programmer_share = g.prf(key_s.clone(), 0, a_type.clone())?;
+                    let column_b_programmer_share = g.prf(key_s.clone(), 0, b_type.clone())?;
+                    // Sender computes its shares
+                    let column_a_sender_share =
+                        column_a.subtract(column_a_programmer_share.clone())?;
+                    let column_b_sender_share =
+                        column_b.subtract(column_b_programmer_share.clone())?;
 
-                // Sum duplicated shares
-                let receiver_duplicated_share = duplicated_shares.tuple_get(1)?;
-                let programmer_duplicated_share = duplicated_shares.tuple_get(0)?;
+                    // Sender packs shares in named tuples and send one of them to Programmer
+                    let programmer_share = g
+                        .create_named_tuple(vec![
+                            ("a".to_owned(), column_a_programmer_share),
+                            ("b".to_owned(), column_b_programmer_share),
+                        ])?
+                        .nop()?
+                        .add_annotation(NodeAnnotation::Send(sender_id, programmer_id))?;
+                    let sender_share = g.create_named_tuple(vec![
+                        ("a".to_owned(), column_a_sender_share),
+                        ("b".to_owned(), column_b_sender_share),
+                    ])?;
 
-                let duplicated_column_a = receiver_duplicated_share
-                    .named_tuple_get("a".to_owned())?
-                    .add(programmer_duplicated_share.named_tuple_get("a".to_owned())?)?;
-                let duplicated_column_b = receiver_duplicated_share
-                    .named_tuple_get("b".to_owned())?
-                    .add(programmer_duplicated_share.named_tuple_get("b".to_owned())?)?;
+                    // Pack shares together
+                    let shares = g.create_tuple(vec![programmer_share, sender_share])?;
 
-                // Combine duplicated columns
-                g.create_tuple(vec![duplicated_column_a, duplicated_column_b])?
-                    .set_as_output()?;
+                    // Duplication map input
+                    let duplication_map = g.input(tuple_type(vec![
+                        array_type(vec![num_entries as u64], UINT64),
+                        array_type(vec![num_entries as u64], BIT),
+                    ]))?;
 
-                g.finalize()?;
-                g.set_as_main()?;
-                c.finalize()?;
+                    // Duplicated shares
+                    let duplicated_shares = g
+                        .custom_op(
+                            CustomOperation::new(DuplicationMPC {
+                                sender_id,
+                                programmer_id,
+                            }),
+                            vec![shares, duplication_map, keys],
+                        )?
+                        .set_name("Duplication output")?;
+
+                    // Sum duplicated shares
+                    let receiver_duplicated_share = duplicated_shares.tuple_get(1)?;
+                    let programmer_duplicated_share = duplicated_shares.tuple_get(0)?;
+
+                    let duplicated_column_a = receiver_duplicated_share
+                        .named_tuple_get("a".to_owned())?
+                        .add(programmer_duplicated_share.named_tuple_get("a".to_owned())?)?;
+                    let duplicated_column_b = receiver_duplicated_share
+                        .named_tuple_get("b".to_owned())?
+                        .add(programmer_duplicated_share.named_tuple_get("b".to_owned())?)?;
+
+                    // Combine duplicated columns
+                    g.create_tuple(vec![duplicated_column_a, duplicated_column_b])
+                })?;
 
                 let instantiated_c = run_instantiation_pass(c)?.context;
                 let inlined_c = inline_operations(
@@ -2455,19 +2744,10 @@ mod tests {
                         share_r_sp.clone(),
                         // The result is assigned to B_r[0].
                         private_class(),
+                        private_class(),
                         // B_r is sent to Receiver
                         share_p_rs.clone(),
                         // Merge B_r[0] and B_r[i] for i in [1,num_entries]
-                        // B_r[i] to vector
-                        vector_class(vec![share_p_rs.clone(); num_entries - 1]),
-                        // B_r[0] and B_r[i] for i in [1,num_entries]
-                        vector_class(vec![
-                            share_p_rs.clone(),
-                            vector_class(vec![share_p_rs.clone(); num_entries - 1]),
-                        ]),
-                        // Reshape to B_r[i] for i in [0,num_entries]
-                        vector_class(vec![share_p_rs.clone(); num_entries]),
-                        // Vector to array B_r[i]
                         share_p_rs.clone(),
                         // Sender and Programmer generate a random mask phi of the duplication map
                         share_r_sp.clone(),
@@ -2649,8 +2929,7 @@ mod tests {
             &[0, 1, 2, 3, 4],
             &[1, 2, 3, 4, 5],
             &[10, 20, 30, 40, 50],
-        )
-        .unwrap();
+        )?;
 
         data_helper(
             array_type(vec![5], INT32),
@@ -2660,8 +2939,7 @@ mod tests {
             &[0, 1, 1, 3, 4],
             &[1, 2, 2, 4, 5],
             &[10, 20, 20, 40, 50],
-        )
-        .unwrap();
+        )?;
 
         data_helper(
             array_type(vec![5], INT32),
@@ -2671,8 +2949,7 @@ mod tests {
             &[0, 0, 0, 0, 0],
             &[1, 1, 1, 1, 1],
             &[10, 10, 10, 10, 10],
-        )
-        .unwrap();
+        )?;
 
         data_helper(
             array_type(vec![5, 2], INT32),
@@ -2682,48 +2959,61 @@ mod tests {
             &[0, 1, 1, 3, 4],
             &[1, 2, 3, 4, 3, 4, 7, 8, 9, 10],
             &[10, 20, 20, 40, 50],
-        )
-        .unwrap();
+        )?;
+
+        Ok(())
     }
 
-    fn psi_helper(
+    fn evaluate_join_helper(
+        c: Context,
+        input_values: Vec<Value>,
+        expected: Vec<(String, Vec<u64>)>,
+        prng_seed: Option<[u8; SEED_SIZE]>,
+        num_trials: u64,
+    ) -> Result<()> {
+        let inlined_g = c.get_main_graph()?;
+        for _ in 0..num_trials {
+            let result =
+                evaluate_simple_evaluator(inlined_g.clone(), input_values.clone(), prng_seed)?;
+
+            let result_type_vec = get_named_types(inlined_g.get_output_node()?.get_type()?);
+
+            let result_columns = result.to_vector()?;
+            assert_eq!(result_columns.len(), expected.len());
+            for (i, (expected_header, expected_column)) in expected.iter().enumerate() {
+                let result_array =
+                    result_columns[i].to_flattened_array_u64(result_type_vec[i].1.clone())?;
+                assert_eq!(result_type_vec[i].0, *expected_header);
+                assert_eq!(result_array, *expected_column);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn join_context(
         types_x: Vec<(String, Type)>,
         types_y: Vec<(String, Type)>,
-        headers: Vec<(String, String)>,
-        values_x: Vec<Vec<u64>>,
-        values_y: Vec<Vec<u64>>,
-        expected: Vec<(String, Vec<u64>)>,
+        op: Operation,
         is_x_private: bool,
         is_y_private: bool,
-    ) -> Result<()> {
+    ) -> Result<Context> {
         // test correct inputs
-        let c = create_context()?;
+        let c = simple_context(|g| {
+            let compose_set_shares = |types: &[(String, Type)]| -> Result<Node> {
+                let mut columns = vec![];
+                for (header, t) in types {
+                    let input_column = g.input((*t).clone())?;
 
-        let g = c.create_graph()?;
+                    columns.push(((*header).clone(), input_column));
+                }
+                g.create_named_tuple(columns)
+            };
 
-        let compose_set_shares = |types: &[(String, Type)]| -> Result<Node> {
-            let mut columns = vec![];
-            for (header, t) in types {
-                let input_column = g.input((*t).clone())?;
-
-                columns.push(((*header).clone(), input_column));
-            }
-            g.create_named_tuple(columns)
-        };
-
-        let data_x = compose_set_shares(&types_x)?;
-        let data_y = compose_set_shares(&types_y)?;
-
-        let mut headers_map = HashMap::new();
-        for (h0, h1) in headers {
-            headers_map.insert(h0, h1);
-        }
-        let psi = data_x.set_intersection(data_y, headers_map)?;
-
-        psi.set_as_output()?;
-        g.finalize()?;
-        g.set_as_main()?;
-        c.finalize()?;
+            let data_x = compose_set_shares(&types_x)?;
+            let data_y = compose_set_shares(&types_y)?;
+            g.add_node(vec![data_x, data_y], vec![], op)
+        })?;
 
         let mut input_parties = vec![];
         if is_x_private {
@@ -2737,7 +3027,7 @@ mod tests {
             input_parties.extend(vec![IOStatus::Public; types_y.len()]);
         }
 
-        let inlined_c = prepare_for_mpc_evaluation(
+        prepare_for_mpc_evaluation(
             c,
             vec![input_parties],
             vec![vec![IOStatus::Party(0)]],
@@ -2745,8 +3035,15 @@ mod tests {
                 default_mode: InlineMode::DepthOptimized(DepthOptimizationLevel::Default),
                 ..Default::default()
             },
-        )?;
+        )
+    }
 
+    fn build_join_columns(
+        types_x: Vec<(String, Type)>,
+        types_y: Vec<(String, Type)>,
+        values_x: Vec<Vec<u64>>,
+        values_y: Vec<Vec<u64>>,
+    ) -> Result<Vec<Value>> {
         // Generate input columns
         let mut input_values = vec![];
         for (i, column_value) in values_x.iter().enumerate() {
@@ -2761,26 +3058,57 @@ mod tests {
                 types_y[i].1.get_scalar_type(),
             )?);
         }
+        Ok(input_values)
+    }
 
-        let inlined_g = inlined_c.get_main_graph()?;
+    fn deterministic_join_helper(
+        types_x: Vec<(String, Type)>,
+        types_y: Vec<(String, Type)>,
+        op: Operation,
+        values_x: Vec<Vec<u64>>,
+        values_y: Vec<Vec<u64>>,
+        expected: Vec<(String, Vec<u64>)>,
+        is_x_private: bool,
+        is_y_private: bool,
+    ) -> Result<()> {
+        let c = join_context(
+            types_x.clone(),
+            types_y.clone(),
+            op,
+            is_x_private,
+            is_y_private,
+        )?;
+        let input_values = build_join_columns(types_x, types_y, values_x, values_y)?;
+
         let prng_seed: [u8; SEED_SIZE] = core::array::from_fn(|i| i as u8);
-        let result = evaluate_simple_evaluator(inlined_g.clone(), input_values, Some(prng_seed))?;
+        evaluate_join_helper(c, input_values, expected, Some(prng_seed), 1)
+    }
 
-        let result_type_vec = get_named_types(inlined_g.get_output_node()?.get_type()?);
+    fn probabilistic_join_helper(
+        types_x: Vec<(String, Type)>,
+        types_y: Vec<(String, Type)>,
+        op: Operation,
+        values_x: Vec<Vec<u64>>,
+        values_y: Vec<Vec<u64>>,
+        expected: Vec<(String, Vec<u64>)>,
+        is_x_private: bool,
+        is_y_private: bool,
+        num_trials: u64,
+    ) -> Result<()> {
+        let c = join_context(
+            types_x.clone(),
+            types_y.clone(),
+            op,
+            is_x_private,
+            is_y_private,
+        )?;
+        let input_values = build_join_columns(types_x, types_y, values_x, values_y)?;
 
-        let result_columns = result.to_vector()?;
-        for i in 0..result_type_vec.len() {
-            let result_array =
-                result_columns[i].to_flattened_array_u64(result_type_vec[i].1.clone())?;
-            assert_eq!(result_type_vec[i].0, expected[i].0);
-            assert_eq!(result_array, expected[i].1);
-        }
-
-        Ok(())
+        evaluate_join_helper(c, input_values, expected, None, num_trials)
     }
 
     #[test]
-    fn test_private_psi() {
+    fn test_private_psi() -> Result<()> {
         let data_helper = |types_x: Vec<(String, Type)>,
                            types_y: Vec<(String, Type)>,
                            headers: Vec<(String, String)>,
@@ -2788,8 +3116,19 @@ mod tests {
                            values_y: Vec<Vec<u64>>,
                            expected: Vec<(String, Vec<u64>)>|
          -> Result<()> {
-            psi_helper(
-                types_x, types_y, headers, values_x, values_y, expected, true, true,
+            let mut headers_map = HashMap::new();
+            for (h0, h1) in headers {
+                headers_map.insert(h0, h1);
+            }
+            deterministic_join_helper(
+                types_x,
+                types_y,
+                Operation::Join(JoinType::Inner, headers_map),
+                values_x,
+                values_y,
+                expected,
+                true,
+                true,
             )
         };
         data_helper(
@@ -2810,7 +3149,7 @@ mod tests {
                 vec![10, 20, 30, 40, 50],
             ],
             vec![
-                vec![1, 1, 1, 1, 1],
+                vec![1, 1, 1, 1, 1, 1],
                 vec![30, 21, 40, 41, 51, 61],
                 vec![300, 210, 400, 410, 510, 610],
             ],
@@ -2820,9 +3159,7 @@ mod tests {
                 ("b".to_owned(), vec![0, 0, 30, 40, 0]),
                 ("d".to_owned(), vec![0, 0, 300, 400, 0]),
             ],
-        )
-        .unwrap();
-
+        )?;
         data_helper(
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
@@ -2876,8 +3213,7 @@ mod tests {
                 ),
                 ("c".to_owned(), vec![0, 0, 300, 0, 0]),
             ],
-        )
-        .unwrap();
+        )?;
 
         data_helper(
             vec![
@@ -2940,8 +3276,7 @@ mod tests {
                 ("c".to_owned(), vec![0, 0, 300, 400, 0]),
                 ("f".to_owned(), vec![0, 0, 0, 0, 0, 0, 1, 1, 0, 0]),
             ],
-        )
-        .unwrap();
+        )?;
 
         data_helper(
             vec![
@@ -2982,8 +3317,7 @@ mod tests {
                 ("c".to_owned(), vec![0, 0, 0, 400, 0]),
                 ("d".to_owned(), vec![0, 0, 0, 1, 0]),
             ],
-        )
-        .unwrap();
+        )?;
 
         data_helper(
             vec![
@@ -3021,8 +3355,7 @@ mod tests {
                 ("c".to_owned(), vec![0, 0, 0, 0, 0]),
                 ("d".to_owned(), vec![0, 0, 0, 0, 0]),
             ],
-        )
-        .unwrap();
+        )?;
 
         data_helper(
             vec![
@@ -3060,8 +3393,8 @@ mod tests {
                 ("c".to_owned(), vec![0, 0, 0, 0, 0]),
                 ("d".to_owned(), vec![0, 0, 0, 0, 0]),
             ],
-        )
-        .unwrap();
+        )?;
+
         data_helper(
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
@@ -3078,8 +3411,7 @@ mod tests {
                 (NULL_HEADER.to_owned(), vec![1]),
                 ("a".to_owned(), vec![10]),
             ],
-        )
-        .unwrap();
+        )?;
 
         data_helper(
             vec![
@@ -3105,30 +3437,467 @@ mod tests {
                 ("b".to_owned(), vec![3]),
                 ("c".to_owned(), vec![4]),
             ],
-        )
-        .unwrap();
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("a".to_owned(), array_type(vec![1], INT64)),
+                ("b".to_owned(), array_type(vec![1], INT64)),
+                ("c".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("b".to_owned(), array_type(vec![5], INT64)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+            ],
+            vec![
+                ("a".to_owned(), "a".to_owned()),
+                ("b".to_owned(), "b".to_owned()),
+            ],
+            vec![vec![1], vec![2], vec![3], vec![4]],
+            vec![
+                vec![1, 1, 1, 1, 1],
+                vec![3, 4, 5, 6, 7],
+                vec![2, 3, 4, 5, 6],
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), vec![1]),
+                ("a".to_owned(), vec![2]),
+                ("b".to_owned(), vec![3]),
+                ("c".to_owned(), vec![4]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("b".to_owned(), array_type(vec![5], INT64)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("a".to_owned(), array_type(vec![1], INT64)),
+                ("b".to_owned(), array_type(vec![1], INT64)),
+                ("c".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![
+                ("a".to_owned(), "a".to_owned()),
+                ("b".to_owned(), "b".to_owned()),
+            ],
+            vec![
+                vec![1, 1, 1, 1, 1],
+                vec![3, 4, 5, 6, 7],
+                vec![2, 3, 4, 5, 6],
+            ],
+            vec![vec![1], vec![2], vec![3], vec![4]],
+            vec![
+                (NULL_HEADER.to_owned(), vec![1, 0, 0, 0, 0]),
+                ("b".to_owned(), vec![3, 0, 0, 0, 0]),
+                ("a".to_owned(), vec![2, 0, 0, 0, 0]),
+                ("c".to_owned(), vec![4, 0, 0, 0, 0]),
+            ],
+        )?;
+
+        let probabilistic_data_helper = |types_x: Vec<(String, Type)>,
+                                         types_y: Vec<(String, Type)>,
+                                         headers: Vec<(String, String)>,
+                                         values_x: Vec<Vec<u64>>,
+                                         values_y: Vec<Vec<u64>>,
+                                         expected: Vec<(String, Vec<u64>)>,
+                                         num_trials: u64|
+         -> Result<()> {
+            let mut headers_map = HashMap::new();
+            for (h0, h1) in headers {
+                headers_map.insert(h0, h1);
+            }
+            probabilistic_join_helper(
+                types_x,
+                types_y,
+                Operation::Join(JoinType::Inner, headers_map),
+                values_x,
+                values_y,
+                expected,
+                true,
+                true,
+                num_trials,
+            )
+        };
+
+        probabilistic_data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![2], BIT)),
+                ("a".to_owned(), array_type(vec![2], INT64)),
+                ("b".to_owned(), array_type(vec![2, 3], BIT)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![3], BIT)),
+                ("b".to_owned(), array_type(vec![3, 3], BIT)),
+                ("c".to_owned(), array_type(vec![3], INT16)),
+            ],
+            vec![("b".to_owned(), "b".to_owned())],
+            vec![
+                vec![1, 1],
+                vec![2, 3],
+                array!([[0, 1, 0], [0, 1, 1]]).into_raw_vec(),
+            ],
+            vec![
+                vec![1, 1, 1],
+                array!([[0, 1, 1], [1, 0, 0], [1, 0, 1]]).into_raw_vec(),
+                vec![300, 400, 500],
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), vec![0, 1]),
+                ("a".to_owned(), vec![0, 3]),
+                (
+                    "b".to_owned(),
+                    array!([[0, 0, 0], [0, 1, 1]]).into_raw_vec(),
+                ),
+                ("c".to_owned(), vec![0, 300]),
+            ],
+            50,
+        )?;
+        probabilistic_data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![2], BIT)),
+                ("a".to_owned(), array_type(vec![2, 2], BIT)),
+                ("b".to_owned(), array_type(vec![2, 3], BIT)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![3], BIT)),
+                ("b".to_owned(), array_type(vec![3, 3], BIT)),
+                ("c".to_owned(), array_type(vec![3, 2], BIT)),
+            ],
+            vec![
+                ("b".to_owned(), "b".to_owned()),
+                ("a".to_owned(), "c".to_owned()),
+            ],
+            vec![
+                vec![1, 1],
+                array!([[1, 0], [1, 1]]).into_raw_vec(),
+                array!([[0, 1, 0], [0, 1, 1]]).into_raw_vec(),
+            ],
+            vec![
+                vec![1, 1, 1],
+                array!([[0, 1, 1], [1, 0, 0], [1, 0, 1]]).into_raw_vec(),
+                array!([[1, 1], [0, 0], [0, 1]]).into_raw_vec(),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), vec![0, 1]),
+                ("a".to_owned(), array!([[0, 0], [1, 1]]).into_raw_vec()),
+                (
+                    "b".to_owned(),
+                    array!([[0, 0, 0], [0, 1, 1]]).into_raw_vec(),
+                ),
+            ],
+            50,
+        )?;
+
+        probabilistic_data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![600], BIT)),
+                ("b".to_owned(), array_type(vec![600], INT16)),
+                ("a".to_owned(), array_type(vec![600], INT16)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![100], BIT)),
+                ("a".to_owned(), array_type(vec![100], INT16)),
+                ("b".to_owned(), array_type(vec![100], INT16)),
+            ],
+            vec![
+                ("a".to_owned(), "a".to_owned()),
+                ("b".to_owned(), "b".to_owned()),
+            ],
+            vec![
+                vec![1; 600],
+                (1..=600).collect(),
+                (1..=600).map(|x| 2 * x).collect(),
+            ],
+            vec![
+                vec![1; 100],
+                (591..=690).map(|x| 2 * x).collect(),
+                (591..=690).collect(),
+            ],
+            vec![
+                (
+                    NULL_HEADER.to_owned(),
+                    vec![0; 600]
+                        .iter()
+                        .enumerate()
+                        .map(|(i, _)| if i >= 590 { 1 } else { 0 })
+                        .collect(),
+                ),
+                (
+                    "b".to_owned(),
+                    (1..=600).map(|x| if x > 590 { x } else { 0 }).collect(),
+                ),
+                (
+                    "a".to_owned(),
+                    (1..=600).map(|x| if x > 590 { 2 * x } else { 0 }).collect(),
+                ),
+            ],
+            1,
+        )?;
+
+        Ok(())
     }
 
     #[test]
-    fn test_semi_private_psi() {
-        || -> Result<()> {
-            let types_x = vec![
+    fn test_semi_private_psi() -> Result<()> {
+        let types_x = vec![
+            (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+            ("a".to_owned(), array_type(vec![5], INT64)),
+            ("b".to_owned(), array_type(vec![5, 4], BIT)),
+            ("c".to_owned(), array_type(vec![5], INT16)),
+        ];
+        let types_y = vec![
+            (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+            ("d".to_owned(), array_type(vec![6, 4], BIT)),
+            ("e".to_owned(), array_type(vec![6], INT16)),
+            ("f".to_owned(), array_type(vec![6, 2], BIT)),
+        ];
+        let mut headers = HashMap::new();
+        headers.insert("b".to_owned(), "d".to_owned());
+        headers.insert("c".to_owned(), "e".to_owned());
+        let op = Operation::Join(JoinType::Inner, headers);
+        let values_x = vec![
+            vec![1, 1, 1, 1, 1],
+            vec![1, 2, 3, 4, 5],
+            array!([
+                [0, 0, 0, 1],
+                [0, 0, 1, 0],
+                [0, 0, 1, 1],
+                [0, 1, 0, 0],
+                [0, 1, 0, 1]
+            ])
+            .into_raw_vec(),
+            vec![100, 200, 300, 400, 500],
+        ];
+        let values_y = vec![
+            vec![1, 1, 1, 1, 1, 1],
+            array!([
+                [0, 0, 1, 1],
+                [0, 0, 0, 0],
+                [0, 1, 0, 0],
+                [0, 1, 1, 0],
+                [0, 1, 1, 1],
+                [1, 0, 0, 0]
+            ])
+            .into_raw_vec(),
+            vec![300, 210, 400, 410, 510, 610],
+            vec![0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0],
+        ];
+        let expected = vec![
+            (NULL_HEADER.to_owned(), vec![0, 0, 1, 1, 0]),
+            ("a".to_owned(), vec![0, 0, 3, 4, 0]),
+            (
+                "b".to_owned(),
+                array!([
+                    [0, 0, 0, 0],
+                    [0, 0, 0, 0],
+                    [0, 0, 1, 1],
+                    [0, 1, 0, 0],
+                    [0, 0, 0, 0]
+                ])
+                .into_raw_vec(),
+            ),
+            ("c".to_owned(), vec![0, 0, 300, 400, 0]),
+            ("f".to_owned(), vec![0, 0, 0, 0, 0, 0, 1, 1, 0, 0]),
+        ];
+        deterministic_join_helper(
+            types_x.clone(),
+            types_y.clone(),
+            op.clone(),
+            values_x.clone(),
+            values_y.clone(),
+            expected.clone(),
+            true,
+            false,
+        )?;
+        deterministic_join_helper(
+            types_x.clone(),
+            types_y.clone(),
+            op.clone(),
+            values_x.clone(),
+            values_y.clone(),
+            expected.clone(),
+            false,
+            true,
+        )?;
+        deterministic_join_helper(
+            types_x, types_y, op, values_x, values_y, expected, false, false,
+        )?;
+
+        let types_x = vec![
+            (NULL_HEADER.to_owned(), array_type(vec![3], BIT)),
+            ("a".to_owned(), array_type(vec![3, 2], BIT)),
+            ("b".to_owned(), array_type(vec![3, 3], BIT)),
+        ];
+        let types_y = vec![
+            (NULL_HEADER.to_owned(), array_type(vec![2], BIT)),
+            ("c".to_owned(), array_type(vec![2, 3], BIT)),
+            ("d".to_owned(), array_type(vec![2, 2], BIT)),
+        ];
+        let mut headers = HashMap::new();
+        headers.insert("a".to_owned(), "d".to_owned());
+        headers.insert("b".to_owned(), "c".to_owned());
+        let op = Operation::Join(JoinType::Inner, headers);
+        let values_x = vec![
+            vec![1, 1, 1],
+            array!([[0, 1], [1, 0], [1, 1]]).into_raw_vec(),
+            array!([[0, 1, 0], [1, 0, 0], [1, 1, 0]]).into_raw_vec(),
+        ];
+        let values_y = vec![
+            vec![1, 1],
+            array!([[1, 1, 0], [1, 0, 0]]).into_raw_vec(),
+            array!([[1, 1], [1, 0]]).into_raw_vec(),
+        ];
+        let expected = vec![
+            (NULL_HEADER.to_owned(), vec![0, 1, 1]),
+            (
+                "a".to_owned(),
+                array!([[0, 0], [1, 0], [1, 1]]).into_raw_vec(),
+            ),
+            (
+                "b".to_owned(),
+                array!([[0, 0, 0], [1, 0, 0], [1, 1, 0]]).into_raw_vec(),
+            ),
+        ];
+        probabilistic_join_helper(
+            types_x, types_y, op, values_x, values_y, expected, false, false, 50,
+        )?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_private_left_join() -> Result<()> {
+        let data_helper = |types_x: Vec<(String, Type)>,
+                           types_y: Vec<(String, Type)>,
+                           headers: Vec<(String, String)>,
+                           values_x: Vec<Vec<u64>>,
+                           values_y: Vec<Vec<u64>>,
+                           expected: Vec<(String, Vec<u64>)>|
+         -> Result<()> {
+            let mut headers_map = HashMap::new();
+            for (h0, h1) in headers {
+                headers_map.insert(h0, h1);
+            }
+            deterministic_join_helper(
+                types_x,
+                types_y,
+                Operation::Join(JoinType::Left, headers_map),
+                values_x,
+                values_y,
+                expected,
+                true,
+                true,
+            )
+        };
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5], INT32)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("c".to_owned(), array_type(vec![6], INT32)),
+                ("d".to_owned(), array_type(vec![6], INT16)),
+            ],
+            vec![("b".to_owned(), "c".to_owned())],
+            vec![
+                vec![1, 1, 1, 1, 1],
+                vec![1, 2, 3, 4, 5],
+                vec![10, 20, 30, 40, 50],
+            ],
+            vec![
+                vec![1, 1, 1, 1, 1, 1],
+                vec![30, 21, 40, 41, 51, 61],
+                vec![300, 210, 400, 410, 510, 610],
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), vec![1, 1, 1, 1, 1]),
+                ("a".to_owned(), vec![1, 2, 3, 4, 5]),
+                ("b".to_owned(), vec![10, 20, 30, 40, 50]),
+                ("d".to_owned(), vec![0, 0, 300, 400, 0]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5, 4], BIT)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("b".to_owned(), array_type(vec![6, 4], BIT)),
+                ("c".to_owned(), array_type(vec![6], INT16)),
+            ],
+            vec![("b".to_owned(), "b".to_owned())],
+            vec![
+                vec![1, 1, 1, 0, 1],
+                vec![1, 2, 3, 4, 5],
+                array!([
+                    [0, 0, 0, 1],
+                    [0, 0, 1, 0],
+                    [0, 0, 1, 1],
+                    [0, 1, 0, 0],
+                    [0, 1, 0, 1]
+                ])
+                .into_raw_vec(),
+            ],
+            vec![
+                vec![1, 0, 1, 1, 1, 1],
+                array!([
+                    [0, 0, 1, 1],
+                    [0, 0, 0, 0],
+                    [0, 1, 0, 0],
+                    [0, 1, 1, 0],
+                    [0, 1, 1, 1],
+                    [1, 0, 0, 0]
+                ])
+                .into_raw_vec(),
+                vec![300, 210, 400, 410, 510, 610],
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), vec![1, 1, 1, 0, 1]),
+                ("a".to_owned(), vec![1, 2, 3, 0, 5]),
+                (
+                    "b".to_owned(),
+                    array!([
+                        [0, 0, 0, 1],
+                        [0, 0, 1, 0],
+                        [0, 0, 1, 1],
+                        [0, 0, 0, 0],
+                        [0, 1, 0, 1]
+                    ])
+                    .into_raw_vec(),
+                ),
+                ("c".to_owned(), vec![0, 0, 300, 0, 0]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
                 ("a".to_owned(), array_type(vec![5], INT64)),
                 ("b".to_owned(), array_type(vec![5, 4], BIT)),
                 ("c".to_owned(), array_type(vec![5], INT16)),
-            ];
-            let types_y = vec![
+            ],
+            vec![
                 (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
                 ("d".to_owned(), array_type(vec![6, 4], BIT)),
                 ("e".to_owned(), array_type(vec![6], INT16)),
                 ("f".to_owned(), array_type(vec![6, 2], BIT)),
-            ];
-            let headers = vec![
+            ],
+            vec![
                 ("b".to_owned(), "d".to_owned()),
                 ("c".to_owned(), "e".to_owned()),
-            ];
-            let values_x = vec![
+            ],
+            vec![
                 vec![1, 1, 1, 1, 1],
                 vec![1, 2, 3, 4, 5],
                 array!([
@@ -3140,8 +3909,8 @@ mod tests {
                 ])
                 .into_raw_vec(),
                 vec![100, 200, 300, 400, 500],
-            ];
-            let values_y = vec![
+            ],
+            vec![
                 vec![1, 1, 1, 1, 1, 1],
                 array!([
                     [0, 0, 1, 1],
@@ -3154,50 +3923,1479 @@ mod tests {
                 .into_raw_vec(),
                 vec![300, 210, 400, 410, 510, 610],
                 vec![0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0],
-            ];
-            let expected = vec![
-                (NULL_HEADER.to_owned(), vec![0, 0, 1, 1, 0]),
-                ("a".to_owned(), vec![0, 0, 3, 4, 0]),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), vec![1, 1, 1, 1, 1]),
+                ("a".to_owned(), vec![1, 2, 3, 4, 5]),
                 (
                     "b".to_owned(),
                     array!([
-                        [0, 0, 0, 0],
-                        [0, 0, 0, 0],
+                        [0, 0, 0, 1],
+                        [0, 0, 1, 0],
                         [0, 0, 1, 1],
                         [0, 1, 0, 0],
-                        [0, 0, 0, 0]
+                        [0, 1, 0, 1]
                     ])
                     .into_raw_vec(),
                 ),
-                ("c".to_owned(), vec![0, 0, 300, 400, 0]),
+                ("c".to_owned(), vec![100, 200, 300, 400, 500]),
                 ("f".to_owned(), vec![0, 0, 0, 0, 0, 0, 1, 1, 0, 0]),
-            ];
-            psi_helper(
-                types_x.clone(),
-                types_y.clone(),
-                headers.clone(),
-                values_x.clone(),
-                values_y.clone(),
-                expected.clone(),
-                true,
-                false,
-            )?;
-            psi_helper(
-                types_x.clone(),
-                types_y.clone(),
-                headers.clone(),
-                values_x.clone(),
-                values_y.clone(),
-                expected.clone(),
-                false,
-                true,
-            )?;
-            psi_helper(
-                types_x, types_y, headers, values_x, values_y, expected, false, false,
-            )?;
+            ],
+        )?;
 
-            Ok(())
-        }()
-        .unwrap();
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5, 2], INT32)),
+                ("c".to_owned(), array_type(vec![5], INT16)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("b".to_owned(), array_type(vec![6, 2], INT32)),
+                ("c".to_owned(), array_type(vec![6], INT16)),
+                ("d".to_owned(), array_type(vec![6], BIT)),
+            ],
+            vec![
+                ("b".to_owned(), "b".to_owned()),
+                ("c".to_owned(), "c".to_owned()),
+            ],
+            vec![
+                vec![1, 1, 0, 1, 1],
+                vec![1, 2, 3, 4, 5],
+                array!([[10, 10], [20, 20], [30, 30], [40, 40], [50, 50]]).into_raw_vec(),
+                vec![100, 200, 300, 400, 500],
+            ],
+            vec![
+                vec![1, 0, 1, 1, 1, 0],
+                array!([[30, 30], [21, 21], [40, 40], [41, 41], [51, 51], [61, 61]]).into_raw_vec(),
+                vec![300, 210, 400, 410, 510, 610],
+                vec![0, 1, 1, 0, 1, 0],
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), vec![1, 1, 0, 1, 1]),
+                ("a".to_owned(), vec![1, 2, 0, 4, 5]),
+                (
+                    "b".to_owned(),
+                    array!([[10, 10], [20, 20], [0, 0], [40, 40], [50, 50]]).into_raw_vec(),
+                ),
+                ("c".to_owned(), vec![100, 200, 0, 400, 500]),
+                ("d".to_owned(), vec![0, 0, 0, 1, 0]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5], INT32)),
+                ("c".to_owned(), array_type(vec![5], INT16)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("b".to_owned(), array_type(vec![6], INT32)),
+                ("c".to_owned(), array_type(vec![6], INT16)),
+                ("d".to_owned(), array_type(vec![6], BIT)),
+            ],
+            vec![
+                ("b".to_owned(), "b".to_owned()),
+                ("c".to_owned(), "c".to_owned()),
+            ],
+            vec![
+                vec![1, 1, 1, 1, 1],
+                vec![1, 2, 3, 4, 5],
+                vec![10, 20, 30, 40, 50],
+                vec![100, 200, 300, 400, 500],
+            ],
+            vec![
+                vec![1, 1, 1, 1, 1, 1],
+                vec![60, 70, 80, 90, 100, 110],
+                vec![600, 700, 800, 900, 1000, 1100],
+                vec![0, 1, 1, 0, 1, 0],
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), vec![1, 1, 1, 1, 1]),
+                ("a".to_owned(), vec![1, 2, 3, 4, 5]),
+                ("b".to_owned(), vec![10, 20, 30, 40, 50]),
+                ("c".to_owned(), vec![100, 200, 300, 400, 500]),
+                ("d".to_owned(), vec![0, 0, 0, 0, 0]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5], INT32)),
+                ("c".to_owned(), array_type(vec![5], INT16)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("b".to_owned(), array_type(vec![6], INT32)),
+                ("c".to_owned(), array_type(vec![6], INT16)),
+                ("d".to_owned(), array_type(vec![6], BIT)),
+            ],
+            vec![
+                ("b".to_owned(), "b".to_owned()),
+                ("c".to_owned(), "c".to_owned()),
+            ],
+            vec![
+                vec![0, 0, 0, 1, 1],
+                vec![1, 2, 3, 4, 5],
+                vec![10, 20, 30, 40, 50],
+                vec![100, 200, 300, 400, 500],
+            ],
+            vec![
+                vec![1, 1, 1, 0, 0, 0],
+                vec![10, 20, 30, 40, 50, 60],
+                vec![100, 200, 300, 400, 500, 600],
+                vec![0, 1, 1, 0, 1, 0],
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), vec![0, 0, 0, 1, 1]),
+                ("a".to_owned(), vec![0, 0, 0, 4, 5]),
+                ("b".to_owned(), vec![0, 0, 0, 40, 50]),
+                ("c".to_owned(), vec![0, 0, 0, 400, 500]),
+                ("d".to_owned(), vec![0, 0, 0, 0, 0]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("a".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("b".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![("a".to_owned(), "b".to_owned())],
+            vec![vec![1], vec![10]],
+            vec![vec![1], vec![10]],
+            vec![
+                (NULL_HEADER.to_owned(), vec![1]),
+                ("a".to_owned(), vec![10]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("a".to_owned(), array_type(vec![1], INT64)),
+                ("b".to_owned(), array_type(vec![1], INT64)),
+                ("c".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("b".to_owned(), array_type(vec![1], INT64)),
+                ("a".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![
+                ("a".to_owned(), "a".to_owned()),
+                ("b".to_owned(), "b".to_owned()),
+            ],
+            vec![vec![1], vec![2], vec![3], vec![4]],
+            vec![vec![1], vec![3], vec![2]],
+            vec![
+                (NULL_HEADER.to_owned(), vec![1]),
+                ("a".to_owned(), vec![2]),
+                ("b".to_owned(), vec![3]),
+                ("c".to_owned(), vec![4]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("a".to_owned(), array_type(vec![1], INT64)),
+                ("b".to_owned(), array_type(vec![1], INT64)),
+                ("c".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("b".to_owned(), array_type(vec![5], INT64)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+            ],
+            vec![
+                ("a".to_owned(), "a".to_owned()),
+                ("b".to_owned(), "b".to_owned()),
+            ],
+            vec![vec![1], vec![2], vec![3], vec![4]],
+            vec![
+                vec![1, 1, 1, 1, 1],
+                vec![3, 4, 5, 6, 7],
+                vec![2, 3, 4, 5, 6],
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), vec![1]),
+                ("a".to_owned(), vec![2]),
+                ("b".to_owned(), vec![3]),
+                ("c".to_owned(), vec![4]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("b".to_owned(), array_type(vec![5], INT64)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("a".to_owned(), array_type(vec![1], INT64)),
+                ("b".to_owned(), array_type(vec![1], INT64)),
+                ("c".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![
+                ("a".to_owned(), "a".to_owned()),
+                ("b".to_owned(), "b".to_owned()),
+            ],
+            vec![
+                vec![1, 1, 1, 1, 1],
+                vec![3, 4, 5, 6, 7],
+                vec![2, 3, 4, 5, 6],
+            ],
+            vec![vec![1], vec![2], vec![3], vec![4]],
+            vec![
+                (NULL_HEADER.to_owned(), vec![1, 1, 1, 1, 1]),
+                ("b".to_owned(), vec![3, 4, 5, 6, 7]),
+                ("a".to_owned(), vec![2, 3, 4, 5, 6]),
+                ("c".to_owned(), vec![4, 0, 0, 0, 0]),
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_semi_private_left_join() -> Result<()> {
+        let types_x = vec![
+            (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+            ("a".to_owned(), array_type(vec![5], INT64)),
+            ("b".to_owned(), array_type(vec![5, 4], BIT)),
+            ("c".to_owned(), array_type(vec![5], INT16)),
+        ];
+        let types_y = vec![
+            (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+            ("d".to_owned(), array_type(vec![6, 4], BIT)),
+            ("e".to_owned(), array_type(vec![6], INT16)),
+            ("f".to_owned(), array_type(vec![6, 2], BIT)),
+        ];
+        let mut headers = HashMap::new();
+        headers.insert("b".to_owned(), "d".to_owned());
+        headers.insert("c".to_owned(), "e".to_owned());
+        let op = Operation::Join(JoinType::Left, headers);
+        let values_x = vec![
+            vec![1, 1, 1, 1, 1],
+            vec![1, 2, 3, 4, 5],
+            array!([
+                [0, 0, 0, 1],
+                [0, 0, 1, 0],
+                [0, 0, 1, 1],
+                [0, 1, 0, 0],
+                [0, 1, 0, 1]
+            ])
+            .into_raw_vec(),
+            vec![100, 200, 300, 400, 500],
+        ];
+        let values_y = vec![
+            vec![1, 1, 1, 1, 1, 1],
+            array!([
+                [0, 0, 1, 1],
+                [0, 0, 0, 0],
+                [0, 1, 0, 0],
+                [0, 1, 1, 0],
+                [0, 1, 1, 1],
+                [1, 0, 0, 0]
+            ])
+            .into_raw_vec(),
+            vec![300, 210, 400, 410, 510, 610],
+            vec![0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0],
+        ];
+        let expected = vec![
+            (NULL_HEADER.to_owned(), vec![1, 1, 1, 1, 1]),
+            ("a".to_owned(), vec![1, 2, 3, 4, 5]),
+            (
+                "b".to_owned(),
+                array!([
+                    [0, 0, 0, 1],
+                    [0, 0, 1, 0],
+                    [0, 0, 1, 1],
+                    [0, 1, 0, 0],
+                    [0, 1, 0, 1]
+                ])
+                .into_raw_vec(),
+            ),
+            ("c".to_owned(), vec![100, 200, 300, 400, 500]),
+            ("f".to_owned(), vec![0, 0, 0, 0, 0, 0, 1, 1, 0, 0]),
+        ];
+        deterministic_join_helper(
+            types_x.clone(),
+            types_y.clone(),
+            op.clone(),
+            values_x.clone(),
+            values_y.clone(),
+            expected.clone(),
+            true,
+            false,
+        )?;
+        deterministic_join_helper(
+            types_x.clone(),
+            types_y.clone(),
+            op.clone(),
+            values_x.clone(),
+            values_y.clone(),
+            expected.clone(),
+            false,
+            true,
+        )?;
+        deterministic_join_helper(
+            types_x, types_y, op, values_x, values_y, expected, false, false,
+        )?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_private_union_join() -> Result<()> {
+        let data_helper = |types_x: Vec<(String, Type)>,
+                           types_y: Vec<(String, Type)>,
+                           headers: Vec<(String, String)>,
+                           values_x: Vec<Vec<u64>>,
+                           values_y: Vec<Vec<u64>>,
+                           expected: Vec<(String, Vec<u64>)>|
+         -> Result<()> {
+            let mut headers_map = HashMap::new();
+            for (h0, h1) in headers {
+                headers_map.insert(h0, h1);
+            }
+            deterministic_join_helper(
+                types_x,
+                types_y,
+                Operation::Join(JoinType::Union, headers_map),
+                values_x,
+                values_y,
+                expected,
+                true,
+                true,
+            )
+        };
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5], INT32)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("c".to_owned(), array_type(vec![6], INT32)),
+                ("d".to_owned(), array_type(vec![6], INT16)),
+            ],
+            vec![("b".to_owned(), "c".to_owned())],
+            vec![
+                vec![1, 1, 1, 1, 1],
+                vec![1, 2, 3, 4, 5],
+                vec![10, 20, 30, 40, 50],
+            ],
+            vec![
+                vec![1, 1, 1, 1, 1, 1],
+                vec![30, 21, 40, 41, 51, 61],
+                vec![300, 210, 400, 410, 510, 610],
+            ],
+            vec![
+                (
+                    NULL_HEADER.to_owned(),
+                    vec![1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1],
+                ),
+                ("a".to_owned(), vec![1, 2, 0, 0, 5, 0, 0, 0, 0, 0, 0]),
+                (
+                    "b".to_owned(),
+                    vec![10, 20, 0, 0, 50, 30, 21, 40, 41, 51, 61],
+                ),
+                (
+                    "d".to_owned(),
+                    vec![0, 0, 0, 0, 0, 300, 210, 400, 410, 510, 610],
+                ),
+            ],
+        )?;
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5, 4], BIT)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("b".to_owned(), array_type(vec![6, 4], BIT)),
+                ("c".to_owned(), array_type(vec![6], INT16)),
+            ],
+            vec![("b".to_owned(), "b".to_owned())],
+            vec![
+                vec![1, 1, 1, 0, 1],
+                vec![1, 2, 3, 4, 5],
+                array!([
+                    [0, 0, 0, 1],
+                    [0, 0, 1, 0],
+                    [0, 0, 1, 1],
+                    [0, 1, 0, 0],
+                    [0, 1, 0, 1]
+                ])
+                .into_raw_vec(),
+            ],
+            vec![
+                vec![1, 0, 1, 1, 1, 1],
+                array!([
+                    [0, 0, 1, 1],
+                    [1, 1, 1, 0],
+                    [0, 1, 0, 0],
+                    [0, 1, 1, 0],
+                    [0, 1, 1, 1],
+                    [1, 0, 0, 0]
+                ])
+                .into_raw_vec(),
+                vec![300, 210, 400, 410, 510, 610],
+            ],
+            vec![
+                (
+                    NULL_HEADER.to_owned(),
+                    vec![1, 1, 0, 0, 1, 1, 0, 1, 1, 1, 1],
+                ),
+                ("a".to_owned(), vec![1, 2, 0, 0, 5, 0, 0, 0, 0, 0, 0]),
+                (
+                    "b".to_owned(),
+                    array!([
+                        [0, 0, 0, 1],
+                        [0, 0, 1, 0],
+                        [0, 0, 0, 0],
+                        [0, 0, 0, 0],
+                        [0, 1, 0, 1],
+                        [0, 0, 1, 1],
+                        [0, 0, 0, 0],
+                        [0, 1, 0, 0],
+                        [0, 1, 1, 0],
+                        [0, 1, 1, 1],
+                        [1, 0, 0, 0]
+                    ])
+                    .into_raw_vec(),
+                ),
+                (
+                    "c".to_owned(),
+                    vec![0, 0, 0, 0, 0, 300, 0, 400, 410, 510, 610],
+                ),
+            ],
+        )?;
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5, 4], BIT)),
+                ("c".to_owned(), array_type(vec![5], INT16)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("d".to_owned(), array_type(vec![6, 4], BIT)),
+                ("e".to_owned(), array_type(vec![6], INT16)),
+                ("f".to_owned(), array_type(vec![6, 2], BIT)),
+            ],
+            vec![
+                ("b".to_owned(), "d".to_owned()),
+                ("c".to_owned(), "e".to_owned()),
+            ],
+            vec![
+                vec![1, 1, 1, 1, 1],
+                vec![1, 2, 3, 4, 5],
+                array!([
+                    [0, 0, 0, 1],
+                    [0, 0, 1, 0],
+                    [0, 0, 1, 1],
+                    [0, 1, 0, 0],
+                    [0, 1, 0, 1]
+                ])
+                .into_raw_vec(),
+                vec![100, 200, 300, 400, 500],
+            ],
+            vec![
+                vec![1, 1, 1, 1, 1, 1],
+                array!([
+                    [0, 0, 1, 1],
+                    [0, 0, 0, 0],
+                    [0, 1, 0, 0],
+                    [0, 1, 1, 0],
+                    [0, 1, 1, 1],
+                    [1, 0, 0, 0]
+                ])
+                .into_raw_vec(),
+                vec![300, 210, 400, 410, 510, 610],
+                vec![0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0],
+            ],
+            vec![
+                (
+                    NULL_HEADER.to_owned(),
+                    vec![1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1],
+                ),
+                ("a".to_owned(), vec![1, 2, 0, 0, 5, 0, 0, 0, 0, 0, 0]),
+                (
+                    "b".to_owned(),
+                    array!([
+                        [0, 0, 0, 1],
+                        [0, 0, 1, 0],
+                        [0, 0, 0, 0],
+                        [0, 0, 0, 0],
+                        [0, 1, 0, 1],
+                        [0, 0, 1, 1],
+                        [0, 0, 0, 0],
+                        [0, 1, 0, 0],
+                        [0, 1, 1, 0],
+                        [0, 1, 1, 1],
+                        [1, 0, 0, 0]
+                    ])
+                    .into_raw_vec(),
+                ),
+                (
+                    "c".to_owned(),
+                    vec![100, 200, 0, 0, 500, 300, 210, 400, 410, 510, 610],
+                ),
+                (
+                    "f".to_owned(),
+                    vec![
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0,
+                    ],
+                ),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5, 2], INT32)),
+                ("c".to_owned(), array_type(vec![5], INT16)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("b".to_owned(), array_type(vec![6, 2], INT32)),
+                ("c".to_owned(), array_type(vec![6], INT16)),
+                ("d".to_owned(), array_type(vec![6], BIT)),
+            ],
+            vec![
+                ("b".to_owned(), "b".to_owned()),
+                ("c".to_owned(), "c".to_owned()),
+            ],
+            vec![
+                vec![1, 1, 0, 1, 1],
+                vec![1, 2, 3, 4, 5],
+                array!([[10, 10], [20, 20], [30, 30], [40, 40], [50, 50]]).into_raw_vec(),
+                vec![100, 200, 300, 400, 500],
+            ],
+            vec![
+                vec![1, 0, 1, 1, 1, 0],
+                array!([[30, 30], [21, 21], [40, 40], [41, 41], [51, 51], [61, 61]]).into_raw_vec(),
+                vec![300, 210, 400, 410, 510, 610],
+                vec![0, 1, 1, 0, 1, 0],
+            ],
+            vec![
+                (
+                    NULL_HEADER.to_owned(),
+                    vec![1, 1, 0, 0, 1, 1, 0, 1, 1, 1, 0],
+                ),
+                ("a".to_owned(), vec![1, 2, 0, 0, 5, 0, 0, 0, 0, 0, 0]),
+                (
+                    "b".to_owned(),
+                    array!([
+                        [10, 10],
+                        [20, 20],
+                        [0, 0],
+                        [0, 0],
+                        [50, 50],
+                        [30, 30],
+                        [0, 0],
+                        [40, 40],
+                        [41, 41],
+                        [51, 51],
+                        [0, 0]
+                    ])
+                    .into_raw_vec(),
+                ),
+                (
+                    "c".to_owned(),
+                    vec![100, 200, 0, 0, 500, 300, 0, 400, 410, 510, 0],
+                ),
+                ("d".to_owned(), vec![0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5], INT32)),
+                ("c".to_owned(), array_type(vec![5], INT16)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("b".to_owned(), array_type(vec![6], INT32)),
+                ("c".to_owned(), array_type(vec![6], INT16)),
+                ("d".to_owned(), array_type(vec![6], BIT)),
+            ],
+            vec![
+                ("b".to_owned(), "b".to_owned()),
+                ("c".to_owned(), "c".to_owned()),
+            ],
+            vec![
+                vec![1, 1, 1, 1, 1],
+                vec![1, 2, 3, 4, 5],
+                vec![10, 20, 30, 40, 50],
+                vec![100, 200, 300, 400, 500],
+            ],
+            vec![
+                vec![1, 1, 1, 1, 1, 1],
+                vec![60, 70, 80, 90, 100, 110],
+                vec![600, 700, 800, 900, 1000, 1100],
+                vec![0, 1, 1, 0, 1, 0],
+            ],
+            vec![
+                (
+                    NULL_HEADER.to_owned(),
+                    vec![1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                ),
+                ("a".to_owned(), vec![1, 2, 3, 4, 5, 0, 0, 0, 0, 0, 0]),
+                (
+                    "b".to_owned(),
+                    vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110],
+                ),
+                (
+                    "c".to_owned(),
+                    vec![100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100],
+                ),
+                ("d".to_owned(), vec![0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5], INT32)),
+                ("c".to_owned(), array_type(vec![5], INT16)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("b".to_owned(), array_type(vec![6], INT32)),
+                ("c".to_owned(), array_type(vec![6], INT16)),
+                ("d".to_owned(), array_type(vec![6], BIT)),
+            ],
+            vec![
+                ("b".to_owned(), "b".to_owned()),
+                ("c".to_owned(), "c".to_owned()),
+            ],
+            vec![
+                vec![0, 0, 0, 1, 1],
+                vec![1, 2, 3, 4, 5],
+                vec![10, 20, 30, 40, 50],
+                vec![100, 200, 300, 400, 500],
+            ],
+            vec![
+                vec![1, 1, 1, 0, 0, 0],
+                vec![10, 20, 30, 40, 50, 60],
+                vec![100, 200, 300, 400, 500, 600],
+                vec![0, 1, 1, 0, 1, 0],
+            ],
+            vec![
+                (
+                    NULL_HEADER.to_owned(),
+                    vec![0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0],
+                ),
+                ("a".to_owned(), vec![0, 0, 0, 4, 5, 0, 0, 0, 0, 0, 0]),
+                ("b".to_owned(), vec![0, 0, 0, 40, 50, 10, 20, 30, 0, 0, 0]),
+                (
+                    "c".to_owned(),
+                    vec![0, 0, 0, 400, 500, 100, 200, 300, 0, 0, 0],
+                ),
+                ("d".to_owned(), vec![0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("a".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("b".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![("a".to_owned(), "b".to_owned())],
+            vec![vec![1], vec![10]],
+            vec![vec![1], vec![10]],
+            vec![
+                (NULL_HEADER.to_owned(), vec![0, 1]),
+                ("a".to_owned(), vec![0, 10]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("a".to_owned(), array_type(vec![1], INT64)),
+                ("b".to_owned(), array_type(vec![1], INT64)),
+                ("c".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("b".to_owned(), array_type(vec![1], INT64)),
+                ("a".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![
+                ("a".to_owned(), "a".to_owned()),
+                ("b".to_owned(), "b".to_owned()),
+            ],
+            vec![vec![1], vec![2], vec![3], vec![4]],
+            vec![vec![1], vec![3], vec![2]],
+            vec![
+                (NULL_HEADER.to_owned(), vec![0, 1]),
+                ("a".to_owned(), vec![0, 2]),
+                ("b".to_owned(), vec![0, 3]),
+                ("c".to_owned(), vec![0, 0]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("a".to_owned(), array_type(vec![1], INT64)),
+                ("b".to_owned(), array_type(vec![1], INT64)),
+                ("c".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("b".to_owned(), array_type(vec![5], INT64)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+            ],
+            vec![
+                ("a".to_owned(), "a".to_owned()),
+                ("b".to_owned(), "b".to_owned()),
+            ],
+            vec![vec![1], vec![2], vec![3], vec![4]],
+            vec![
+                vec![1, 1, 1, 1, 1],
+                vec![3, 4, 5, 6, 7],
+                vec![2, 3, 4, 5, 6],
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), vec![0, 1, 1, 1, 1, 1]),
+                ("a".to_owned(), vec![0, 2, 3, 4, 5, 6]),
+                ("b".to_owned(), vec![0, 3, 4, 5, 6, 7]),
+                ("c".to_owned(), vec![0, 0, 0, 0, 0, 0]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("b".to_owned(), array_type(vec![5], INT64)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("a".to_owned(), array_type(vec![1], INT64)),
+                ("b".to_owned(), array_type(vec![1], INT64)),
+                ("c".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![
+                ("a".to_owned(), "a".to_owned()),
+                ("b".to_owned(), "b".to_owned()),
+            ],
+            vec![
+                vec![1, 1, 1, 1, 1],
+                vec![3, 4, 5, 6, 7],
+                vec![2, 3, 4, 5, 6],
+            ],
+            vec![vec![1], vec![2], vec![3], vec![4]],
+            vec![
+                (NULL_HEADER.to_owned(), vec![0, 1, 1, 1, 1, 1]),
+                ("b".to_owned(), vec![0, 4, 5, 6, 7, 3]),
+                ("a".to_owned(), vec![0, 3, 4, 5, 6, 2]),
+                ("c".to_owned(), vec![0, 0, 0, 0, 0, 4]),
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_semi_private_union_join() -> Result<()> {
+        let types_x = vec![
+            (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+            ("a".to_owned(), array_type(vec![5], INT64)),
+            ("b".to_owned(), array_type(vec![5, 4], BIT)),
+            ("c".to_owned(), array_type(vec![5], INT16)),
+        ];
+        let types_y = vec![
+            (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+            ("d".to_owned(), array_type(vec![6, 4], BIT)),
+            ("e".to_owned(), array_type(vec![6], INT16)),
+            ("f".to_owned(), array_type(vec![6, 2], BIT)),
+        ];
+        let mut headers = HashMap::new();
+        headers.insert("b".to_owned(), "d".to_owned());
+        headers.insert("c".to_owned(), "e".to_owned());
+        let op = Operation::Join(JoinType::Union, headers);
+        let values_x = vec![
+            vec![1, 1, 1, 1, 1],
+            vec![1, 2, 3, 4, 5],
+            array!([
+                [0, 0, 0, 1],
+                [0, 0, 1, 0],
+                [0, 0, 1, 1],
+                [0, 1, 0, 0],
+                [0, 1, 0, 1]
+            ])
+            .into_raw_vec(),
+            vec![100, 200, 300, 400, 500],
+        ];
+        let values_y = vec![
+            vec![1, 1, 1, 1, 1, 1],
+            array!([
+                [0, 0, 1, 1],
+                [0, 0, 0, 0],
+                [0, 1, 0, 0],
+                [0, 1, 1, 0],
+                [0, 1, 1, 1],
+                [1, 0, 0, 0]
+            ])
+            .into_raw_vec(),
+            vec![300, 210, 400, 410, 510, 610],
+            vec![0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0],
+        ];
+        let expected = vec![
+            (
+                NULL_HEADER.to_owned(),
+                vec![1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1],
+            ),
+            ("a".to_owned(), vec![1, 2, 0, 0, 5, 0, 0, 0, 0, 0, 0]),
+            (
+                "b".to_owned(),
+                array!([
+                    [0, 0, 0, 1],
+                    [0, 0, 1, 0],
+                    [0, 0, 0, 0],
+                    [0, 0, 0, 0],
+                    [0, 1, 0, 1],
+                    [0, 0, 1, 1],
+                    [0, 0, 0, 0],
+                    [0, 1, 0, 0],
+                    [0, 1, 1, 0],
+                    [0, 1, 1, 1],
+                    [1, 0, 0, 0]
+                ])
+                .into_raw_vec(),
+            ),
+            (
+                "c".to_owned(),
+                vec![100, 200, 0, 0, 500, 300, 210, 400, 410, 510, 610],
+            ),
+            (
+                "f".to_owned(),
+                vec![
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0,
+                ],
+            ),
+        ];
+        deterministic_join_helper(
+            types_x.clone(),
+            types_y.clone(),
+            op.clone(),
+            values_x.clone(),
+            values_y.clone(),
+            expected.clone(),
+            true,
+            false,
+        )?;
+        deterministic_join_helper(
+            types_x.clone(),
+            types_y.clone(),
+            op.clone(),
+            values_x.clone(),
+            values_y.clone(),
+            expected.clone(),
+            false,
+            true,
+        )?;
+        deterministic_join_helper(
+            types_x, types_y, op, values_x, values_y, expected, false, false,
+        )?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_private_full_join() -> Result<()> {
+        let data_helper = |types_x: Vec<(String, Type)>,
+                           types_y: Vec<(String, Type)>,
+                           headers: Vec<(String, String)>,
+                           values_x: Vec<Vec<u64>>,
+                           values_y: Vec<Vec<u64>>,
+                           expected: Vec<(String, Vec<u64>)>|
+         -> Result<()> {
+            let mut headers_map = HashMap::new();
+            for (h0, h1) in headers {
+                headers_map.insert(h0, h1);
+            }
+            deterministic_join_helper(
+                types_x,
+                types_y,
+                Operation::Join(JoinType::Full, headers_map),
+                values_x,
+                values_y,
+                expected,
+                true,
+                true,
+            )
+        };
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5], INT32)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("c".to_owned(), array_type(vec![6], INT32)),
+                ("d".to_owned(), array_type(vec![6], INT16)),
+            ],
+            vec![("b".to_owned(), "c".to_owned())],
+            vec![
+                vec![1, 1, 1, 1, 1],
+                vec![1, 2, 3, 4, 5],
+                vec![10, 20, 30, 40, 50],
+            ],
+            vec![
+                vec![1, 1, 1, 1, 1, 1],
+                vec![30, 21, 40, 41, 51, 61],
+                vec![300, 210, 400, 410, 510, 610],
+            ],
+            vec![
+                (
+                    NULL_HEADER.to_owned(),
+                    vec![1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1],
+                ),
+                ("a".to_owned(), vec![1, 2, 0, 0, 5, 3, 0, 4, 0, 0, 0]),
+                (
+                    "b".to_owned(),
+                    vec![10, 20, 0, 0, 50, 30, 21, 40, 41, 51, 61],
+                ),
+                (
+                    "d".to_owned(),
+                    vec![0, 0, 0, 0, 0, 300, 210, 400, 410, 510, 610],
+                ),
+            ],
+        )?;
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5, 4], BIT)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("b".to_owned(), array_type(vec![6, 4], BIT)),
+                ("c".to_owned(), array_type(vec![6], INT16)),
+            ],
+            vec![("b".to_owned(), "b".to_owned())],
+            vec![
+                vec![1, 1, 1, 0, 1],
+                vec![1, 2, 3, 4, 5],
+                array!([
+                    [0, 0, 0, 1],
+                    [0, 0, 1, 0],
+                    [0, 0, 1, 1],
+                    [0, 1, 0, 0],
+                    [0, 1, 0, 1]
+                ])
+                .into_raw_vec(),
+            ],
+            vec![
+                vec![1, 0, 1, 1, 1, 1],
+                array!([
+                    [0, 0, 1, 1],
+                    [1, 1, 1, 0],
+                    [0, 1, 0, 0],
+                    [0, 1, 1, 0],
+                    [0, 1, 1, 1],
+                    [1, 0, 0, 0]
+                ])
+                .into_raw_vec(),
+                vec![300, 210, 400, 410, 510, 610],
+            ],
+            vec![
+                (
+                    NULL_HEADER.to_owned(),
+                    vec![1, 1, 0, 0, 1, 1, 0, 1, 1, 1, 1],
+                ),
+                ("a".to_owned(), vec![1, 2, 0, 0, 5, 3, 0, 0, 0, 0, 0]),
+                (
+                    "b".to_owned(),
+                    array!([
+                        [0, 0, 0, 1],
+                        [0, 0, 1, 0],
+                        [0, 0, 0, 0],
+                        [0, 0, 0, 0],
+                        [0, 1, 0, 1],
+                        [0, 0, 1, 1],
+                        [0, 0, 0, 0],
+                        [0, 1, 0, 0],
+                        [0, 1, 1, 0],
+                        [0, 1, 1, 1],
+                        [1, 0, 0, 0]
+                    ])
+                    .into_raw_vec(),
+                ),
+                (
+                    "c".to_owned(),
+                    vec![0, 0, 0, 0, 0, 300, 0, 400, 410, 510, 610],
+                ),
+            ],
+        )?;
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5, 4], BIT)),
+                ("c".to_owned(), array_type(vec![5], INT16)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("d".to_owned(), array_type(vec![6, 4], BIT)),
+                ("e".to_owned(), array_type(vec![6], INT16)),
+                ("f".to_owned(), array_type(vec![6, 2], BIT)),
+            ],
+            vec![
+                ("b".to_owned(), "d".to_owned()),
+                ("c".to_owned(), "e".to_owned()),
+            ],
+            vec![
+                vec![1, 1, 1, 1, 1],
+                vec![1, 2, 3, 4, 5],
+                array!([
+                    [0, 0, 0, 1],
+                    [0, 0, 1, 0],
+                    [0, 0, 1, 1],
+                    [0, 1, 0, 0],
+                    [0, 1, 0, 1]
+                ])
+                .into_raw_vec(),
+                vec![100, 200, 300, 400, 500],
+            ],
+            vec![
+                vec![1, 1, 1, 1, 1, 1],
+                array!([
+                    [0, 0, 1, 1],
+                    [0, 0, 0, 0],
+                    [0, 1, 0, 0],
+                    [0, 1, 1, 0],
+                    [0, 1, 1, 1],
+                    [1, 0, 0, 0]
+                ])
+                .into_raw_vec(),
+                vec![300, 210, 400, 410, 510, 610],
+                vec![0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0],
+            ],
+            vec![
+                (
+                    NULL_HEADER.to_owned(),
+                    vec![1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1],
+                ),
+                ("a".to_owned(), vec![1, 2, 0, 0, 5, 3, 0, 4, 0, 0, 0]),
+                (
+                    "b".to_owned(),
+                    array!([
+                        [0, 0, 0, 1],
+                        [0, 0, 1, 0],
+                        [0, 0, 0, 0],
+                        [0, 0, 0, 0],
+                        [0, 1, 0, 1],
+                        [0, 0, 1, 1],
+                        [0, 0, 0, 0],
+                        [0, 1, 0, 0],
+                        [0, 1, 1, 0],
+                        [0, 1, 1, 1],
+                        [1, 0, 0, 0]
+                    ])
+                    .into_raw_vec(),
+                ),
+                (
+                    "c".to_owned(),
+                    vec![100, 200, 0, 0, 500, 300, 210, 400, 410, 510, 610],
+                ),
+                (
+                    "f".to_owned(),
+                    vec![
+                        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0,
+                    ],
+                ),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5, 2], INT32)),
+                ("c".to_owned(), array_type(vec![5], INT16)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("b".to_owned(), array_type(vec![6, 2], INT32)),
+                ("c".to_owned(), array_type(vec![6], INT16)),
+                ("d".to_owned(), array_type(vec![6], BIT)),
+            ],
+            vec![
+                ("b".to_owned(), "b".to_owned()),
+                ("c".to_owned(), "c".to_owned()),
+            ],
+            vec![
+                vec![1, 1, 0, 1, 1],
+                vec![1, 2, 3, 4, 5],
+                array!([[10, 10], [20, 20], [30, 30], [40, 40], [50, 50]]).into_raw_vec(),
+                vec![100, 200, 300, 400, 500],
+            ],
+            vec![
+                vec![1, 0, 1, 1, 1, 0],
+                array!([[30, 30], [21, 21], [40, 40], [41, 41], [51, 51], [61, 61]]).into_raw_vec(),
+                vec![300, 210, 400, 410, 510, 610],
+                vec![0, 1, 1, 0, 1, 0],
+            ],
+            vec![
+                (
+                    NULL_HEADER.to_owned(),
+                    vec![1, 1, 0, 0, 1, 1, 0, 1, 1, 1, 0],
+                ),
+                ("a".to_owned(), vec![1, 2, 0, 0, 5, 0, 0, 4, 0, 0, 0]),
+                (
+                    "b".to_owned(),
+                    array!([
+                        [10, 10],
+                        [20, 20],
+                        [0, 0],
+                        [0, 0],
+                        [50, 50],
+                        [30, 30],
+                        [0, 0],
+                        [40, 40],
+                        [41, 41],
+                        [51, 51],
+                        [0, 0]
+                    ])
+                    .into_raw_vec(),
+                ),
+                (
+                    "c".to_owned(),
+                    vec![100, 200, 0, 0, 500, 300, 0, 400, 410, 510, 0],
+                ),
+                ("d".to_owned(), vec![0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5], INT32)),
+                ("c".to_owned(), array_type(vec![5], INT16)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("b".to_owned(), array_type(vec![6], INT32)),
+                ("c".to_owned(), array_type(vec![6], INT16)),
+                ("d".to_owned(), array_type(vec![6], BIT)),
+            ],
+            vec![
+                ("b".to_owned(), "b".to_owned()),
+                ("c".to_owned(), "c".to_owned()),
+            ],
+            vec![
+                vec![1, 1, 1, 1, 1],
+                vec![1, 2, 3, 4, 5],
+                vec![10, 20, 30, 40, 50],
+                vec![100, 200, 300, 400, 500],
+            ],
+            vec![
+                vec![1, 1, 1, 1, 1, 1],
+                vec![60, 70, 80, 90, 100, 110],
+                vec![600, 700, 800, 900, 1000, 1100],
+                vec![0, 1, 1, 0, 1, 0],
+            ],
+            vec![
+                (
+                    NULL_HEADER.to_owned(),
+                    vec![1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                ),
+                ("a".to_owned(), vec![1, 2, 3, 4, 5, 0, 0, 0, 0, 0, 0]),
+                (
+                    "b".to_owned(),
+                    vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110],
+                ),
+                (
+                    "c".to_owned(),
+                    vec![100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100],
+                ),
+                ("d".to_owned(), vec![0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5], INT32)),
+                ("c".to_owned(), array_type(vec![5], INT16)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+                ("b".to_owned(), array_type(vec![6], INT32)),
+                ("c".to_owned(), array_type(vec![6], INT16)),
+                ("d".to_owned(), array_type(vec![6], BIT)),
+            ],
+            vec![
+                ("b".to_owned(), "b".to_owned()),
+                ("c".to_owned(), "c".to_owned()),
+            ],
+            vec![
+                vec![0, 0, 0, 1, 1],
+                vec![1, 2, 3, 4, 5],
+                vec![10, 20, 30, 40, 50],
+                vec![100, 200, 300, 400, 500],
+            ],
+            vec![
+                vec![1, 1, 1, 0, 0, 0],
+                vec![10, 20, 30, 40, 50, 60],
+                vec![100, 200, 300, 400, 500, 600],
+                vec![0, 1, 1, 0, 1, 0],
+            ],
+            vec![
+                (
+                    NULL_HEADER.to_owned(),
+                    vec![0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0],
+                ),
+                ("a".to_owned(), vec![0, 0, 0, 4, 5, 0, 0, 0, 0, 0, 0]),
+                ("b".to_owned(), vec![0, 0, 0, 40, 50, 10, 20, 30, 0, 0, 0]),
+                (
+                    "c".to_owned(),
+                    vec![0, 0, 0, 400, 500, 100, 200, 300, 0, 0, 0],
+                ),
+                ("d".to_owned(), vec![0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("a".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("b".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![("a".to_owned(), "b".to_owned())],
+            vec![vec![1], vec![10]],
+            vec![vec![1], vec![10]],
+            vec![
+                (NULL_HEADER.to_owned(), vec![0, 1]),
+                ("a".to_owned(), vec![0, 10]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("a".to_owned(), array_type(vec![1], INT64)),
+                ("b".to_owned(), array_type(vec![1], INT64)),
+                ("c".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("b".to_owned(), array_type(vec![1], INT64)),
+                ("a".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![
+                ("a".to_owned(), "a".to_owned()),
+                ("b".to_owned(), "b".to_owned()),
+            ],
+            vec![vec![1], vec![2], vec![3], vec![4]],
+            vec![vec![1], vec![3], vec![2]],
+            vec![
+                (NULL_HEADER.to_owned(), vec![0, 1]),
+                ("a".to_owned(), vec![0, 2]),
+                ("b".to_owned(), vec![0, 3]),
+                ("c".to_owned(), vec![0, 4]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("a".to_owned(), array_type(vec![1], INT64)),
+                ("b".to_owned(), array_type(vec![1], INT64)),
+                ("c".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("b".to_owned(), array_type(vec![5], INT64)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+            ],
+            vec![
+                ("a".to_owned(), "a".to_owned()),
+                ("b".to_owned(), "b".to_owned()),
+            ],
+            vec![vec![1], vec![2], vec![3], vec![4]],
+            vec![
+                vec![1, 1, 1, 1, 1],
+                vec![3, 4, 5, 6, 7],
+                vec![2, 3, 4, 5, 6],
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), vec![0, 1, 1, 1, 1, 1]),
+                ("a".to_owned(), vec![0, 2, 3, 4, 5, 6]),
+                ("b".to_owned(), vec![0, 3, 4, 5, 6, 7]),
+                ("c".to_owned(), vec![0, 4, 0, 0, 0, 0]),
+            ],
+        )?;
+
+        data_helper(
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+                ("b".to_owned(), array_type(vec![5], INT64)),
+                ("a".to_owned(), array_type(vec![5], INT64)),
+            ],
+            vec![
+                (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
+                ("a".to_owned(), array_type(vec![1], INT64)),
+                ("b".to_owned(), array_type(vec![1], INT64)),
+                ("c".to_owned(), array_type(vec![1], INT64)),
+            ],
+            vec![
+                ("a".to_owned(), "a".to_owned()),
+                ("b".to_owned(), "b".to_owned()),
+            ],
+            vec![
+                vec![1, 1, 1, 1, 1],
+                vec![3, 4, 5, 6, 7],
+                vec![2, 3, 4, 5, 6],
+            ],
+            vec![vec![1], vec![2], vec![3], vec![4]],
+            vec![
+                (NULL_HEADER.to_owned(), vec![0, 1, 1, 1, 1, 1]),
+                ("b".to_owned(), vec![0, 4, 5, 6, 7, 3]),
+                ("a".to_owned(), vec![0, 3, 4, 5, 6, 2]),
+                ("c".to_owned(), vec![0, 0, 0, 0, 0, 4]),
+            ],
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_semi_private_full_join() -> Result<()> {
+        let types_x = vec![
+            (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
+            ("a".to_owned(), array_type(vec![5], INT64)),
+            ("b".to_owned(), array_type(vec![5, 4], BIT)),
+            ("c".to_owned(), array_type(vec![5], INT16)),
+        ];
+        let types_y = vec![
+            (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
+            ("d".to_owned(), array_type(vec![6, 4], BIT)),
+            ("e".to_owned(), array_type(vec![6], INT16)),
+            ("f".to_owned(), array_type(vec![6, 2], BIT)),
+        ];
+        let mut headers = HashMap::new();
+        headers.insert("b".to_owned(), "d".to_owned());
+        headers.insert("c".to_owned(), "e".to_owned());
+        let op = Operation::Join(JoinType::Full, headers);
+        let values_x = vec![
+            vec![1, 1, 1, 1, 1],
+            vec![1, 2, 3, 4, 5],
+            array!([
+                [0, 0, 0, 1],
+                [0, 0, 1, 0],
+                [0, 0, 1, 1],
+                [0, 1, 0, 0],
+                [0, 1, 0, 1]
+            ])
+            .into_raw_vec(),
+            vec![100, 200, 300, 400, 500],
+        ];
+        let values_y = vec![
+            vec![1, 1, 1, 1, 1, 1],
+            array!([
+                [0, 0, 1, 1],
+                [0, 0, 0, 0],
+                [0, 1, 0, 0],
+                [0, 1, 1, 0],
+                [0, 1, 1, 1],
+                [1, 0, 0, 0]
+            ])
+            .into_raw_vec(),
+            vec![300, 210, 400, 410, 510, 610],
+            vec![0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0],
+        ];
+        let expected = vec![
+            (
+                NULL_HEADER.to_owned(),
+                vec![1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1],
+            ),
+            ("a".to_owned(), vec![1, 2, 0, 0, 5, 3, 0, 4, 0, 0, 0]),
+            (
+                "b".to_owned(),
+                array!([
+                    [0, 0, 0, 1],
+                    [0, 0, 1, 0],
+                    [0, 0, 0, 0],
+                    [0, 0, 0, 0],
+                    [0, 1, 0, 1],
+                    [0, 0, 1, 1],
+                    [0, 0, 0, 0],
+                    [0, 1, 0, 0],
+                    [0, 1, 1, 0],
+                    [0, 1, 1, 1],
+                    [1, 0, 0, 0]
+                ])
+                .into_raw_vec(),
+            ),
+            (
+                "c".to_owned(),
+                vec![100, 200, 0, 0, 500, 300, 210, 400, 410, 510, 610],
+            ),
+            (
+                "f".to_owned(),
+                vec![
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0,
+                ],
+            ),
+        ];
+        deterministic_join_helper(
+            types_x.clone(),
+            types_y.clone(),
+            op.clone(),
+            values_x.clone(),
+            values_y.clone(),
+            expected.clone(),
+            true,
+            false,
+        )?;
+        deterministic_join_helper(
+            types_x.clone(),
+            types_y.clone(),
+            op.clone(),
+            values_x.clone(),
+            values_y.clone(),
+            expected.clone(),
+            false,
+            true,
+        )?;
+        deterministic_join_helper(
+            types_x, types_y, op, values_x, values_y, expected, false, false,
+        )?;
+
+        Ok(())
     }
 }

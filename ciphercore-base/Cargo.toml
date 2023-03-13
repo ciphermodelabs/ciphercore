@@ -40,7 +40,6 @@ futures-util = "0.3.21"
 
 [features]
 default = []
-nightly-features = []
 fuzzing = []
 py-binding = ["dep:pyo3", "dep:pywrapper-macro"]
 
@@ -87,3 +86,7 @@ path = "src/bin/ciphercore_split_parties.rs"
 [[bin]]
 name = "ciphercore_gen_zero_input"
 path = "src/bin/ciphercore_gen_zero_input.rs"
+
+[[bin]]
+name = "ciphercore_a2b"
+path = "src/bin/ciphercore_a2b.rs"

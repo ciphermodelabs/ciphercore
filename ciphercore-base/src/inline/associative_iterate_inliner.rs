@@ -101,6 +101,7 @@ mod tests {
     use super::*;
     use crate::data_types::{scalar_type, BIT};
     use crate::graphs::create_context;
+    use crate::graphs::util::simple_context;
     use crate::inline::inline_test_utils::{build_test_data, resolve_tuple_get, MockInlineState};
 
     #[test]
@@ -151,14 +152,11 @@ mod tests {
     #[test]
     fn test_associative_iterate_empty_input() {
         || -> Result<()> {
-            let c = create_context()?;
-            let g1 = c.create_graph()?;
-            let i1 = g1.input(scalar_type(BIT))?;
-            let o1 = g1.create_tuple(vec![i1.clone(), i1.clone()])?;
-            o1.set_as_output()?;
-            g1.finalize()?;
-            g1.set_as_main()?;
-            c.finalize()?;
+            let c = simple_context(|g| {
+                let i = g.input(scalar_type(BIT))?;
+                g.create_tuple(vec![i.clone(), i.clone()])
+            })?;
+            let g = c.get_main_graph()?;
             let output_c = create_context()?;
             let output_g = output_c.create_graph()?;
             let vec = output_g.create_vector(scalar_type(BIT), vec![])?;
@@ -170,7 +168,7 @@ mod tests {
                 returned_nodes: vec![],
             };
             let res = inline_iterate_associative(
-                g1.clone(),
+                g.clone(),
                 s0.clone(),
                 vec.clone(),
                 DepthOptimizationLevel::Extreme,

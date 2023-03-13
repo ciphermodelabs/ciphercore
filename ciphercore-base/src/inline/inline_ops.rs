@@ -460,6 +460,7 @@ mod tests {
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
     use crate::graphs::create_context;
+    use crate::graphs::util::simple_context;
     use crate::graphs::{contexts_deep_equal, NodeAnnotation, SliceElement};
     use crate::ops::comparisons::{Equal, LessThan};
     use rand::rngs::StdRng;
@@ -1158,24 +1159,20 @@ mod tests {
     #[test]
     fn test_small_state_iterate_comparisons() {
         let helper = |equal: bool, mode, x1: Vec<u64>, x2: Vec<u64>| -> Result<Vec<u64>> {
-            let c = create_context()?;
-            let g = c.create_graph()?;
-            let i1 = g.input(array_type(vec![x1.len() as u64], UINT64))?;
-            let i2 = g.input(array_type(vec![x2.len() as u64], UINT64))?;
-            let o = if equal {
-                g.custom_op(CustomOperation::new(Equal {}), vec![i1.a2b()?, i2.a2b()?])?
-            } else {
-                g.custom_op(
-                    CustomOperation::new(LessThan {
-                        signed_comparison: false,
-                    }),
-                    vec![i1.a2b()?, i2.a2b()?],
-                )?
-            };
-            o.set_as_output()?;
-            g.finalize()?;
-            g.set_as_main()?;
-            c.finalize()?;
+            let c = simple_context(|g| {
+                let i1 = g.input(array_type(vec![x1.len() as u64], UINT64))?;
+                let i2 = g.input(array_type(vec![x2.len() as u64], UINT64))?;
+                if equal {
+                    g.custom_op(CustomOperation::new(Equal {}), vec![i1.a2b()?, i2.a2b()?])
+                } else {
+                    g.custom_op(
+                        CustomOperation::new(LessThan {
+                            signed_comparison: false,
+                        }),
+                        vec![i1.a2b()?, i2.a2b()?],
+                    )
+                }
+            })?;
             let mapped_c = run_instantiation_pass(c)?.get_context();
             let c_out = inline_operations(
                 mapped_c.clone(),

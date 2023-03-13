@@ -1,5 +1,4 @@
 //! Code of a binary printing statistics on a given serialized context.
-#![cfg_attr(feature = "nightly-features", feature(backtrace))]
 extern crate ciphercore_base;
 
 use ciphercore_base::data_types::{
@@ -88,7 +87,7 @@ fn calculate_network_rounds(graph: Graph) -> Result<u32> {
     let nodes = graph.get_nodes();
     let mut nops = HashMap::<Node, u32>::new();
     for node in nodes {
-        let node_is_network = if is_network_node(node.clone())? { 1 } else { 0 };
+        let node_is_network = u32::from(is_network_node(node.clone())?);
         let dependee_nops_max = node
             .get_node_dependencies()
             .iter()
@@ -101,7 +100,7 @@ fn calculate_network_rounds(graph: Graph) -> Result<u32> {
 }
 
 const TWO: u64 = 2;
-fn format_traffic(t_in_bits: u64) -> String {
+fn format_bits(t_in_bits: u64) -> String {
     let t_in_bytes = t_in_bits / 8;
     if t_in_bytes >= TWO.pow(30) {
         format!("{:.2}GB", t_in_bytes as f32 / TWO.pow(30) as f32)
@@ -110,7 +109,7 @@ fn format_traffic(t_in_bits: u64) -> String {
     } else if t_in_bytes >= TWO.pow(10) {
         format!("{:.2}KB", t_in_bytes as f32 / TWO.pow(10) as f32)
     } else {
-        format!("{}B", t_in_bytes)
+        format!("{t_in_bytes}B")
     }
 }
 
@@ -123,8 +122,46 @@ fn format_operations(ops: u64) -> String {
     } else if ops >= TEN.pow(3) {
         format!("{:.2}K Ops", ops as f32 / TEN.pow(3) as f32)
     } else {
-        format!("{} Ops", ops)
+        format!("{ops} Ops")
     }
+}
+
+struct RamStats {
+    peak_ram_bits: u64,
+    total_ram_bits: u64,
+}
+
+fn calculate_ram_stats(graph: Graph) -> Result<RamStats> {
+    let nodes = graph.get_nodes();
+    let mut node_size = vec![];
+    for node in nodes.iter() {
+        node_size.push(get_size_in_bits(node.get_type()?)?);
+    }
+    let mut remaining_dependents = vec![0; nodes.len()];
+    for node in nodes.iter() {
+        for dep in node.get_node_dependencies() {
+            remaining_dependents[dep.get_id() as usize] += 1;
+        }
+    }
+    let mut max_ram = 0;
+    let mut cur_ram = 0;
+    let mut total_ram = 0;
+    for node in nodes.iter() {
+        cur_ram += node_size[node.get_id() as usize];
+        total_ram += node_size[node.get_id() as usize];
+        for dep in node.get_node_dependencies() {
+            let dep_id = dep.get_id() as usize;
+            remaining_dependents[dep_id] -= 1;
+            if remaining_dependents[dep_id] == 0 {
+                cur_ram -= node_size[dep_id];
+            }
+        }
+        max_ram = max_ram.max(cur_ram);
+    }
+    Ok(RamStats {
+        peak_ram_bits: max_ram,
+        total_ram_bits: total_ram,
+    })
 }
 
 pub(crate) fn print_stats(graph: Graph) -> Result<()> {
@@ -139,14 +176,12 @@ pub(crate) fn print_stats(graph: Graph) -> Result<()> {
     let mut total_64bits_operations = 0;
     for node in graph.get_nodes() {
         let op = node.get_operation();
-        let op_name = format!("{}", op);
+        let op_name = format!("{op}");
         *cnt.entry(op_name).or_insert(0) += 1;
         match op {
             Operation::Input(_) => {
                 let input = InputInfo {
-                    name: node
-                        .get_name()
-                        .or_else(|_| Result::Ok("unnamed".to_string()))?,
+                    name: node.get_name()?.unwrap_or_else(|| "unnamed".to_owned()),
                     type_string: format!("{}", node.get_type()?),
                 };
                 inputs.push(input);
@@ -162,9 +197,7 @@ pub(crate) fn print_stats(graph: Graph) -> Result<()> {
             | Operation::Dot
             | Operation::Matmul
             | Operation::Truncate(_)
-            | Operation::Sum(_)
-            | Operation::Random(_)
-            | Operation::PRF(_, _) => {
+            | Operation::Sum(_) => {
                 let st = node.get_type()?.get_scalar_type();
                 let ops = calculate_integer_operations(node.clone())?;
                 match st {
@@ -193,18 +226,18 @@ pub(crate) fn print_stats(graph: Graph) -> Result<()> {
 
     let output_node = graph.get_output_node()?;
     let output_name = output_node
-        .get_name()
-        .or_else(|_| Result::Ok("unnamed".to_string()))?;
+        .get_name()?
+        .unwrap_or_else(|| "unnamed".to_owned());
     let output_type = format!("{}", output_node.get_type()?);
     println!("Output: ",);
-    println!("  Name:{}", output_name);
-    println!("  Type:{}", output_type);
+    println!("  Name:{output_name}");
+    println!("  Type:{output_type}");
 
-    println!("Network rounds: {}", network_rounds);
-    println!(
-        "Network traffic: {}",
-        format_traffic(network_traffic_in_bits)
-    );
+    println!("Network rounds: {network_rounds}");
+    println!("Network traffic: {}", format_bits(network_traffic_in_bits));
+    let ram_stats = calculate_ram_stats(graph.clone())?;
+    println!("Peak RAM: {}", format_bits(ram_stats.peak_ram_bits));
+    println!("Total RAM: {}", format_bits(ram_stats.total_ram_bits));
     println!(
         "Total number of integer arithmetic operations:   {}",
         format_operations(total_integer_operations)

@@ -186,23 +186,19 @@ mod tests {
     use crate::custom_ops::CustomOperation;
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
-    use crate::graphs::create_context;
+    use crate::graphs::util::simple_context;
 
     fn scalar_helper(arg: i64, precision: u64) -> Result<i64> {
-        let c = create_context()?;
-        let g = c.create_graph()?;
-        let i = g.input(scalar_type(INT64))?;
-        let o = g.custom_op(
-            CustomOperation::new(TaylorExponent {
-                taylor_terms: 5,
-                fixed_precision_points: precision,
-            }),
-            vec![i],
-        )?;
-        o.set_as_output()?;
-        g.finalize()?;
-        g.set_as_main()?;
-        c.finalize()?;
+        let c = simple_context(|g| {
+            let i = g.input(scalar_type(INT64))?;
+            g.custom_op(
+                CustomOperation::new(TaylorExponent {
+                    taylor_terms: 5,
+                    fixed_precision_points: precision,
+                }),
+                vec![i],
+            )
+        })?;
         let mapped_c = run_instantiation_pass(c)?;
         let result = random_evaluate(
             mapped_c.get_context().get_main_graph()?,
@@ -213,21 +209,17 @@ mod tests {
     }
 
     fn array_helper(arg: Vec<i64>) -> Result<Vec<i64>> {
-        let c = create_context()?;
-        let g = c.create_graph()?;
         let array_t = array_type(vec![arg.len() as u64], INT64);
-        let i = g.input(array_t.clone())?;
-        let o = g.custom_op(
-            CustomOperation::new(TaylorExponent {
-                taylor_terms: 5,
-                fixed_precision_points: 10,
-            }),
-            vec![i],
-        )?;
-        o.set_as_output()?;
-        g.finalize()?;
-        g.set_as_main()?;
-        c.finalize()?;
+        let c = simple_context(|g| {
+            let i = g.input(array_t.clone())?;
+            g.custom_op(
+                CustomOperation::new(TaylorExponent {
+                    taylor_terms: 5,
+                    fixed_precision_points: 10,
+                }),
+                vec![i],
+            )
+        })?;
         let mapped_c = run_instantiation_pass(c)?;
         let result = random_evaluate(
             mapped_c.get_context().get_main_graph()?,

@@ -2,6 +2,7 @@
 use ciphercore_utils::errors::{CiphercoreErrorBody, ErrorWithBody};
 use json::JsonError;
 use ndarray::ShapeError;
+use openssl::error::ErrorStack;
 use std::num::ParseIntError;
 
 use serde::{Deserialize, Serialize};
@@ -11,24 +12,30 @@ use std::fmt;
 #[doc(hidden)]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CiphercoreBaseError {
-    body: CiphercoreErrorBody,
+    body: Box<CiphercoreErrorBody>,
 }
 
 impl CiphercoreBaseError {
     pub fn new(body: CiphercoreErrorBody) -> Self {
+        Self {
+            body: Box::new(body),
+        }
+    }
+
+    pub fn new_box(body: Box<CiphercoreErrorBody>) -> Self {
         Self { body }
     }
 }
 
 impl ErrorWithBody for CiphercoreBaseError {
-    fn get_body(&self) -> CiphercoreErrorBody {
-        self.body.clone()
+    fn get_body(self) -> Box<CiphercoreErrorBody> {
+        self.body
     }
 }
 
 impl fmt::Display for CiphercoreBaseError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", serde_json::to_string_pretty(&self).unwrap())
+        self.body.fmt(f)
     }
 }
 
@@ -100,6 +107,12 @@ impl From<std::str::Utf8Error> for CiphercoreBaseError {
         runtime_error!("Utf8Error: {}", err)
     }
 }
+
+impl From<ErrorStack> for CiphercoreBaseError {
+    fn from(err: ErrorStack) -> CiphercoreBaseError {
+        runtime_error!("OpenSSL error: {}", err)
+    }
+}
 /// Result type within CipherCore that is used for error handling.
 ///
 /// This is a wrapper of the Rust [Result](https://doc.rust-lang.org/std/result/) type that is effectively an enum with the variants, `Ok(T)` and `Err(E)`, where `E` is a CipherCore error containing lots of useful information.
@@ -116,5 +129,15 @@ mod tests {
             let err = CiphercoreBaseError::from(e);
             assert!(err.to_string().find("serde_json::Error: ").is_some())
         }
+    }
+
+    #[test]
+    fn error_size_should_be_small() {
+        // Types like `Result<u32, Err>` takes max(4, size_of(Err)) bytes, which could be
+        // quite expensive. So we wrap errors into Box.
+        //
+        // See more: https://rust-lang.github.io/rust-clippy/master/index.html#result_large_err
+        let size = std::mem::size_of::<CiphercoreBaseError>();
+        assert!(size <= 16);
     }
 }

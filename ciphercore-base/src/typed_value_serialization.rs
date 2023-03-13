@@ -405,7 +405,7 @@ impl TypedValue {
         match &self.t {
             Type::Scalar(st) => {
                 s.serialize_field("kind", &"scalar")?;
-                s.serialize_field("type", &format!("{}", st))?;
+                s.serialize_field("type", &format!("{st}"))?;
                 match *st {
                     BIT => ser_value_to_scalar_aux!(s, self.value, st, to_u8)?,
                     UINT8 => ser_value_to_scalar_aux!(s, self.value, st, to_u8)?,
@@ -424,7 +424,7 @@ impl TypedValue {
             }
             Type::Array(ref_shape, st) => {
                 s.serialize_field("kind", &"array")?;
-                s.serialize_field("type", &format!("{}", st))?;
+                s.serialize_field("type", &format!("{st}"))?;
                 let shape = ref_shape.clone();
                 match *st {
                     BIT => ser_value_to_scalar_array_aux!(

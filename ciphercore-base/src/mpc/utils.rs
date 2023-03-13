@@ -34,32 +34,37 @@ pub(super) struct ObliviousTransfer {
 #[typetag::serde]
 impl CustomOperationBody for ObliviousTransfer {
     fn instantiate(&self, context: Context, argument_types: Vec<Type>) -> Result<Graph> {
-        // Panics since:
-        // - the user has no direct access to this function.
-        // - the MPC compiler should pass the correct number of arguments
-        // and this panic should never happen.
         if argument_types.len() != 4 {
-            panic!("Oblivious transport should have 4 input types");
+            return Err(runtime_error!(
+                "Oblivious transport should have 4 input types"
+            ));
         }
         if argument_types[0] != argument_types[1] {
-            panic!("First two input types should be equal")
+            return Err(runtime_error!("First two input types should be equal"));
         }
         let bit_type = argument_types[2].clone();
         if bit_type.get_scalar_type() != BIT {
-            panic!("Bit type should be a binary array or scalar");
+            return Err(runtime_error!(
+                "Bit type should be a binary array or scalar"
+            ));
         }
         let key_type = argument_types[3].clone();
         if key_type != array_type(vec![KEY_LENGTH], BIT) {
-            panic!("Key type should be a binary array of length {}", KEY_LENGTH);
+            return Err(runtime_error!(
+                "Key type should be a binary array of length {}",
+                KEY_LENGTH
+            ));
         }
         if self.sender_id >= PARTIES as u64 {
-            panic!("Sender ID is incorrect");
+            return Err(runtime_error!("Sender ID is incorrect"));
         }
         if self.receiver_id >= PARTIES as u64 {
-            panic!("Receiver ID is incorrect");
+            return Err(runtime_error!("Receiver ID is incorrect"));
         }
         if self.sender_id == self.receiver_id {
-            panic!("Receiver ID should be different from the sender id")
+            return Err(runtime_error!(
+                "Receiver ID should be different from the sender id"
+            ));
         }
 
         let g = context.create_graph()?;
@@ -225,7 +230,7 @@ mod tests {
         custom_ops::{run_instantiation_pass, CustomOperation},
         data_types::{INT32, UINT32},
         evaluators::random_evaluate,
-        graphs::create_context,
+        graphs::util::simple_context,
         inline::inline_ops::{inline_operations, InlineConfig, InlineMode},
         mpc::{
             mpc_compiler::IOStatus,
@@ -264,43 +269,36 @@ mod tests {
     fn test_oblivious_transfer() {
         // test correct inputs
         let roles_helper = |sender_id: u64, receiver_id: u64| -> Result<()> {
-            let c = create_context()?;
-
-            let input_type = array_type(vec![2], INT32);
-            let bit_type = array_type(vec![2], BIT);
-
-            let g = c.create_graph()?;
-
-            let i0 = g.input(input_type.clone())?;
-            let i1 = g.input(input_type.clone())?;
-
-            // Generate a selecting bit known by parties 0 and 2
             let helper_id = PARTIES as u64 - sender_id - receiver_id;
-            let b = g
-                .input(bit_type.clone())?
-                .nop()?
-                .add_annotation(NodeAnnotation::Send(receiver_id, helper_id))?;
+            let c = simple_context(|g| {
+                let input_type = array_type(vec![2], INT32);
+                let bit_type = array_type(vec![2], BIT);
 
-            // Generate a PRF key known to the sender and helper
-            let key_t = array_type(vec![KEY_LENGTH], BIT);
-            let key = g
-                .random(key_t.clone())?
-                .nop()?
-                .add_annotation(NodeAnnotation::Send(helper_id, sender_id))?;
+                let i0 = g.input(input_type.clone())?;
+                let i1 = g.input(input_type.clone())?;
 
-            // Run the OT protocol with party 0 being a receiver and party 1 being a sender.
-            let o = g.custom_op(
-                CustomOperation::new(ObliviousTransfer {
-                    sender_id,
-                    receiver_id,
-                }),
-                vec![i0, i1, b, key],
-            )?;
-            o.set_as_output()?;
+                // Generate a selecting bit known by parties 0 and 2
+                let b = g
+                    .input(bit_type.clone())?
+                    .nop()?
+                    .add_annotation(NodeAnnotation::Send(receiver_id, helper_id))?;
 
-            g.finalize()?;
-            g.set_as_main()?;
-            c.finalize()?;
+                // Generate a PRF key known to the sender and helper
+                let key_t = array_type(vec![KEY_LENGTH], BIT);
+                let key = g
+                    .random(key_t.clone())?
+                    .nop()?
+                    .add_annotation(NodeAnnotation::Send(helper_id, sender_id))?;
+
+                // Run the OT protocol with party 0 being a receiver and party 1 being a sender.
+                g.custom_op(
+                    CustomOperation::new(ObliviousTransfer {
+                        sender_id,
+                        receiver_id,
+                    }),
+                    vec![i0, i1, b, key],
+                )
+            })?;
 
             let instantiated_c = run_instantiation_pass(c)?.context;
             let inlined_c = inline_operations(
