@@ -4,11 +4,13 @@ use crate::data_types::{array_type, vector_type, Type, BIT};
 use crate::errors::Result;
 use crate::graphs::SliceElement::SubArray;
 use crate::graphs::*;
-use crate::ops::min_max::{Max, Min};
 
 use serde::{Deserialize, Serialize};
 
-/// A structure that defines the custom operation BinaryAdd that implements sorting of binary strings representing signed or unsigned numbers.
+use super::comparisons::LessThan;
+use super::utils::unsqueeze;
+
+/// A structure that defines the custom operation Sort that implements sorting of binary strings representing signed or unsigned numbers.
 ///
 /// This operation sorts an array of `k` bitstrings with `b` bits in  using [Batcher's algorithm](https://math.mit.edu/~shor/18.310/batcher.pdf).
 /// Bitstrings can be sorted in ascending lexicographic order, or they can be interpreted and sorted in ascending order as signed integers,
@@ -234,24 +236,12 @@ impl CustomOperationBody for Sort {
                     // Get the group of even indexed keys from each group or class, i.e., Z_{1}
                     let vv = g.get(chunks_a.clone(), vec![1])?;
 
-                    // Get minimums from both the classes
-                    let chunks_a_0 = g.custom_op(
-                        CustomOperation::new(Min {
-                            signed_comparison: self.signed_comparison,
-                        }),
-                        vec![uu.clone(), vv.clone()],
-                    )?;
+                    // Get minimums and maximums from both the classes
+                    let (chunks_a_0, chunks_a_1) =
+                        get_min_max(uu.clone(), vv.clone(), self.signed_comparison)?;
                     // For it==1, i==0, chunks_a_0 = [[min(0, 1), min(2, 3), ..., min(12, 13), min(14, 15)]]
                     // For it==2, i==1, chunks_a_0 = [[min(0, 2), min(4, 6), min(8, 10), min(12, 14)],
                     //                                [min(1, 3), min(5, 7), min(9, 11), min(13, 15)]]
-
-                    // Get maximums from both the classes
-                    let chunks_a_1 = g.custom_op(
-                        CustomOperation::new(Max {
-                            signed_comparison: self.signed_comparison,
-                        }),
-                        vec![uu.clone(), vv.clone()],
-                    )?;
                     // For it==1, i==0, chunks_a_1 = [[max(0, 1), max(2, 3), ..., max(12, 13), max(14, 15)]]
                     // For it==2, i==1, chunks_a_0 = [[max(0, 2), max(4, 6), max(8, 10), max(12, 14)],
                     //                                [max(1, 3), max(5, 7), max(9, 11), max(13, 15)]]
@@ -346,25 +336,13 @@ impl CustomOperationBody for Sort {
                     //      [[min(1, 3), max(1, 3), min(5, 7), max(5, 7)]],
                     // ]
 
-                    // Obtain the minimum of these two arrays - uu and vv
-                    let chunks_a_evens = g.custom_op(
-                        CustomOperation::new(Min {
-                            signed_comparison: self.signed_comparison,
-                        }),
-                        vec![uu.clone(), vv.clone()],
-                    )?;
+                    // Obtain the minimum and maximum of these two arrays - uu and vv
+                    let (chunks_a_evens, chunks_a_odds) =
+                        get_min_max(uu.clone(), vv.clone(), self.signed_comparison)?;
                     // For it==2, i==0, chunks_a_evens shape = [1, 1, 4, x], chunks_a_evens =
                     // [
                     //      [[min(8, 10, 1, 3), min(max(8, 10), max(1, 3)), min(12, 14, 5, 7), min(max(12, 14), max(5, 7))]]
                     // ]
-
-                    // Obtain the maximum of these two arrays - uu and vv
-                    let chunks_a_odds = g.custom_op(
-                        CustomOperation::new(Max {
-                            signed_comparison: self.signed_comparison,
-                        }),
-                        vec![uu.clone(), vv.clone()],
-                    )?;
                     // For it==2, i==0, chunks_a_odds shape = [1, 1, 4, x], chunks_a_odds =
                     // [
                     //      [[max(min(8, 10), min(1, 3)), max(8, 10, 1, 3), max(min(12, 14), min(5, 7)), max(12, 14, 5, 7)]]
@@ -462,7 +440,7 @@ impl CustomOperationBody for Sort {
                 // Reshape/Merge it back into 2-D from the 3-D we created for performing
                 // the Min/Max compare and switches
                 global_chunks_a = g.reshape(
-                    intermediate_chunks_a[(intermediate_chunks_a.len() - 1) as usize].clone(),
+                    intermediate_chunks_a[intermediate_chunks_a.len() - 1].clone(),
                     array_type(vec![num_classes, num_class_reps, self.b], BIT),
                 )?;
                 // For it==1, i==0, reshape latest intermediate_chunk_a from [2, 1, 8, x] -> [2, 8, x] for next global_chunks_a
@@ -521,6 +499,21 @@ impl CustomOperationBody for Sort {
     }
 }
 
+fn get_min_max(x: Node, y: Node, signed: bool) -> Result<(Node, Node)> {
+    let g = x.get_graph();
+    let less = g.custom_op(
+        CustomOperation::new(LessThan {
+            signed_comparison: signed,
+        }),
+        vec![x.clone(), y.clone()],
+    )?;
+    let less = unsqueeze(less, -1)?;
+    let x_plus_y = x.add(y.clone())?;
+    let min = y.add(less.multiply(x_plus_y.clone())?)?;
+    let max = min.add(x_plus_y)?;
+    Ok((min, max))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -528,6 +521,7 @@ mod tests {
     use crate::data_types::{scalar_size_in_bits, ScalarType, BIT, INT64, UINT16, UINT32, UINT64};
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
+    use crate::graphs::util::simple_context;
     use crate::random::PRNG;
     use std::cmp::Reverse;
 
@@ -540,35 +534,32 @@ mod tests {
     /// * `k` - number of elements of an array (i.e., 2<sup>k</sup>)
     /// * `st` - scalar type of array elements
     fn test_large_vec_batchers_sorting(k: u32, st: ScalarType) -> Result<()> {
-        let context = create_context()?;
-        let graph = context.create_graph()?;
         let n = 2u64.pow(k);
-        let b = scalar_size_in_bits(st.clone());
-        let i = graph.input(array_type(vec![n], st.clone()))?;
-        let i_binary = if st == BIT {
-            i.reshape(array_type(vec![n, 1], BIT))?
-        } else {
-            i.a2b()?
-        };
-        let signed_comparison = st.get_signed();
-        let sorted = graph.custom_op(
-            CustomOperation::new(Sort {
-                k,
-                b,
-                signed_comparison,
-            }),
-            vec![i_binary],
-        )?;
-        let o = if st == BIT {
-            sorted
-        } else {
-            sorted.b2a(st.clone())?
-        };
-        o.set_as_output()?;
-        graph.finalize()?;
-        graph.set_as_main()?;
-        context.finalize()?;
-
+        let context = simple_context(|g| {
+            let b = scalar_size_in_bits(st.clone());
+            let i = g.input(array_type(vec![n], st.clone()))?;
+            let i_binary = if st == BIT {
+                i.reshape(array_type(vec![n, 1], BIT))?
+            } else {
+                i.a2b()?
+            };
+            let signed_comparison = st.get_signed();
+            let sorted = g.custom_op(
+                CustomOperation::new(Sort {
+                    k,
+                    b,
+                    signed_comparison,
+                }),
+                vec![i_binary],
+            )?;
+            let o = if st == BIT {
+                sorted
+            } else {
+                sorted.b2a(st.clone())?
+            };
+            Ok(o)
+        })?;
+        let graph = context.get_main_graph()?;
         let mapped_c = run_instantiation_pass(graph.get_context())?;
 
         let seed = b"\xB6\xD7\x1A\x2F\x88\xC1\x12\xBA\x3F\x2E\x17\xAB\xB7\x46\x15\x9A";
@@ -602,35 +593,32 @@ mod tests {
     /// * `k` - number of elements of an array (i.e., 2<sup>k</sup>)
     /// * `st` - scalar type of array elements
     fn test_batchers_sorting_graph_helper(k: u32, st: ScalarType, data: Vec<u64>) -> Result<()> {
-        let context = create_context()?;
-        let graph = context.create_graph()?;
-        let n = 2u64.pow(k);
-        let b = scalar_size_in_bits(st.clone());
-        let signed_comparison = st.get_signed();
-        let i = graph.input(array_type(vec![n], st.clone()))?;
-        let i_binary = if st == BIT {
-            i.reshape(array_type(vec![n, 1], BIT))?
-        } else {
-            i.a2b()?
-        };
-        let sorted = graph.custom_op(
-            CustomOperation::new(Sort {
-                k,
-                b,
-                signed_comparison,
-            }),
-            vec![i_binary],
-        )?;
-        let o = if st == BIT {
-            sorted
-        } else {
-            sorted.b2a(st.clone())?
-        };
-        o.set_as_output()?;
-        graph.finalize()?;
-        graph.set_as_main()?;
-        context.finalize()?;
-
+        let context = simple_context(|g| {
+            let n = 2u64.pow(k);
+            let b = scalar_size_in_bits(st.clone());
+            let signed_comparison = st.get_signed();
+            let i = g.input(array_type(vec![n], st.clone()))?;
+            let i_binary = if st == BIT {
+                i.reshape(array_type(vec![n, 1], BIT))?
+            } else {
+                i.a2b()?
+            };
+            let sorted = g.custom_op(
+                CustomOperation::new(Sort {
+                    k,
+                    b,
+                    signed_comparison,
+                }),
+                vec![i_binary],
+            )?;
+            let o = if st == BIT {
+                sorted
+            } else {
+                sorted.b2a(st.clone())?
+            };
+            Ok(o)
+        })?;
+        let graph = context.get_main_graph()?;
         let mapped_c = run_instantiation_pass(graph.get_context())?;
 
         let v_a = Value::from_flattened_array(&data, st.clone())?;

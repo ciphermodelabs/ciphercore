@@ -74,6 +74,8 @@ mod macro_backend {
                 "TypedValue",
                 "Value",
                 "CustomOperation",
+                "JoinType",
+                "ShardConfig",
             ])
         };
     }

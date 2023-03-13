@@ -9,8 +9,8 @@ use ciphercore_base::data_types::{
 };
 use ciphercore_base::data_values::PyBindingValue;
 use ciphercore_base::graphs::{
-    py_binding_create_context, PyBindingContext, PyBindingGraph, PyBindingNode,
-    PyBindingSliceElement,
+    py_binding_create_context, PyBindingContext, PyBindingGraph, PyBindingJoinType, PyBindingNode,
+    PyBindingShardConfig, PyBindingSliceElement,
 };
 use ciphercore_base::typed_value::PyBindingTypedValue;
 use numpy::PyReadonlyArrayDyn;
@@ -63,6 +63,8 @@ fn ciphercore_internal(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_class::<PyBindingCustomOperation>()?;
     m.add_class::<PyBindingSliceElement>()?;
     m.add_class::<PyBindingValue>()?;
+    m.add_class::<PyBindingJoinType>()?;
+    m.add_class::<PyBindingShardConfig>()?;
     Ok(())
 }
 

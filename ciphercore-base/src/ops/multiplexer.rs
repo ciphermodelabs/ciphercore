@@ -1,6 +1,7 @@
 //! Multiplexer (Mux) operation that takes three inputs a, b, c and returns b if a is 1 or c if a is 0.
 use crate::custom_ops::CustomOperationBody;
-use crate::data_types::{Type, BIT};
+use crate::data_types::{scalar_type, Type, BIT};
+use crate::data_values::Value;
 use crate::errors::Result;
 use crate::graphs::{Context, Graph};
 
@@ -8,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 /// A structure that defines the custom operation Mux that takes three inputs a, b, c and returns b if a is 1 or c if a is 0.
 ///
-/// The inputs should be arrays of bitstrings. This operation is applied elementwise.
+/// The input `a` should be arrays of bitstrings. The inputs `b` and `c` must have the same type. This operation is applied elementwise.
 ///
 /// If input shapes are different, the broadcasting rules are applied (see [the NumPy broadcasting rules](https://numpy.org/doc/stable/user/basics.broadcasting.html)).
 /// For example, if a,b,c are of shapes `[2,3]`, `[1,3]` and `[2,1]`, the resulting array has shape `[2,3]`.
@@ -57,13 +58,27 @@ impl CustomOperationBody for Mux {
         if t.get_scalar_type() != BIT {
             return Err(runtime_error!("Flag for Mux must consist of bits"));
         }
+        if arguments_types[1].get_scalar_type() != arguments_types[2].get_scalar_type() {
+            return Err(runtime_error!(
+                "Choices for Mux must have the same scalar type"
+            ));
+        }
+
         let g = context.create_graph()?;
         let i_flag = g.input(arguments_types[0].clone())?;
         let i_choice1 = g.input(arguments_types[1].clone())?;
         let i_choice0 = g.input(arguments_types[2].clone())?;
-        i_choice0
-            .add(i_flag.multiply(i_choice0.add(i_choice1)?)?)?
-            .set_as_output()?;
+        if arguments_types[1].get_scalar_type() == BIT {
+            i_choice0
+                .add(i_flag.multiply(i_choice0.add(i_choice1)?)?)?
+                .set_as_output()?;
+        } else {
+            let i_choice0 = i_choice0.mixed_multiply(i_flag.clone())?;
+            let i_choice1 = i_choice1.mixed_multiply(
+                i_flag.add(g.constant(scalar_type(BIT), Value::from_scalar(1, BIT)?)?)?,
+            )?;
+            i_choice0.add(i_choice1)?.set_as_output()?;
+        }
         g.finalize()?;
         Ok(g)
     }
@@ -80,6 +95,7 @@ mod tests {
     use crate::custom_ops::run_instantiation_pass;
     use crate::custom_ops::CustomOperation;
     use crate::data_types::INT32;
+    use crate::data_types::UINT32;
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
     use crate::graphs::create_context;
@@ -171,7 +187,7 @@ mod tests {
             let c = create_context()?;
             let g = c.create_graph()?;
             let i_flag = g.input(Type::Array(vec![3, 1], BIT))?;
-            let i_choice1 = g.input(Type::Array(vec![1, 5], INT32))?;
+            let i_choice1 = g.input(Type::Array(vec![1, 5, 1], UINT32))?;
             let i_choice0 = g.input(Type::Array(vec![6, 1, 1], INT32))?;
             assert!(g
                 .custom_op(

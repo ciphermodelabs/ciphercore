@@ -738,7 +738,7 @@ impl Type {
         if let Type::Array(shape, _) = self {
             shape.clone()
         } else {
-            panic!("Can't get shape");
+            panic!("Can't get shape of {self:?})");
         }
     }
 
@@ -810,6 +810,21 @@ impl Type {
     #[cfg_attr(not(feature = "py-binding"), allow(dead_code))]
     fn from_json_string(s: String) -> Result<Type> {
         Ok(serde_json::from_str::<Type>(s.as_str())?)
+    }
+}
+
+// column header -> column type
+#[doc(hidden)]
+pub type HeadersTypes = Vec<(String, Arc<Type>)>;
+
+#[doc(hidden)]
+pub fn get_named_types(t: &Type) -> Result<&HeadersTypes> {
+    if let Type::NamedTuple(v) = t {
+        Ok(v)
+    } else {
+        Err(runtime_error!(
+            "Can't get named types. Input type must be NamedTuple."
+        ))
     }
 }
 
@@ -983,10 +998,10 @@ fn form_array_shape_str(array_shape: ArrayShape) -> String {
     array_shape_str.push('[');
     let mut dim_len_iter = array_shape.iter();
     if let Some(&d) = dim_len_iter.next() {
-        write!(array_shape_str, "{}", d).unwrap();
+        write!(array_shape_str, "{d}").unwrap();
     }
     for dimension_length in dim_len_iter {
-        write!(array_shape_str, ", {}", dimension_length).unwrap();
+        write!(array_shape_str, ", {dimension_length}").unwrap();
     }
     array_shape_str.push(']');
     array_shape_str
@@ -1042,9 +1057,9 @@ impl fmt::Display for ScalarType {
             } else {
                 scalar_type_string.push('u');
             }
-            write!(scalar_type_string, "{}", bit_size).unwrap();
+            write!(scalar_type_string, "{bit_size}").unwrap();
         }
-        write!(f, "{}", scalar_type_string)
+        write!(f, "{scalar_type_string}")
     }
 }
 
@@ -1061,7 +1076,9 @@ impl FromStr for ScalarType {
             "i32" => Ok(INT32),
             "u64" => Ok(UINT64),
             "i64" => Ok(INT64),
-            _ => Err(runtime_error!("Unknown scalar type")),
+            _ => Err(runtime_error!(
+                "Unknown scalar type. Expected b|u8|i8|u16|i16|u32|i32|u64|i64."
+            )),
         }
     }
 }
@@ -1070,7 +1087,7 @@ impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let type_string = match self {
             Type::Scalar(scalar_type) => {
-                format!("{}", scalar_type)
+                format!("{scalar_type}")
             }
             Type::Array(shape, scalar_type) => {
                 form_array_type_str(shape.clone(), scalar_type.clone())
@@ -1085,7 +1102,7 @@ impl fmt::Display for Type {
                 format!("({})", form_named_tuple_vec_type_str(elements.clone()))
             }
         };
-        write!(f, "{}", type_string)
+        write!(f, "{type_string}")
     }
 }
 

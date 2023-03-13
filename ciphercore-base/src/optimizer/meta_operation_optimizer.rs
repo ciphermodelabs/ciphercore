@@ -301,6 +301,7 @@ mod tests {
     use crate::data_types::{array_type, scalar_type, BIT, INT64, UINT64};
     use crate::data_values::Value;
     use crate::graphs::contexts_deep_equal;
+    use crate::graphs::util::simple_context;
     use crate::graphs::{create_context, Context};
     use crate::optimizer::dangling_nodes_optimizer::optimize_graph_dangling_nodes;
 
@@ -323,16 +324,12 @@ mod tests {
     #[test]
     fn test_no_meta() {
         || -> Result<()> {
-            let c = create_context()?;
-            let g = c.create_graph()?;
-            let i1 = g.input(scalar_type(UINT64))?;
-            let i2 = g.input(scalar_type(UINT64))?;
-            let n = i1.add(i2)?;
-            let o = n.add(g.constant(scalar_type(UINT64), Value::from_scalar(1, UINT64)?)?)?;
-            o.set_as_output()?;
-            g.finalize()?;
-            g.set_as_main()?;
-            c.finalize()?;
+            let c = simple_context(|g| {
+                let i1 = g.input(scalar_type(UINT64))?;
+                let i2 = g.input(scalar_type(UINT64))?;
+                let n = i1.add(i2)?;
+                n.add(g.constant(scalar_type(UINT64), Value::from_scalar(1, UINT64)?)?)
+            })?;
 
             let new_c = optimize_helper(c.clone())?;
             assert!(contexts_deep_equal(new_c, c));
@@ -344,31 +341,22 @@ mod tests {
     #[test]
     fn test_simple_tuple_get() {
         || -> Result<()> {
-            let c = create_context()?;
-            let g = c.create_graph()?;
-            let i1 = g.input(scalar_type(UINT64))?;
-            let i2 = g.input(scalar_type(UINT64))?;
-            let t = g.create_tuple(vec![i1, i2])?;
-            t.set_name("CreateTuple")?;
-            let o = t.tuple_get(0)?;
-            o.set_name("TupleGet")?;
-            o.set_as_output()?;
-            g.finalize()?;
-            g.set_as_main()?;
-            c.finalize()?;
-
+            let c = simple_context(|g| {
+                let i1 = g.input(scalar_type(UINT64))?;
+                let i2 = g.input(scalar_type(UINT64))?;
+                let t = g.create_tuple(vec![i1, i2])?;
+                t.set_name("CreateTuple")?;
+                let o = t.tuple_get(0)?;
+                o.set_name("TupleGet")?;
+                Ok(o)
+            })?;
             let new_c = optimize_helper(c.clone())?;
 
-            let expected_c = create_context()?;
-            let expected_g = expected_c.create_graph()?;
-            let i1 = expected_g.input(scalar_type(UINT64))?;
-            let _i2 = expected_g.input(scalar_type(UINT64))?;
-            let o = i1;
-            o.set_as_output()?;
-            expected_g.finalize()?;
-            expected_g.set_as_main()?;
-            expected_c.finalize()?;
-
+            let expected_c = simple_context(|g| {
+                let i1 = g.input(scalar_type(UINT64))?;
+                let _i2 = g.input(scalar_type(UINT64))?;
+                Ok(i1)
+            })?;
             assert!(contexts_deep_equal(new_c, expected_c));
             Ok(())
         }()
@@ -378,33 +366,24 @@ mod tests {
     #[test]
     fn test_nested_tuple_get() {
         || -> Result<()> {
-            let c = create_context()?;
-            let g = c.create_graph()?;
-            let i1 = g.input(scalar_type(UINT64))?;
-            let i2 = g.input(scalar_type(UINT64))?;
-            let t1 = g.create_tuple(vec![i1.clone(), i2])?;
-            let t2 = g.create_tuple(vec![t1, i1])?;
-            let o1 = t2.tuple_get(0)?;
-            o1.set_name("First TupleGet")?;
-            let o = o1.tuple_get(1)?;
-            o.set_name("Second TupleGet")?;
-            o.set_as_output()?;
-            g.finalize()?;
-            g.set_as_main()?;
-            c.finalize()?;
-
+            let c = simple_context(|g| {
+                let i1 = g.input(scalar_type(UINT64))?;
+                let i2 = g.input(scalar_type(UINT64))?;
+                let t1 = g.create_tuple(vec![i1.clone(), i2])?;
+                let t2 = g.create_tuple(vec![t1, i1])?;
+                let o1 = t2.tuple_get(0)?;
+                o1.set_name("First TupleGet")?;
+                let o = o1.tuple_get(1)?;
+                o.set_name("Second TupleGet")?;
+                Ok(o)
+            })?;
             let new_c = optimize_helper(c.clone())?;
 
-            let expected_c = create_context()?;
-            let expected_g = expected_c.create_graph()?;
-            let _i1 = expected_g.input(scalar_type(UINT64))?;
-            let i2 = expected_g.input(scalar_type(UINT64))?;
-            let o = i2;
-            o.set_as_output()?;
-            expected_g.finalize()?;
-            expected_g.set_as_main()?;
-            expected_c.finalize()?;
-
+            let expected_c = simple_context(|g| {
+                let _i1 = g.input(scalar_type(UINT64))?;
+                let i2 = g.input(scalar_type(UINT64))?;
+                Ok(i2)
+            })?;
             assert!(contexts_deep_equal(new_c, expected_c));
             Ok(())
         }()
@@ -414,34 +393,26 @@ mod tests {
     #[test]
     fn test_simple_vector_get() {
         || -> Result<()> {
-            let c = create_context()?;
-            let g = c.create_graph()?;
-            let i1 = g.input(scalar_type(UINT64))?;
-            i1.set_name("Input")?;
-            let i2 = g.input(scalar_type(UINT64))?;
-            let v = g.create_vector(i1.get_type()?, vec![i1, i2])?;
-            v.set_name("CreateVector")?;
-            let o =
-                v.vector_get(g.constant(scalar_type(UINT64), Value::from_scalar(0, UINT64)?)?)?;
-            o.set_name("VectorGet")?;
-            o.set_as_output()?;
-            g.finalize()?;
-            g.set_as_main()?;
-            c.finalize()?;
-
+            let c = simple_context(|g| {
+                let i1 = g.input(scalar_type(UINT64))?;
+                i1.set_name("Input")?;
+                let i2 = g.input(scalar_type(UINT64))?;
+                let v = g.create_vector(i1.get_type()?, vec![i1, i2])?;
+                v.set_name("CreateVector")?;
+                let o =
+                    v.vector_get(g.constant(scalar_type(UINT64), Value::from_scalar(0, UINT64)?)?)?;
+                o.set_name("VectorGet")?;
+                Ok(o)
+            })?;
             let new_c = optimize_helper(c.clone())?;
 
-            let expected_c = create_context()?;
-            let expected_g = expected_c.create_graph()?;
-            let i1 = expected_g.input(scalar_type(UINT64))?;
-            let _i2 = expected_g.input(scalar_type(UINT64))?;
-            let o = i1;
-            o.set_name("Input")?;
-            o.set_as_output()?;
-            expected_g.finalize()?;
-            expected_g.set_as_main()?;
-            expected_c.finalize()?;
-
+            let expected_c = simple_context(|g| {
+                let i1 = g.input(scalar_type(UINT64))?;
+                let _i2 = g.input(scalar_type(UINT64))?;
+                let o = i1;
+                o.set_name("Input")?;
+                Ok(o)
+            })?;
             assert!(contexts_deep_equal(new_c, expected_c));
             Ok(())
         }()
@@ -451,48 +422,40 @@ mod tests {
     #[test]
     fn test_complex_tree() {
         || -> Result<()> {
-            let c = create_context()?;
-            let g = c.create_graph()?;
-            let i1 = g.input(scalar_type(UINT64))?;
-            i1.set_name("Input")?;
-            let i2 = g.input(scalar_type(UINT64))?;
-            let v1 = g.create_vector(i1.get_type()?, vec![i1.clone(), i2.clone()])?;
-            v1.set_name("CreateVector1")?;
-            let v2 = g.create_vector(v1.get_type()?, vec![v1.clone(), v1.clone()])?;
-            v2.set_name("CreateVector2")?;
-            let t1 = g.create_tuple(vec![i1.clone(), v1.clone(), i2.clone(), v1.clone()])?;
-            let t2 = g.create_tuple(vec![t1.clone(), v2.clone()])?;
-            let o1 = t2
-                .tuple_get(0)?
-                .tuple_get(1)?
-                .vector_get(g.constant(scalar_type(UINT64), Value::from_scalar(1, UINT64)?)?)?;
-            let o2 =
-                v2.vector_get(g.constant(scalar_type(UINT64), Value::from_scalar(0, UINT64)?)?)?;
-            o2.set_name("VectorGet")?;
-            let o = g.create_tuple(vec![o1, o2])?;
-            o.set_name("CreateTuple")?;
-            o.set_as_output()?;
-            g.finalize()?;
-            g.set_as_main()?;
-            c.finalize()?;
-
+            let c = simple_context(|g| {
+                let i1 = g.input(scalar_type(UINT64))?;
+                i1.set_name("Input")?;
+                let i2 = g.input(scalar_type(UINT64))?;
+                let v1 = g.create_vector(i1.get_type()?, vec![i1.clone(), i2.clone()])?;
+                v1.set_name("CreateVector1")?;
+                let v2 = g.create_vector(v1.get_type()?, vec![v1.clone(), v1.clone()])?;
+                v2.set_name("CreateVector2")?;
+                let t1 = g.create_tuple(vec![i1.clone(), v1.clone(), i2.clone(), v1.clone()])?;
+                let t2 = g.create_tuple(vec![t1.clone(), v2.clone()])?;
+                let o1 = t2
+                    .tuple_get(0)?
+                    .tuple_get(1)?
+                    .vector_get(g.constant(scalar_type(UINT64), Value::from_scalar(1, UINT64)?)?)?;
+                let o2 = v2
+                    .vector_get(g.constant(scalar_type(UINT64), Value::from_scalar(0, UINT64)?)?)?;
+                o2.set_name("VectorGet")?;
+                let o = g.create_tuple(vec![o1, o2])?;
+                o.set_name("CreateTuple")?;
+                Ok(o)
+            })?;
             let new_c = optimize_helper(c.clone())?;
 
-            let expected_c = create_context()?;
-            let expected_g = expected_c.create_graph()?;
-            let i1 = expected_g.input(scalar_type(UINT64))?;
-            i1.set_name("Input")?;
-            let i2 = expected_g.input(scalar_type(UINT64))?;
-            let o1 = i2.clone();
-            let o2 = expected_g.create_vector(i1.get_type()?, vec![i1, i2])?;
-            o2.set_name("CreateVector1")?;
-            let o = expected_g.create_tuple(vec![o1, o2])?;
-            o.set_name("CreateTuple")?;
-            o.set_as_output()?;
-            expected_g.finalize()?;
-            expected_g.set_as_main()?;
-            expected_c.finalize()?;
-
+            let expected_c = simple_context(|g| {
+                let i1 = g.input(scalar_type(UINT64))?;
+                i1.set_name("Input")?;
+                let i2 = g.input(scalar_type(UINT64))?;
+                let o1 = i2.clone();
+                let o2 = g.create_vector(i1.get_type()?, vec![i1, i2])?;
+                o2.set_name("CreateVector1")?;
+                let o = g.create_tuple(vec![o1, o2])?;
+                o.set_name("CreateTuple")?;
+                Ok(o)
+            })?;
             assert!(contexts_deep_equal(new_c, expected_c));
             Ok(())
         }()
@@ -502,32 +465,23 @@ mod tests {
     #[test]
     fn test_array_to_vector_get() {
         || -> Result<()> {
-            let c = create_context()?;
-            let g = c.create_graph()?;
-            let i = g.input(array_type(vec![10], UINT64))?;
-            i.set_name("Input")?;
-            let v = i.array_to_vector()?;
-            v.set_name("ArrayToVector")?;
-            let o =
-                v.vector_get(g.constant(scalar_type(UINT64), Value::from_scalar(0, UINT64)?)?)?;
-            o.set_name("VectorGet")?;
-            o.set_as_output()?;
-            g.finalize()?;
-            g.set_as_main()?;
-            c.finalize()?;
-
+            let c = simple_context(|g| {
+                let i = g.input(array_type(vec![10], UINT64))?;
+                i.set_name("Input")?;
+                let v = i.array_to_vector()?;
+                v.set_name("ArrayToVector")?;
+                let o =
+                    v.vector_get(g.constant(scalar_type(UINT64), Value::from_scalar(0, UINT64)?)?)?;
+                o.set_name("VectorGet")?;
+                Ok(o)
+            })?;
             let new_c = optimize_helper(c.clone())?;
 
-            let expected_c = create_context()?;
-            let expected_g = expected_c.create_graph()?;
-            let i = expected_g.input(array_type(vec![10], UINT64))?;
-            i.set_name("Input")?;
-            let o = i.get(vec![0])?;
-            o.set_as_output()?;
-            expected_g.finalize()?;
-            expected_g.set_as_main()?;
-            expected_c.finalize()?;
-
+            let expected_c = simple_context(|g| {
+                let i = g.input(array_type(vec![10], UINT64))?;
+                i.set_name("Input")?;
+                i.get(vec![0])
+            })?;
             assert!(contexts_deep_equal(new_c, expected_c));
             Ok(())
         }()
@@ -537,32 +491,23 @@ mod tests {
     #[test]
     fn test_array_to_vector_get_multiple_dims() {
         || -> Result<()> {
-            let c = create_context()?;
-            let g = c.create_graph()?;
-            let i = g.input(array_type(vec![10, 2], UINT64))?;
-            i.set_name("Input")?;
-            let v = i.array_to_vector()?;
-            v.set_name("ArrayToVector")?;
-            let o =
-                v.vector_get(g.constant(scalar_type(UINT64), Value::from_scalar(0, UINT64)?)?)?;
-            o.set_name("VectorGet")?;
-            o.set_as_output()?;
-            g.finalize()?;
-            g.set_as_main()?;
-            c.finalize()?;
-
+            let c = simple_context(|g| {
+                let i = g.input(array_type(vec![10, 2], UINT64))?;
+                i.set_name("Input")?;
+                let v = i.array_to_vector()?;
+                v.set_name("ArrayToVector")?;
+                let o =
+                    v.vector_get(g.constant(scalar_type(UINT64), Value::from_scalar(0, UINT64)?)?)?;
+                o.set_name("VectorGet")?;
+                Ok(o)
+            })?;
             let new_c = optimize_helper(c.clone())?;
 
-            let expected_c = create_context()?;
-            let expected_g = expected_c.create_graph()?;
-            let i = expected_g.input(array_type(vec![10, 2], UINT64))?;
-            i.set_name("Input")?;
-            let o = i.get_slice(vec![SliceElement::SingleIndex(0), SliceElement::Ellipsis])?;
-            o.set_as_output()?;
-            expected_g.finalize()?;
-            expected_g.set_as_main()?;
-            expected_c.finalize()?;
-
+            let expected_c = simple_context(|g| {
+                let i = g.input(array_type(vec![10, 2], UINT64))?;
+                i.set_name("Input")?;
+                i.get_slice(vec![SliceElement::SingleIndex(0), SliceElement::Ellipsis])
+            })?;
             assert!(contexts_deep_equal(new_c, expected_c));
             Ok(())
         }()
@@ -572,42 +517,33 @@ mod tests {
     #[test]
     fn test_zip_arrays_get() {
         || -> Result<()> {
-            let c = create_context()?;
-            let g = c.create_graph()?;
-            let i1 = g.input(array_type(vec![10], UINT64))?;
-            i1.set_name("Input1")?;
-            let i2 = g.input(array_type(vec![10], UINT64))?;
-            i2.set_name("Input2")?;
-            let v1 = i1.array_to_vector()?;
-            v1.set_name("ArrayToVector1")?;
-            let v2 = i2.array_to_vector()?;
-            v2.set_name("ArrayToVector2")?;
-            let v = g.zip(vec![v1, v2])?;
-            v.set_name("Zip")?;
-            let o1 =
-                v.vector_get(g.constant(scalar_type(UINT64), Value::from_scalar(2, UINT64)?)?)?;
-            o1.set_name("VectorGet")?;
-            let o = o1.tuple_get(1)?;
-            o.set_name("TupleGet")?;
-            o.set_as_output()?;
-            g.finalize()?;
-            g.set_as_main()?;
-            c.finalize()?;
-
+            let c = simple_context(|g| {
+                let i1 = g.input(array_type(vec![10], UINT64))?;
+                i1.set_name("Input1")?;
+                let i2 = g.input(array_type(vec![10], UINT64))?;
+                i2.set_name("Input2")?;
+                let v1 = i1.array_to_vector()?;
+                v1.set_name("ArrayToVector1")?;
+                let v2 = i2.array_to_vector()?;
+                v2.set_name("ArrayToVector2")?;
+                let v = g.zip(vec![v1, v2])?;
+                v.set_name("Zip")?;
+                let o1 =
+                    v.vector_get(g.constant(scalar_type(UINT64), Value::from_scalar(2, UINT64)?)?)?;
+                o1.set_name("VectorGet")?;
+                let o = o1.tuple_get(1)?;
+                o.set_name("TupleGet")?;
+                Ok(o)
+            })?;
             let new_c = optimize_helper(c.clone())?;
 
-            let expected_c = create_context()?;
-            let expected_g = expected_c.create_graph()?;
-            let _i1 = expected_g.input(array_type(vec![10], UINT64))?;
-            _i1.set_name("Input1")?;
-            let i2 = expected_g.input(array_type(vec![10], UINT64))?;
-            i2.set_name("Input2")?;
-            let o = i2.get(vec![2])?;
-            o.set_as_output()?;
-            expected_g.finalize()?;
-            expected_g.set_as_main()?;
-            expected_c.finalize()?;
-
+            let expected_c = simple_context(|g| {
+                let _i1 = g.input(array_type(vec![10], UINT64))?;
+                _i1.set_name("Input1")?;
+                let i2 = g.input(array_type(vec![10], UINT64))?;
+                i2.set_name("Input2")?;
+                i2.get(vec![2])
+            })?;
             assert!(contexts_deep_equal(new_c, expected_c));
             Ok(())
         }()
@@ -617,52 +553,41 @@ mod tests {
     #[test]
     fn test_zip_unknown_arrays_get() {
         || -> Result<()> {
-            let c = create_context()?;
-            let g = c.create_graph()?;
-            let i1 = g.input(array_type(vec![10], UINT64))?;
-            i1.set_name("Input1")?;
-            let i2 = g.input(array_type(vec![10], UINT64))?;
-            i2.set_name("Input2")?;
-            let v10 = i1.array_to_vector()?;
-            v10.set_name("ArrayToVector1")?;
-            let v20 = i2.array_to_vector()?;
-            v20.set_name("ArrayToVector2")?;
-            let v1 = v10.reshape(v10.get_type()?)?;
-            v1.set_name("Reshape1")?;
-            let v2 = v20.reshape(v20.get_type()?)?;
-            v2.set_name("Reshape2")?;
-            let v = g.zip(vec![v1, v2])?;
-            v.set_name("Zip")?;
-            let o1 =
-                v.vector_get(g.constant(scalar_type(UINT64), Value::from_scalar(2, UINT64)?)?)?;
-            o1.set_name("VectorGet")?;
-            let o = o1.tuple_get(1)?;
-            o.set_name("TupleGet")?;
-            o.set_as_output()?;
-            g.finalize()?;
-            g.set_as_main()?;
-            c.finalize()?;
-
+            let c = simple_context(|g| {
+                let i1 = g.input(array_type(vec![10], UINT64))?;
+                i1.set_name("Input1")?;
+                let i2 = g.input(array_type(vec![10], UINT64))?;
+                i2.set_name("Input2")?;
+                let v10 = i1.array_to_vector()?;
+                v10.set_name("ArrayToVector1")?;
+                let v20 = i2.array_to_vector()?;
+                v20.set_name("ArrayToVector2")?;
+                let v1 = v10.reshape(v10.get_type()?)?;
+                v1.set_name("Reshape1")?;
+                let v2 = v20.reshape(v20.get_type()?)?;
+                v2.set_name("Reshape2")?;
+                let v = g.zip(vec![v1, v2])?;
+                v.set_name("Zip")?;
+                let o1 =
+                    v.vector_get(g.constant(scalar_type(UINT64), Value::from_scalar(2, UINT64)?)?)?;
+                o1.set_name("VectorGet")?;
+                let o = o1.tuple_get(1)?;
+                o.set_name("TupleGet")?;
+                Ok(o)
+            })?;
             let new_c = optimize_helper(c.clone())?;
 
-            let expected_c = create_context()?;
-            let expected_g = expected_c.create_graph()?;
-            let _i1 = expected_g.input(array_type(vec![10], UINT64))?;
-            _i1.set_name("Input1")?;
-            let i2 = expected_g.input(array_type(vec![10], UINT64))?;
-            i2.set_name("Input2")?;
-            let v20 = i2.array_to_vector()?;
-            v20.set_name("ArrayToVector2")?;
-            let v2 = v20.reshape(v20.get_type()?)?;
-            v2.set_name("Reshape2")?;
-            let o = v2.vector_get(
-                expected_g.constant(scalar_type(UINT64), Value::from_scalar(2, UINT64)?)?,
-            )?;
-            o.set_as_output()?;
-            expected_g.finalize()?;
-            expected_g.set_as_main()?;
-            expected_c.finalize()?;
-
+            let expected_c = simple_context(|g| {
+                let _i1 = g.input(array_type(vec![10], UINT64))?;
+                _i1.set_name("Input1")?;
+                let i2 = g.input(array_type(vec![10], UINT64))?;
+                i2.set_name("Input2")?;
+                let v20 = i2.array_to_vector()?;
+                v20.set_name("ArrayToVector2")?;
+                let v2 = v20.reshape(v20.get_type()?)?;
+                v2.set_name("Reshape2")?;
+                v2.vector_get(g.constant(scalar_type(UINT64), Value::from_scalar(2, UINT64)?)?)
+            })?;
             assert!(contexts_deep_equal(new_c, expected_c));
             Ok(())
         }()
@@ -672,28 +597,19 @@ mod tests {
     #[test]
     fn test_b2a_a2b() {
         || -> Result<()> {
-            let c = create_context()?;
-            let g = c.create_graph()?;
-            let i = g.input(array_type(vec![16, 64], BIT))?;
-            i.set_name("Input")?;
-            let a = i.b2a(UINT64)?;
-            let b = a.a2b()?;
-            b.set_as_output()?;
-            g.finalize()?;
-            g.set_as_main()?;
-            c.finalize()?;
-
+            let c = simple_context(|g| {
+                let i = g.input(array_type(vec![16, 64], BIT))?;
+                i.set_name("Input")?;
+                let a = i.b2a(UINT64)?;
+                a.a2b()
+            })?;
             let new_c = optimize_helper(c.clone())?;
 
-            let expected_c = create_context()?;
-            let expected_g = expected_c.create_graph()?;
-            let i = expected_g.input(array_type(vec![16, 64], BIT))?;
-            i.set_name("Input")?;
-            i.set_as_output()?;
-            expected_g.finalize()?;
-            expected_g.set_as_main()?;
-            expected_c.finalize()?;
-
+            let expected_c = simple_context(|g| {
+                let i = g.input(array_type(vec![16, 64], BIT))?;
+                i.set_name("Input")?;
+                Ok(i)
+            })?;
             assert!(contexts_deep_equal(new_c, expected_c));
             Ok(())
         }()
@@ -703,28 +619,19 @@ mod tests {
     #[test]
     fn test_a2b_b2a() {
         || -> Result<()> {
-            let c = create_context()?;
-            let g = c.create_graph()?;
-            let i = g.input(array_type(vec![16], UINT64))?;
-            i.set_name("Input")?;
-            let a = i.a2b()?;
-            let b = a.b2a(UINT64)?;
-            b.set_as_output()?;
-            g.finalize()?;
-            g.set_as_main()?;
-            c.finalize()?;
-
+            let c = simple_context(|g| {
+                let i = g.input(array_type(vec![16], UINT64))?;
+                i.set_name("Input")?;
+                let a = i.a2b()?;
+                a.b2a(UINT64)
+            })?;
             let new_c = optimize_helper(c.clone())?;
 
-            let expected_c = create_context()?;
-            let expected_g = expected_c.create_graph()?;
-            let i = expected_g.input(array_type(vec![16], UINT64))?;
-            i.set_name("Input")?;
-            i.set_as_output()?;
-            expected_g.finalize()?;
-            expected_g.set_as_main()?;
-            expected_c.finalize()?;
-
+            let expected_c = simple_context(|g| {
+                let i = g.input(array_type(vec![16], UINT64))?;
+                i.set_name("Input")?;
+                Ok(i)
+            })?;
             assert!(contexts_deep_equal(new_c, expected_c));
             Ok(())
         }()
@@ -734,17 +641,12 @@ mod tests {
     #[test]
     fn test_a2b_b2a_different_type() {
         || -> Result<()> {
-            let c = create_context()?;
-            let g = c.create_graph()?;
-            let i = g.input(array_type(vec![16], UINT64))?;
-            i.set_name("Input")?;
-            let a = i.a2b()?;
-            let b = a.b2a(INT64)?;
-            b.set_as_output()?;
-            g.finalize()?;
-            g.set_as_main()?;
-            c.finalize()?;
-
+            let c = simple_context(|g| {
+                let i = g.input(array_type(vec![16], UINT64))?;
+                i.set_name("Input")?;
+                let a = i.a2b()?;
+                a.b2a(INT64)
+            })?;
             let new_c = optimize_helper(c.clone())?;
 
             assert!(contexts_deep_equal(new_c, c));

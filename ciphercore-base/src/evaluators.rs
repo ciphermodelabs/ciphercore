@@ -1,4 +1,5 @@
 pub mod get_result_util;
+mod join;
 pub mod simple_evaluator;
 
 use crate::data_values::Value;
@@ -109,8 +110,12 @@ pub trait Evaluator {
             }
             match node.get_operation() {
                 Operation::Input(t) => {
-                    if !inputs_values[input_id as usize].check_type(t)? {
-                        return Err(runtime_error!("Invalid input type"));
+                    if !inputs_values[input_id as usize].check_type(t.clone())? {
+                        return Err(runtime_error!(
+                            "Invalid input type. Type is {:?}, value is {:?}.",
+                            t,
+                            inputs_values[input_id as usize]
+                        ));
                     }
                     node_option_values.push(Some(inputs_values[input_id as usize].clone()));
                     input_id += 1;

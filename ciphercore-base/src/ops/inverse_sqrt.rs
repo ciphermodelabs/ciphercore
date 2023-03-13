@@ -203,7 +203,7 @@ mod tests {
     use crate::data_types::ScalarType;
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
-    use crate::graphs::create_context;
+    use crate::graphs::util::simple_context;
     use crate::inline::inline_common::DepthOptimizationLevel;
     use crate::inline::inline_ops::inline_operations;
     use crate::inline::inline_ops::InlineConfig;
@@ -216,31 +216,27 @@ mod tests {
         initial_approximation: Option<u64>,
         sc: ScalarType,
     ) -> Result<u64> {
-        let c = create_context()?;
-        let g = c.create_graph()?;
-        let i = g.input(scalar_type(sc.clone()))?;
-        let o = if let Some(approx) = initial_approximation {
-            let approx_const = constant_scalar(&g, approx, sc.clone())?;
-            g.custom_op(
-                CustomOperation::new(InverseSqrt {
-                    iterations: 5,
-                    denominator_cap_2k: 10,
-                }),
-                vec![i, approx_const],
-            )?
-        } else {
-            g.custom_op(
-                CustomOperation::new(InverseSqrt {
-                    iterations: 5,
-                    denominator_cap_2k: 10,
-                }),
-                vec![i],
-            )?
-        };
-        o.set_as_output()?;
-        g.finalize()?;
-        g.set_as_main()?;
-        c.finalize()?;
+        let c = simple_context(|g| {
+            let i = g.input(scalar_type(sc.clone()))?;
+            if let Some(approx) = initial_approximation {
+                let approx_const = constant_scalar(&g, approx, sc.clone())?;
+                g.custom_op(
+                    CustomOperation::new(InverseSqrt {
+                        iterations: 5,
+                        denominator_cap_2k: 10,
+                    }),
+                    vec![i, approx_const],
+                )
+            } else {
+                g.custom_op(
+                    CustomOperation::new(InverseSqrt {
+                        iterations: 5,
+                        denominator_cap_2k: 10,
+                    }),
+                    vec![i],
+                )
+            }
+        })?;
         let mapped_c = run_instantiation_pass(c)?;
         let result = random_evaluate(
             mapped_c.get_context().get_main_graph()?,
@@ -256,21 +252,17 @@ mod tests {
     }
 
     fn array_helper(divisor: Vec<u64>, sc: ScalarType) -> Result<Vec<u64>> {
-        let c = create_context()?;
-        let g = c.create_graph()?;
         let array_t = array_type(vec![divisor.len() as u64], sc.clone());
-        let i = g.input(array_t.clone())?;
-        let o = g.custom_op(
-            CustomOperation::new(InverseSqrt {
-                iterations: 5,
-                denominator_cap_2k: 10,
-            }),
-            vec![i],
-        )?;
-        o.set_as_output()?;
-        g.finalize()?;
-        g.set_as_main()?;
-        c.finalize()?;
+        let c = simple_context(|g| {
+            let i = g.input(array_t.clone())?;
+            g.custom_op(
+                CustomOperation::new(InverseSqrt {
+                    iterations: 5,
+                    denominator_cap_2k: 10,
+                }),
+                vec![i],
+            )
+        })?;
         let mapped_c = run_instantiation_pass(c)?;
         let result = random_evaluate(
             mapped_c.get_context().get_main_graph()?,
@@ -328,20 +320,16 @@ mod tests {
 
     #[test]
     fn test_inverse_sqrt_compiles_end2end() -> Result<()> {
-        let c = create_context()?;
-        let g = c.create_graph()?;
-        let i = g.input(scalar_type(INT64))?;
-        let o = g.custom_op(
-            CustomOperation::new(InverseSqrt {
-                iterations: 5,
-                denominator_cap_2k: 10,
-            }),
-            vec![i],
-        )?;
-        o.set_as_output()?;
-        g.finalize()?;
-        g.set_as_main()?;
-        c.finalize()?;
+        let c = simple_context(|g| {
+            let i = g.input(scalar_type(INT64))?;
+            g.custom_op(
+                CustomOperation::new(InverseSqrt {
+                    iterations: 5,
+                    denominator_cap_2k: 10,
+                }),
+                vec![i],
+            )
+        })?;
         let inline_config = InlineConfig {
             default_mode: InlineMode::DepthOptimized(DepthOptimizationLevel::Default),
             ..Default::default()

@@ -1,5 +1,4 @@
 //! Code of a binary printing evaluated result of a given serialized context on given context inputs
-#![cfg_attr(feature = "nightly-features", feature(backtrace))]
 
 use ciphercore_base::errors::Result;
 use ciphercore_base::evaluators::get_result_util::get_evaluator_result;

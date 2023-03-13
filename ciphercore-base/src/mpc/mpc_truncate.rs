@@ -63,17 +63,15 @@ impl CustomOperationBody for TruncateMPC {
             } else {
                 // Panics since:
                 // - the user has no direct access to this function.
-                // - the MPC compiler should pass the correct number of arguments
+                // - the MPC compiler should pass correct arguments
                 // and this panic should never happen.
                 panic!("Inconsistency with type checker");
             }
         }
         if argument_types.len() != 2 {
-            // Panics since:
-            // - the user has no direct access to this function.
-            // - the MPC compiler should pass the correct number of arguments
-            // and this panic should never happen.
-            panic!("TruncateMPC should have either 1 or 2 inputs.");
+            return Err(runtime_error!(
+                "TruncateMPC should have either 1 or 2 inputs."
+            ));
         }
 
         if let (Type::Tuple(v0), Type::Tuple(v1)) =
@@ -82,11 +80,9 @@ impl CustomOperationBody for TruncateMPC {
             check_private_tuple(v0)?;
             check_private_tuple(v1)?;
         } else {
-            // Panics since:
-            // - the user has no direct access to this function.
-            // - the MPC compiler should pass the correct number of arguments
-            // and this panic should never happen.
-            panic!("TruncateMPC should have a private tuple and a tuple of keys as input");
+            return Err(runtime_error!(
+                "TruncateMPC should have a private tuple and a tuple of keys as input"
+            ));
         }
 
         let t = argument_types[0].clone();
@@ -220,17 +216,13 @@ impl CustomOperationBody for TruncateMPC2K {
             } else {
                 // Panics since:
                 // - the user has no direct access to this function.
-                // - the MPC compiler should pass the correct number of arguments
+                // - the MPC compiler should pass correct arguments
                 // and this panic should never happen.
                 panic!("Inconsistency with type checker");
             }
         }
         if argument_types.len() != 3 {
-            // Panics since:
-            // - the user has no direct access to this function.
-            // - the MPC compiler should pass the correct number of arguments
-            // and this panic should never happen.
-            panic!("TruncateMPC2K should have 3 inputs.");
+            return Err(runtime_error!("TruncateMPC2K should have 3 inputs."));
         }
         if let Type::Tuple(v0) = argument_types[0].clone() {
             check_private_tuple(v0)?;
@@ -238,7 +230,7 @@ impl CustomOperationBody for TruncateMPC2K {
             if !argument_types[0].is_array() && !argument_types[0].is_scalar() {
                 // Panics since:
                 // - the user has no direct access to this function.
-                // - the MPC compiler should pass the correct number of arguments
+                // - the MPC compiler should pass correct arguments
                 // and this panic should never happen.
                 panic!("Inconsistency with type checker");
             }
@@ -256,26 +248,14 @@ impl CustomOperationBody for TruncateMPC2K {
             check_private_tuple(v0.clone())?;
             for t in v0 {
                 if *t != key_type {
-                    // Panics since:
-                    // - the user has no direct access to this function.
-                    // - the MPC compiler should pass the correct number of arguments
-                    // and this panic should never happen.
-                    panic!("PRF key is of a wrong type");
+                    return Err(runtime_error!("PRF key is of a wrong type"));
                 }
             }
         } else {
-            // Panics since:
-            // - the user has no direct access to this function.
-            // - the MPC compiler should pass the correct number of arguments
-            // and this panic should never happen.
-            panic!("PRF key is of a wrong type");
+            return Err(runtime_error!("PRF key is of a wrong type"));
         }
         if argument_types[2] != key_type {
-            // Panics since:
-            // - the user has no direct access to this function.
-            // - the MPC compiler should pass the correct number of arguments
-            // and this panic should never happen.
-            panic!("PRF key is of a wrong type");
+            return Err(runtime_error!("PRF key is of a wrong type"));
         }
 
         let t = argument_types[0].clone();
@@ -287,7 +267,7 @@ impl CustomOperationBody for TruncateMPC2K {
         if !input_t.is_array() && !input_t.is_scalar() {
             // Panics since:
             // - the user has no direct access to this function.
-            // - the MPC compiler should pass the correct number of arguments
+            // - the MPC compiler should pass correct arguments
             // and this panic should never happen.
             panic!("Inconsistency with type checker");
         }
@@ -513,7 +493,7 @@ mod tests {
     use crate::data_types::{array_type, scalar_type, ScalarType, INT64, UINT64};
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
-    use crate::graphs::create_context;
+    use crate::graphs::util::simple_context;
     use crate::inline::inline_ops::{InlineConfig, InlineMode};
     use crate::mpc::mpc_compiler::{prepare_for_mpc_evaluation, IOStatus, PARTIES};
 
@@ -524,14 +504,10 @@ mod tests {
         scale: u64,
         inline_config: InlineConfig,
     ) -> Result<Context> {
-        let c = create_context()?;
-        let g = c.create_graph()?;
-        let i = g.input(t)?;
-        let o = g.truncate(i, scale)?;
-        g.set_output_node(o)?;
-        g.finalize()?;
-        c.set_main_graph(g)?;
-        c.finalize()?;
+        let c = simple_context(|g| {
+            let i = g.input(t)?;
+            g.truncate(i, scale)
+        })?;
 
         prepare_for_mpc_evaluation(c, vec![vec![party_id]], vec![output_parties], inline_config)
     }

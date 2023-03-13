@@ -57,6 +57,53 @@ pub enum SliceElement {
 /// It is a vector of slice elements that describes the indices of a sub-array in any appropriate array.
 pub type Slice = Vec<SliceElement>;
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash, Copy)]
+#[cfg_attr(feature = "py-binding", enum_to_struct_wrapper)]
+pub enum JoinType {
+    Inner,
+    Left,
+    Union,
+    Full,
+}
+
+#[doc(hidden)]
+#[cfg(feature = "py-binding")]
+#[pyo3::pymethods]
+impl PyBindingJoinType {
+    #[staticmethod]
+    pub fn from_inner() -> Self {
+        PyBindingJoinType {
+            inner: JoinType::Inner,
+        }
+    }
+    #[staticmethod]
+    pub fn from_left() -> Self {
+        PyBindingJoinType {
+            inner: JoinType::Left,
+        }
+    }
+    #[staticmethod]
+    pub fn from_union() -> Self {
+        PyBindingJoinType {
+            inner: JoinType::Union,
+        }
+    }
+}
+
+/// Shard config contains the parameters of the Sharding operation, namely:
+///
+/// - number of shards into which input dataset will be split,
+/// - size of each shard, i.e., the number of rows in each shard,
+/// - headers of columns whose rows are hashed to find the index of a shard where the corresponding row will be placed.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "py-binding", struct_wrapper)]
+pub struct ShardConfig {
+    pub num_shards: u64,
+    pub shard_size: u64,
+    /// headers of columns whose rows are hashed to find the index of a shard where the corresponding row will be placed
+    pub shard_headers: Vec<String>,
+}
+
 #[doc(hidden)]
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Operation {
@@ -72,6 +119,7 @@ pub enum Operation {
     // Matmul operation follows the numpy matmul semantics: https://numpy.org/doc/stable/reference/generated/numpy.matmul.html
     // In particular, unlike Dot, it doesn't support scalar inputs.
     Matmul,
+    Gemm(bool, bool),
     Truncate(u64),
     Sum(ArrayShape),
     PermuteAxes(ArrayShape),
@@ -82,6 +130,7 @@ pub enum Operation {
     Random(Type),
     PRF(u64, Type),
     Stack(ArrayShape),
+    Concatenate(u64),
     Constant(Type, Value),
     A2B,
     B2A(ScalarType),
@@ -97,6 +146,7 @@ pub enum Operation {
     Iterate,
     ArrayToVector,
     VectorToArray,
+    // Operations that can't be compiled to MPC protocols
     RandomPermutation(u64),
     Gather(u64),
     CuckooHash,
@@ -104,9 +154,14 @@ pub enum Operation {
     CuckooToPermutation,
     DecomposeSwitchingMap(u64),
     SegmentCumSum,
-    SetIntersection(HashMap<String, String>),
-    Gemm(bool, bool),
+    Shard(ShardConfig),
+    // SQL joins
+    Join(JoinType, HashMap<String, String>),
+    ApplyPermutation(bool),
     Custom(CustomOperation),
+    // Operations used for debugging graphs.
+    Print(String),
+    Assert(String),
 }
 
 impl fmt::Display for Operation {
@@ -123,7 +178,7 @@ impl fmt::Display for Operation {
                 vec_operation_and_types[0].to_owned()
             }
         };
-        write!(f, "{}", operation_name)
+        write!(f, "{operation_name}")
     }
 }
 
@@ -336,9 +391,9 @@ impl Node {
     /// let t = scalar_type(BIT);
     /// let n = g.input(t).unwrap();
     /// n.set_name("XOR").unwrap();
-    /// assert_eq!(n.get_name().unwrap(), "XOR".to_owned());
+    /// assert_eq!(n.get_name().unwrap(), Some("XOR".to_owned()));
     /// ```
-    pub fn get_name(&self) -> Result<String> {
+    pub fn get_name(&self) -> Result<Option<String>> {
         self.get_graph().get_context().get_node_name(self.clone())
     }
 
@@ -487,14 +542,15 @@ impl Node {
             .gemm(self.clone(), b, transpose_a, transpose_b)
     }
 
-    /// Adds a node that computes the intersection of two named tuples along given key headers.
+    /// Adds a node that computes a join of a given type on two named tuples along given key headers.
+    /// More detailed documentation can be found in [Graph::join].
     ///
-    /// Applies [Graph::set_intersection] to the parent graph, `this` node and the `b` node.
+    /// Applies [Graph::join] to the parent graph, `this` node and the `b` node.
     ///
     /// # Example
     ///
     /// ```
-    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::graphs::{create_context, JoinType};
     /// # use ciphercore_base::data_types::{INT32, INT64, UINT8, BIT, array_type, named_tuple_type};
     /// # use ciphercore_base::type_inference::NULL_HEADER;
     /// # use std::collections::HashMap;
@@ -522,13 +578,67 @@ impl Node {
     /// ]);
     /// let n1 = g.input(t1).unwrap();
     /// let n2 = g.input(t2).unwrap();
-    /// let n3 = n1.set_intersection(n2, HashMap::from([
+    /// let n3 = n1.join(n2, JoinType::Inner, HashMap::from([
     ///     ("ID".to_owned(), "ID".to_owned()),
     ///     ("Occupation".to_owned(), "Job".to_owned()),
     /// ])).unwrap();
     /// ```
-    pub fn set_intersection(&self, b: Node, headers: HashMap<String, String>) -> Result<Node> {
-        self.get_graph().set_intersection(self.clone(), b, headers)
+    pub fn join(&self, b: Node, t: JoinType, headers: HashMap<String, String>) -> Result<Node> {
+        self.get_graph().join(self.clone(), b, t, headers)
+    }
+
+    /// Adds a node that applies a permutation to the array along the first dimension.
+    ///
+    /// # Arguments
+    ///
+    /// * `p` - node containing a permutation.
+    ///
+    /// # Returns
+    ///
+    /// New permuted node
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{INT32, UINT64, array_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = array_type(vec![25, 3], INT32);
+    /// let a = g.input(t).unwrap();
+    /// let p = g.input(array_type(vec![25], UINT64)).unwrap();
+    /// let a = a.apply_permutation(p).unwrap();
+    /// ```
+    #[doc(hidden)]
+    pub fn apply_permutation(&self, p: Node) -> Result<Node> {
+        self.get_graph().apply_permutation(self.clone(), p)
+    }
+
+    /// Adds a node that applies an inverse permutation to the array along the first dimension.
+    ///
+    /// # Arguments
+    ///
+    /// * `p` - node containing a permutation.
+    ///
+    /// # Returns
+    ///
+    /// New permuted node
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{INT32, UINT64, array_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = array_type(vec![25, 3], INT32);
+    /// let a = g.input(t).unwrap();
+    /// let p = g.input(array_type(vec![25], UINT64)).unwrap();
+    /// let a = a.apply_inverse_permutation(p).unwrap();
+    /// ```
+    #[doc(hidden)]
+    pub fn apply_inverse_permutation(&self, p: Node) -> Result<Node> {
+        self.get_graph().apply_inverse_permutation(self.clone(), p)
     }
 
     /// Adds a node to the parent graph that divides a scalar or each entry of the array associated with the node by a positive constant integer `scale`.
@@ -868,6 +978,17 @@ impl Node {
             .segment_cumsum(self.clone(), binary_array, first_row)
     }
 
+    /// Adds a node that computes sharding of a given table according to a given sharding config.
+    /// Sharding config contains names of the columns whose hashed values are used for sharding.
+    ///
+    /// Each shard is accompanied by a Boolean mask indicating whether a corresponding row stems from the input table or padded (1 if a row comes from input).
+    ///
+    /// Applies [Graph::shard] to the parent graph, `this` node and `shard_config`.
+    #[doc(hidden)]
+    pub fn shard(&self, shard_config: ShardConfig) -> Result<Node> {
+        self.get_graph().shard(self.clone(), shard_config)
+    }
+
     /// Adds a node that converts a switching map array into a tuple of the following components:
     /// - a permutation map array with deletion,
     /// - a duplication map array,
@@ -887,6 +1008,11 @@ impl Node {
     #[doc(hidden)]
     pub fn cuckoo_to_permutation(&self) -> Result<Node> {
         self.get_graph().cuckoo_to_permutation(self.clone())
+    }
+
+    /// Adds an operation which logs the value of the node at runtime.
+    pub fn print(&self, message: String) -> Result<Node> {
+        self.get_graph().print(message, self.clone())
     }
 
     /// Applies [Graph::set_output_node] to the parent graph and `this` node.
@@ -1396,15 +1522,28 @@ impl Graph {
         )
     }
 
-    /// Adds a node that computes the intersection of two named tuples along given key headers.
+    /// Adds a node that computes a join of a given type on two named tuples along given key headers.
     ///
     /// Each tuple should consist of arrays having the same number of rows, i.e. the first dimensions of these arrays should be equal.
-    /// The rows consisiting of only columns with given key headers (key columns) should be unique.
+    /// **WARNING**: The rows consisiting of only columns with given key headers (key columns) should be unique.
     ///  
     /// In addition, each named tuple should have a binary array named with NULL_HEADER that contains zeros in rows void of content; otherwise, it contains ones.
     /// This column is called the null column.
     ///
-    /// This operation returns a named tuple that contains rows whose content is equal in the key columns named by given key headers.
+    /// This operation returns:
+    /// - Inner join: a named tuple containing rows whose content is equal in the key columns named by given key headers.
+    /// - Left join: a named tuple containing rows of the first named tuple and the rows of the second named tuple whose content is equal to the one of the first named tuple in the key columns named by given key headers.
+    /// - Union join: a named tuple containing rows of the first named tuple that are not in the inner join and all the rows of the second set.
+    /// In contrast to the SQL union, this operation does not require that input datasets have respective columns of the same type.
+    /// This means that columns of both datasets are included and filled with zeros where no data can be retrieved.
+    /// Namely, the rows of the second set in the union join will contain zeros in non-key columns of the first set and vice versa.
+    /// - Full join: a named tuple containing all the rows of the both sets.
+    /// If a row of the first set match with a row of the second set, they are merged into one.
+    /// The order of rows goes as follows:
+    /// 1. the rows of the first set that don't belong to the inner join.
+    /// 2. all the rows of the second set including those merged with the rows of the first set as in inner join.
+    /// In this form, full join is computed as `union_join(a, left_join(b, a))`.  
+    ///
     /// The content of non-key columns is merged.
     /// The order of these rows is the same as in the first named tuple.
     /// The content of other rows is set to zero including the null column.
@@ -1413,15 +1552,17 @@ impl Graph {
     ///
     /// * `a` - node containing the first named tuple
     /// * `b` - node containing the second named tuple
+    /// * `t` - join type (Inner/Left/Union/Full)
+    /// * `headers` - headers of columns along which the join is performed
     ///
     /// # Returns
     ///
-    /// New set intersection node
+    /// New join node
     ///
     /// # Example
     ///
     /// ```
-    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::graphs::{create_context, JoinType};
     /// # use ciphercore_base::data_types::{INT32, INT64, UINT8, BIT, array_type, named_tuple_type};
     /// # use ciphercore_base::type_inference::NULL_HEADER;
     /// # use std::collections::HashMap;
@@ -1449,18 +1590,75 @@ impl Graph {
     /// ]);
     /// let n1 = g.input(t1).unwrap();
     /// let n2 = g.input(t2).unwrap();
-    /// let n3 = g.set_intersection(n1, n2, HashMap::from([
+    /// let n3 = g.join(n1, n2, JoinType::Inner, HashMap::from([
     ///     ("ID".to_owned(), "ID".to_owned()),
     ///     ("Occupation".to_owned(), "Job".to_owned()),
     /// ])).unwrap();
     /// ```
-    pub fn set_intersection(
+    pub fn join(
         &self,
         a: Node,
         b: Node,
+        t: JoinType,
         headers: HashMap<String, String>,
     ) -> Result<Node> {
-        self.add_node(vec![a, b], vec![], Operation::SetIntersection(headers))
+        self.add_node(vec![a, b], vec![], Operation::Join(t, headers))
+    }
+
+    /// Adds a node that applies a permutation to the array along the first dimension.
+    ///
+    /// # Arguments
+    ///
+    /// * `a` - node containing an array to permute.
+    /// * `p` - node containing a permutation.
+    ///
+    /// # Returns
+    ///
+    /// New permuted node
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{INT32, UINT64, array_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = array_type(vec![25, 3], INT32);
+    /// let a = g.input(t).unwrap();
+    /// let p = g.input(array_type(vec![25], UINT64)).unwrap();
+    /// let a = g.apply_permutation(a, p).unwrap();
+    /// ```
+    #[doc(hidden)]
+    pub fn apply_permutation(&self, a: Node, p: Node) -> Result<Node> {
+        self.add_node(vec![a, p], vec![], Operation::ApplyPermutation(false))
+    }
+
+    /// Adds a node that applies an inverse permutation to the array along the first dimension.
+    ///
+    /// # Arguments
+    ///
+    /// * `a` - node containing an array to permute.
+    /// * `p` - node containing a permutation.
+    ///
+    /// # Returns
+    ///
+    /// New permuted node
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{INT32, UINT64, array_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = array_type(vec![25, 3], INT32);
+    /// let a = g.input(t).unwrap();
+    /// let p = g.input(array_type(vec![25], UINT64)).unwrap();
+    /// let a = g.apply_inverse_permutation(a, p).unwrap();
+    /// ```
+    #[doc(hidden)]
+    pub fn apply_inverse_permutation(&self, a: Node, p: Node) -> Result<Node> {
+        self.add_node(vec![a, p], vec![], Operation::ApplyPermutation(true))
     }
 
     /// Adds a node that divides a scalar or each entry of an array by a positive constant integer `scale`.
@@ -1670,7 +1868,8 @@ impl Graph {
         let size_estimate = get_size_estimation_in_bits(new_type.clone());
         if size_estimate.is_err() {
             return Err(runtime_error!(
-                "Trying to add a reshape node with invalid type size"
+                "Trying to add a reshape node with invalid type size: {:?}",
+                size_estimate
             ));
         }
         if size_estimate? > type_size_limit_constants::MAX_INDIVIDUAL_NODE_SIZE {
@@ -1792,6 +1991,41 @@ impl Graph {
         )
     }
 
+    /// Adds a node that computes sharding of a given table according to a given sharding config.
+    /// Sharding config contains names of the columns whose hashed values are used for sharding.
+    /// The size of each shard (i.e., the number of rows) and the number of shards is given in the sharding config.
+    /// The number of shards should be smaller than 700.
+    ///
+    ///
+    /// If some resulting shards don't have `shard_size` elements, they're padded with zeros to reach this size.
+    /// If the size of some shards exceeds `shard_size`, sharding fails.
+    ///
+    /// To choose these parameters, consult [the following paper](http://wwwmayr.informatik.tu-muenchen.de/personen/raab/publ/balls.pdf).
+    /// Note that for large shard sizes and small number of shards, it holds that
+    ///
+    /// `shard_size = num_input_rows / num_shards + alpha * sqrt(2 * num_input_rows / num_shards * log(num_shards))`.
+    ///
+    /// With `alpha = 2`, it is possible to achieve failure probability 2^(-40) if `num_shards < 700` and `shard_size > 2^17`.
+    ///
+    ///
+    /// Each shard is accompanied by a Boolean mask indicating whether a corresponding row stems from the input table or padded (1 if a row comes from input).
+    /// The output is given in the form of a tuple of `(mask, shard)`, where `mask` is a binary array and `shard` is a table, i.e., named tuple.
+    ///
+    /// **WARNING**: this function cannot be compiled to an MPC protocol.
+    ///
+    /// # Arguments
+    ///
+    /// - `input_table` - named tuple of arrays containing data for sharding
+    /// - `shard_config` - parameters of sharding: number of shards, shard size and names of columns that are hashed in sharding
+    ///
+    /// # Returns
+    ///
+    /// New Shard node containing a tuple of shards
+    #[doc(hidden)]
+    pub fn shard(&self, input_table: Node, shard_config: ShardConfig) -> Result<Node> {
+        self.add_node(vec![input_table], vec![], Operation::Shard(shard_config))
+    }
+
     /// Adds a node that converts a switching map array into a random tuple of the following components:
     /// - a permutation map array with deletion (some indices of this map are uniformly random, see below),
     /// - a tuple of duplication map array and duplication bits,
@@ -1898,6 +2132,38 @@ impl Graph {
     /// ```
     pub fn stack(&self, nodes: Vec<Node>, outer_shape: ArrayShape) -> Result<Node> {
         self.add_node(nodes, vec![], Operation::Stack(outer_shape))
+    }
+
+    /// Adds a node that joins a sequence of arrays along a given axis.
+    /// This operation is similar to [the NumPy concatenate](https://numpy.org/doc/stable/reference/generated/numpy.concatenate.html).
+    ///
+    /// The input arrays should have the same shape except in the given axis.
+    ///
+    /// # Arguments
+    ///
+    /// * `nodes` - vector of nodes containing arrays
+    /// * `axis` - axis along which the above arrays are joined
+    ///
+    /// # Returns
+    ///
+    /// New Concatenate node
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{INT32, array_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t1 = array_type(vec![3, 2, 3], INT32);
+    /// let t2 = array_type(vec![3, 2, 10], INT32);
+    /// let shape = vec![2];
+    /// let n1 = g.input(t1).unwrap();
+    /// let n2 = g.input(t2).unwrap();
+    /// let n3 = g.concatenate(vec![n1,n2], 2).unwrap();
+    /// ```
+    pub fn concatenate(&self, nodes: Vec<Node>, axis: u64) -> Result<Node> {
+        self.add_node(nodes, vec![], Operation::Concatenate(axis))
     }
 
     /// Adds a node creating a constant of a given type and value.
@@ -2276,26 +2542,29 @@ impl Graph {
     /// # Example
     ///
     /// ```
-    /// # use ciphercore_base::data_types::{INT32, scalar_type, vector_type};
+    /// # use ciphercore_base::data_types::{INT32, BIT, scalar_type, vector_type};
     /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::ops::utils::constant_scalar;
     /// let c = create_context().unwrap();
     ///
-    /// let t_s = scalar_type(INT32);
+    /// let t_s = scalar_type(BIT);
     /// let t = scalar_type(INT32);
     /// let vec_t = vector_type(10, t.clone());
     ///
+    /// // Graph that outputs 0 at even indices or input value at odd indices.
     /// let g1 = c.create_graph().unwrap();
     /// {
     ///     let old_state = g1.input(t_s.clone()).unwrap();
     ///     let input = g1.input(t.clone()).unwrap();
-    ///     let sum = g1.add(old_state.clone(), input).unwrap();
-    ///     let out_tuple = g1.create_tuple(vec![sum, old_state]).unwrap();
+    ///     let result = g1.mixed_multiply(input, old_state.clone()).unwrap();
+    ///     let new_state = g1.add(old_state, constant_scalar(&g1, 1, BIT).unwrap()).unwrap();
+    ///     let out_tuple = g1.create_tuple(vec![new_state, result]).unwrap();
     ///     out_tuple.set_as_output().unwrap();
     ///     g1.finalize().unwrap();
     /// }
     ///
     /// let g2 = c.create_graph().unwrap();
-    /// let initial_state = g2.input(t).unwrap();
+    /// let initial_state = constant_scalar(&g2, 0, BIT).unwrap();
     /// let input_vector = g2.input(vec_t).unwrap();
     /// g2.iterate(g1, initial_state, input_vector).unwrap();
     /// ```
@@ -2557,6 +2826,64 @@ impl Graph {
     pub fn custom_op(&self, op: CustomOperation, arguments: Vec<Node>) -> Result<Node> {
         self.add_node(arguments, vec![], Operation::Custom(op))
     }
+
+    /// Adds a node which logs its input at runtime, and returns the input.
+    /// This is intended to be used for debugging.
+    ///
+    /// # Arguments
+    ///
+    /// * `message` - Informational message to be printed
+    /// * `input` - Node to be printed
+    ///
+    /// # Returns
+    ///
+    /// The value of the node.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{array_type, BIT};
+    /// # use ciphercore_base::custom_ops::{CustomOperation, Not};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = array_type(vec![3, 2], BIT);
+    /// let n1 = g.input(t).unwrap();
+    /// let n2 = g.print("n1:".into(), n1).unwrap();
+    /// ```
+    pub fn print(&self, message: String, input: Node) -> Result<Node> {
+        self.add_node(vec![input], vec![], Operation::Print(message))
+    }
+
+    /// Adds a node which fails the execution at runtime if `condition` is false, and returns the `input` otherwise.
+    /// This is intended to be used for debugging.
+    ///
+    /// # Arguments
+    ///
+    /// * `message` - message to be returned for the failed assertion.
+    /// * `condition` - BIT to be checked in the assertion.
+    /// * `input` - Node to be returned for pass-through.
+    ///
+    /// # Returns
+    ///
+    /// The value of the node.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{array_type, scalar_type, BIT};
+    /// # use ciphercore_base::custom_ops::{CustomOperation, Not};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let cond = g.input(scalar_type(BIT)).unwrap();
+    /// let t = array_type(vec![3, 2], BIT);
+    /// let n1 = g.input(t).unwrap();
+    /// let n2 = g.assert("Condition".into(), cond, n1).unwrap();
+    /// ```
+    pub fn assert(&self, message: String, condition: Node, input: Node) -> Result<Node> {
+        self.add_node(vec![condition, input], vec![], Operation::Assert(message))
+    }
 }
 
 /// Methods which aren't supposed to be imported in Python.
@@ -2592,12 +2919,21 @@ impl Graph {
             }
         }
         for dependency in &graph_dependencies {
-            if dependency.get_context() != self.get_context()
-                || !dependency.is_finalized()
-                || dependency.get_id() >= self.get_id()
-            {
+            if !dependency.is_finalized() {
                 return Err(runtime_error!(
-                    "Can't add a node with invalid graph dependencies"
+                    "Can't add a node with not finilized graph dependency"
+                ));
+            }
+            if dependency.get_id() >= self.get_id() {
+                return Err(runtime_error!(
+                    "Can't add a node with graph dependency with bigger id. {} >= {}",
+                    dependency.get_id(),
+                    self.get_id()
+                ));
+            }
+            if dependency.get_context() != self.get_context() {
+                return Err(runtime_error!(
+                    "Can't add a node with graph dependency from different context"
                 ));
             }
         }
@@ -2910,7 +3246,7 @@ impl fmt::Debug for Context {
 impl fmt::Display for Context {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match serde_json::to_string(&self) {
-            Ok(s) => write!(f, "{}", s),
+            Ok(s) => write!(f, "{s}"),
             Err(_err) => Err(fmt::Error::default()),
         }
     }
@@ -3454,7 +3790,7 @@ impl Context {
     ///
     /// # Returns
     ///
-    /// Name of a node
+    /// Name of a node or None if it doesn't have a name
     ///
     /// # Example
     ///
@@ -3466,20 +3802,16 @@ impl Context {
     /// let t = scalar_type(BIT);
     /// let n = g.input(t).unwrap();
     /// n.set_name("XOR").unwrap();
-    /// assert_eq!(c.get_node_name(n).unwrap(), "XOR".to_owned());
+    /// assert_eq!(c.get_node_name(n).unwrap(), Some("XOR".to_owned()));
     /// ```
-    pub fn get_node_name(&self, node: Node) -> Result<String> {
+    pub fn get_node_name(&self, node: Node) -> Result<Option<String>> {
         if node.get_graph().get_context() != *self {
             return Err(runtime_error!("The node is in a different context"));
         }
         let node_id = node.get_id();
         let graph_id = node.get_graph().get_id();
         let cell = self.body.borrow();
-        Ok(cell
-            .nodes_names
-            .get(&(graph_id, node_id))
-            .ok_or_else(|| runtime_error!("The node is not named"))?
-            .clone())
+        Ok(cell.nodes_names.get(&(graph_id, node_id)).cloned())
     }
 
     /// Returns the node with a given name in a given graph.
@@ -3534,6 +3866,15 @@ impl Context {
     }
 }
 
+fn serialize_hashmap<K, V>(map: HashMap<K, V>) -> Vec<(K, V)>
+where
+    K: Ord + Copy,
+{
+    let mut vec: Vec<_> = map.into_iter().collect();
+    vec.sort_by_key(|(k, _)| *k);
+    vec
+}
+
 /// Methods which aren't supposed to be imported in Python.
 impl Context {
     pub(super) fn is_finalized(&self) -> bool {
@@ -3554,10 +3895,10 @@ impl Context {
                 .map(|g| g.make_serializable())
                 .collect(),
             main_graph,
-            graphs_names: cell.graphs_names.clone().into_iter().collect(),
-            nodes_names: cell.nodes_names.clone().into_iter().collect(),
-            graphs_annotations: cell.graphs_annotations.clone().into_iter().collect(),
-            nodes_annotations: cell.nodes_annotations.clone().into_iter().collect(),
+            graphs_names: serialize_hashmap(cell.graphs_names.clone()),
+            nodes_names: serialize_hashmap(cell.nodes_names.clone()),
+            graphs_annotations: serialize_hashmap(cell.graphs_annotations.clone()),
+            nodes_annotations: serialize_hashmap(cell.nodes_annotations.clone()),
         })
     }
 
@@ -3940,8 +4281,7 @@ pub fn contexts_deep_equal(context1: Context, context2: Context) -> bool {
 
 // Pass the node name of `in_node` to `out_node` if it is present.
 pub(crate) fn copy_node_name(in_node: Node, out_node: Node) -> Result<()> {
-    let node_name_result = in_node.get_name();
-    if let Ok(node_name) = node_name_result {
+    if let Some(node_name) = in_node.get_name()? {
         out_node.set_name(&node_name)?;
     }
     Ok(())
@@ -3986,6 +4326,46 @@ impl PyBindingSliceElement {
     }
 }
 
+pub mod util {
+    use super::{create_context, Context, Graph, Node};
+    use crate::errors::Result;
+
+    /// Creates a computation context with a single graph within it.
+    ///
+    /// The graph is passed to the provided `build_graph_fn` function to
+    /// specify the computation. The node returned by the function is marked
+    /// as output.
+    ///
+    /// # Returns
+    ///
+    /// New computation context
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::util::simple_context;
+    /// # use ciphercore_base::data_types::{scalar_type, INT32};
+    /// let c = simple_context(|g| {
+    ///     let a = g.input(scalar_type(INT32))?;
+    ///     let b = g.input(scalar_type(INT32))?;
+    ///     g.add(a, b)
+    /// }).unwrap();
+    /// ```
+    pub fn simple_context<F>(build_graph_fn: F) -> Result<Context>
+    where
+        F: FnOnce(&Graph) -> Result<Node>,
+    {
+        let c = create_context()?;
+        let g = c.create_graph()?;
+        let out = build_graph_fn(&g)?;
+        out.set_as_output()?;
+        g.finalize()?;
+        g.set_as_main()?;
+        c.finalize()?;
+        Ok(c)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3995,6 +4375,7 @@ mod tests {
     use crate::inline::inline_ops::InlineConfig;
     use crate::mpc::mpc_compiler::{prepare_for_mpc_evaluation, IOStatus};
     use crate::version::DATA_VERSION;
+    use std::panic;
     use std::rc::Rc;
 
     #[test]
@@ -4430,6 +4811,19 @@ mod tests {
             context.finalize().unwrap();
             context
         };
+        let context15 = || {
+            let context = create_unchecked_context().unwrap();
+            let graph = context.create_graph().unwrap();
+            let mut x = graph.input(scalar_type(BIT)).unwrap();
+            for i in 1..20 {
+                let y = graph.input(scalar_type(BIT)).unwrap();
+                y.set_name(format!("input_{}", i).as_str()).unwrap();
+                x = graph.add(x, y).unwrap();
+            }
+            graph.set_output_node(x).unwrap();
+            graph.finalize().unwrap();
+            context
+        };
         let mut closures: Vec<Box<dyn Fn() -> Context>> = vec![];
         closures.push(Box::new(context1));
         closures.push(Box::new(context2));
@@ -4445,6 +4839,7 @@ mod tests {
         closures.push(Box::new(context12));
         closures.push(Box::new(context13));
         closures.push(Box::new(context14));
+        closures.push(Box::new(context15));
         closures
     }
 
@@ -4482,6 +4877,9 @@ mod tests {
 
     pub fn deserialize_error_lenient(serialized_string: &str, error_msg: &str) {
         use std::panic::catch_unwind;
+        panic::set_hook(Box::new(|_info| {
+            // See: https://stackoverflow.com/questions/35559267/suppress-panic-output-in-rust-when-using-paniccatch-unwind
+        }));
         let result = catch_unwind(|| serde_json::from_str::<Context>(serialized_string).unwrap());
         // This is a (nasty) hack.
         // We check whether the returned error contain the expected error message.
@@ -4515,7 +4913,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(feature = "nightly-features"))]
     fn test_context_serialize() {
         let generators = context_generators();
         let contexts: Vec<Context> = generators.iter().map(|generator| generator()).collect();
@@ -4534,6 +4931,10 @@ mod tests {
                 contexts[i].clone(),
                 deserialized_contexts[i].clone()
             ));
+            assert_eq!(
+                serialized_contexts[i],
+                serde_json::to_string(&deserialized_contexts[i]).unwrap()
+            )
         }
 
         //Read test cases from golden file
@@ -4586,7 +4987,7 @@ mod tests {
             context.set_main_graph(graph.clone())?;
             assert!(context.get_graph_name(graph.clone()).is_err());
             assert!(context.retrieve_graph("main").is_err());
-            assert!(context.get_node_name(input_a.clone()).is_err());
+            assert!(context.get_node_name(input_a.clone())?.is_none());
             assert!(context.retrieve_node(graph.clone(), "a").is_err());
             context.set_graph_name(graph.clone(), "main")?;
             context.set_node_name(input_a.clone(), "a")?;
@@ -4594,8 +4995,14 @@ mod tests {
             context.set_node_name(input_b.clone(), "b")?;
             context.finalize()?;
             assert_eq!(context.get_graph_name(graph.clone())?, "main");
-            assert_eq!(context.get_node_name(input_a.clone())?, "a");
-            assert_eq!(context.get_node_name(input_b.clone())?, "b");
+            assert_eq!(
+                context.get_node_name(input_a.clone())?,
+                Some("a".to_owned())
+            );
+            assert_eq!(
+                context.get_node_name(input_b.clone())?,
+                Some("b".to_owned())
+            );
             assert!(context.retrieve_node(graph.clone(), "a")? == input_a.clone());
             Ok(context)
         };
@@ -4836,7 +5243,7 @@ mod tests {
             let i = g.input(scalar_type(BIT))?.set_name("node name")?;
             assert_eq!(g.get_name()?, "graph name");
             assert!(g.retrieve_node("node name")? == i);
-            assert!(i.get_name()? == "node name");
+            assert_eq!(i.get_name()?, Some("node name".to_owned()));
             assert_eq!(
                 g.prepare_input_values(hashmap!("node name" => Value::from_scalar(1, BIT)?))?,
                 vec![Value::from_scalar(1, BIT)?]

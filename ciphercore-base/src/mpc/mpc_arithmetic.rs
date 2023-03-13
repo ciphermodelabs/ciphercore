@@ -14,12 +14,8 @@ pub(super) struct AddMPC {}
 #[typetag::serde]
 impl CustomOperationBody for AddMPC {
     fn instantiate(&self, context: Context, argument_types: Vec<Type>) -> Result<Graph> {
-        // Panics since:
-        // - the user has no direct access to this function.
-        // - the MPC compiler should pass the correct number of arguments
-        // and this panic should never happen.
         if argument_types.len() != 2 {
-            panic!("AddMPC should have two inputs");
+            return Err(runtime_error!("AddMPC should have two inputs"));
         }
         let g = context.create_graph()?;
         let t0 = argument_types[0].clone();
@@ -88,12 +84,8 @@ pub(super) struct SubtractMPC {}
 #[typetag::serde]
 impl CustomOperationBody for SubtractMPC {
     fn instantiate(&self, context: Context, argument_types: Vec<Type>) -> Result<Graph> {
-        // Panics since:
-        // - the user has no direct access to this function.
-        // - the MPC compiler should pass the correct number of arguments
-        // and this panic should never happen.
         if argument_types.len() != 2 {
-            panic!("SubtractMPC should have two inputs");
+            return Err(runtime_error!("SubtractMPC should have two inputs"));
         }
         let g = context.create_graph()?;
         let t0 = argument_types[0].clone();
@@ -261,12 +253,11 @@ fn instantiate_bilinear_product(
         Operation::Gemm(_, _) => "GemmMPC".to_owned(),
         _ => return Err(runtime_error!("Not a bilinear product")),
     };
-    // Panics since:
-    // - the user has no direct access to this function.
-    // - the MPC compiler should pass the correct number of arguments
-    // and this panic should never happen.
     if !(2..=3).contains(&argument_types.len()) {
-        panic!("{} should have either 2 or 3 inputs.", op_name);
+        return Err(runtime_error!(
+            "{} should have either 2 or 3 inputs.",
+            op_name
+        ));
     }
     let g = context.create_graph()?;
     let t0 = argument_types[0].clone();
@@ -283,15 +274,11 @@ fn instantiate_bilinear_product(
         (Type::Tuple(v0), Type::Tuple(v1)) => {
             check_private_tuple(v0)?;
             check_private_tuple(v1)?;
-            // Panics since:
-            // - the user has no direct access to this function,
-            // - the MPC compiler should pass the correct number of arguments
-            // and this panic should never happen.
             if argument_types.len() != 3 {
-                panic!(
+                return Err(runtime_error!(
                     "{} with two private inputs should be provided a tuple of keys",
                     op_name
-                );
+                ));
             }
             let prf_type = argument_types[2].clone();
             private_product(i0, i1, prf_type, g.clone(), op)?;
@@ -459,12 +446,10 @@ fn multiply_bits_by_public_integers(
 #[typetag::serde]
 impl CustomOperationBody for MixedMultiplyMPC {
     fn instantiate(&self, context: Context, argument_types: Vec<Type>) -> Result<Graph> {
-        // Panics since:
-        // - the user has no direct access to this function.
-        // - the MPC compiler should pass the correct number of arguments
-        // and this panic should never happen.
         if !(2..=3).contains(&argument_types.len()) {
-            panic!("MixedMultiplyMPC should have either 2 or 3 inputs");
+            return Err(runtime_error!(
+                "MixedMultiplyMPC should have either 2 or 3 inputs"
+            ));
         }
         let g = context.create_graph()?;
         let t_a = argument_types[0].clone();
@@ -486,12 +471,8 @@ impl CustomOperationBody for MixedMultiplyMPC {
                 // The final step is to sum shares [a0 * b] and [(a1+a2) * b], which yields [a0 * b + (a1+a2) * b] = [a * b]
                 check_private_tuple(v_a)?;
                 check_private_tuple(v_b)?;
-                // Panics since:
-                // - the user has no direct access to this function,
-                // - the MPC compiler should pass the correct number of arguments
-                // and this panic should never happen.
                 if argument_types.len() != 3 {
-                    panic!("MixedMultiply with two private inputs should be provided a tuple of PRF keys");
+                    return Err(runtime_error!("MixedMultiply with two private inputs should be provided a tuple of PRF keys"));
                 }
                 let prf_type = argument_types[2].clone();
                 let prf_keys = g.input(prf_type)?;
@@ -523,14 +504,10 @@ impl CustomOperationBody for MixedMultiplyMPC {
                 // Integers are public, bits are private.
                 // In this case, bits are multiplied by public integers using the above protocol with party 1 having a role of the integer owner.
                 check_private_tuple(v1)?;
-                // Panics since:
-                // - the user has no direct access to this function,
-                // - the MPC compiler should pass the correct number of arguments
-                // and this panic should never happen.
                 if argument_types.len() != 3 {
-                    panic!(
+                    return Err(runtime_error!(
                         "MixedMultiply with private bits should be provided a tuple of PRF keys"
-                    );
+                    ));
                 }
                 let prf_type = argument_types[2].clone();
                 let prf_keys = g.input(prf_type)?;
@@ -568,7 +545,7 @@ mod tests {
     };
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
-    use crate::graphs::create_context;
+    use crate::graphs::util::simple_context;
     use crate::inline::inline_ops::{inline_operations, InlineConfig, InlineMode};
     use crate::mpc::mpc_compiler::{generate_prf_key_triple, prepare_for_mpc_evaluation, IOStatus};
     use crate::mpc::mpc_equivalence_class::{generate_equivalence_class, EquivalenceClasses};
@@ -581,48 +558,43 @@ mod tests {
         st: ScalarType,
         dims: Vec<ArrayShape>,
     ) -> Result<Context> {
-        let c = create_context()?;
-        let g = c.create_graph()?;
-        let mut types = vec![];
-        if op == Operation::MixedMultiply {
-            types.push(array_type(dims[0].clone(), st.clone()));
-            types.push(array_type(dims[1].clone(), BIT));
-            types.push(array_type(dims[2].clone(), BIT));
-        } else {
-            for shape in dims {
-                types.push(array_type(shape, st.clone()));
+        let c = simple_context(|g| {
+            let mut types = vec![];
+            if op == Operation::MixedMultiply {
+                types.push(array_type(dims[0].clone(), st.clone()));
+                types.push(array_type(dims[1].clone(), BIT));
+                types.push(array_type(dims[2].clone(), BIT));
+            } else {
+                for shape in dims {
+                    types.push(array_type(shape, st.clone()));
+                }
             }
-        }
-        let i1 = g.input(types[0].clone())?;
-        i1.set_name("Input 1")?;
-        let i2 = g.input(types[1].clone())?;
-        i2.set_name("Input 2")?;
-        let o = match op {
-            Operation::Add => {
-                let a1 = i1.add(i2)?;
-                a1.add(g.input(types[2].clone())?)?
+            let i1 = g.input(types[0].clone())?;
+            i1.set_name("Input 1")?;
+            let i2 = g.input(types[1].clone())?;
+            i2.set_name("Input 2")?;
+            match op {
+                Operation::Add => {
+                    let a1 = i1.add(i2)?;
+                    a1.add(g.input(types[2].clone())?)
+                }
+                Operation::Subtract => {
+                    let a1 = i1.subtract(i2)?;
+                    a1.subtract(g.input(types[2].clone())?)
+                }
+                Operation::Multiply
+                | Operation::Dot
+                | Operation::Matmul
+                | Operation::MixedMultiply
+                | Operation::Gemm(_, _) => {
+                    let a1 = bilinear_product(i1, i2, op.clone())?;
+                    bilinear_product(a1, g.input(types[2].clone())?, op)
+                }
+                _ => {
+                    panic!("Shouldn't be here");
+                }
             }
-            Operation::Subtract => {
-                let a1 = i1.subtract(i2)?;
-                a1.subtract(g.input(types[2].clone())?)?
-            }
-            Operation::Multiply
-            | Operation::Dot
-            | Operation::Matmul
-            | Operation::MixedMultiply
-            | Operation::Gemm(_, _) => {
-                let a1 = bilinear_product(i1, i2, op.clone())?;
-                bilinear_product(a1, g.input(types[2].clone())?, op)?
-            }
-            _ => {
-                panic!("Shouldn't be here");
-            }
-        };
-        g.set_output_node(o)?;
-        g.finalize()?;
-        c.set_main_graph(g)?;
-        c.finalize()?;
-
+        })?;
         let inline_config = InlineConfig {
             default_mode: InlineMode::Simple,
             ..Default::default()
@@ -1060,24 +1032,20 @@ mod tests {
     #[test]
     fn test_mixed_multiply_communication() {
         || -> Result<()> {
-            let c = create_context()?;
-            let g = c.create_graph()?;
-            let input_type1 = tuple_type(vec![scalar_type(INT32); 3]);
-            let input_type2 = tuple_type(vec![scalar_type(BIT); 3]);
-            let i1 = g.input(input_type1)?;
-            let i2 = g.input(input_type2)?;
-            let prf_keys = {
-                let keys_vec = generate_prf_key_triple(g.clone())?;
-                g.create_tuple(keys_vec)?
-            };
-            let o = g.custom_op(
-                CustomOperation::new(MixedMultiplyMPC {}),
-                vec![i1, i2, prf_keys],
-            )?;
-            o.set_as_output()?;
-            g.finalize()?;
-            g.set_as_main()?;
-            c.finalize()?;
+            let c = simple_context(|g| {
+                let input_type1 = tuple_type(vec![scalar_type(INT32); 3]);
+                let input_type2 = tuple_type(vec![scalar_type(BIT); 3]);
+                let i1 = g.input(input_type1)?;
+                let i2 = g.input(input_type2)?;
+                let prf_keys = {
+                    let keys_vec = generate_prf_key_triple(g.clone())?;
+                    g.create_tuple(keys_vec)?
+                };
+                g.custom_op(
+                    CustomOperation::new(MixedMultiplyMPC {}),
+                    vec![i1, i2, prf_keys],
+                )
+            })?;
 
             let instantiated_c = run_instantiation_pass(c)?.context;
             let inlined_c = inline_operations(
