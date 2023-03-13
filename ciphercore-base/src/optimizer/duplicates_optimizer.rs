@@ -11,6 +11,29 @@ struct NodeKey {
     op: Operation,
 }
 
+impl NodeKey {
+    pub fn new(node: Node, dep_ids: Vec<u64>) -> Result<Option<Self>> {
+        if node.get_operation().is_prf_operation() {
+            // Don't try to de-duplicate PRF operations.
+            return Ok(None);
+        }
+        match node.get_operation() {
+            Operation::Constant(_, _) | Operation::Input(_) | Operation::Random(_) => {
+                // Don't try to de-duplicate these operations.
+                Ok(None)
+            }
+            Operation::Custom(_) => Err(runtime_error!(
+                "Graph has to be fully inlined for the duplicates optimization"
+            )),
+            _ => Ok(Some(NodeKey {
+                deps: dep_ids,
+                annotations: node.get_annotations()?,
+                op: node.get_operation(),
+            })),
+        }
+    }
+}
+
 fn hash_some_operations<H: Hasher>(op: &Operation, state: &mut H) {
     match op {
         // Ignore constants.
@@ -62,25 +85,7 @@ pub(super) fn optimize_graph_duplicates(graph: Graph, out_graph: Graph) -> Resul
             deps.push(new_dep.clone());
             dep_ids.push(new_dep.get_id());
         }
-        let node_key = match node.get_operation() {
-            Operation::Constant(_, _)
-            | Operation::Input(_)
-            | Operation::Random(_)
-            | Operation::PRF(_, _) => {
-                // Don't try to de-duplicate these operations.
-                None
-            }
-            Operation::Custom(_) => {
-                return Err(runtime_error!(
-                    "Graph has to be fully inlined for the duplicates optimization"
-                ));
-            }
-            _ => Some(NodeKey {
-                deps: dep_ids,
-                annotations: node.get_annotations()?,
-                op: node.get_operation(),
-            }),
-        };
+        let node_key = NodeKey::new(node.clone(), dep_ids)?;
         let maybe_new_node = if let Some(key) = &node_key {
             node_signatures.get(key)
         } else {

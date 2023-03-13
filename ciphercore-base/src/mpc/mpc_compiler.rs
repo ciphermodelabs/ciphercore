@@ -1099,24 +1099,23 @@ pub fn uniquify_prf_id(context: Context) -> Result<Context> {
         let nodes = graph.get_nodes();
         for node in nodes {
             let op = node.get_operation();
-            let new_node = if let Operation::PRF(_, t) = op {
-                let dependencies = node.get_node_dependencies();
-                let prf_key = context_map.get_node(dependencies[0].clone());
+            let op = if op.is_prf_operation() {
                 prf_id += 1;
-                out_graph.prf(prf_key, prf_id, t)?
+                op.update_prf_id(prf_id)?
             } else {
-                let node_dependencies = node.get_node_dependencies();
-                let new_node_dependencies: Vec<Node> = node_dependencies
-                    .iter()
-                    .map(|x| context_map.get_node((*x).clone()))
-                    .collect();
-                let graph_dependencies = node.get_graph_dependencies();
-                let new_graph_dependencies: Vec<Graph> = graph_dependencies
-                    .iter()
-                    .map(|x| context_map.get_graph((*x).clone()))
-                    .collect();
-                out_graph.add_node(new_node_dependencies, new_graph_dependencies, op)?
+                op
             };
+            let node_dependencies = node.get_node_dependencies();
+            let new_node_dependencies: Vec<Node> = node_dependencies
+                .iter()
+                .map(|x| context_map.get_node((*x).clone()))
+                .collect();
+            let graph_dependencies = node.get_graph_dependencies();
+            let new_graph_dependencies: Vec<Graph> = graph_dependencies
+                .iter()
+                .map(|x| context_map.get_graph((*x).clone()))
+                .collect();
+            let new_node = out_graph.add_node(new_node_dependencies, new_graph_dependencies, op)?;
             let annotations = node.get_annotations()?;
             for anno in annotations {
                 new_node.add_annotation(anno)?;
@@ -1939,14 +1938,17 @@ mod tests {
         for graph in graphs {
             let nodes = graph.get_nodes();
             for node in nodes {
-                if let Operation::PRF(iv, _) = node.get_operation() {
-                    if let Some(other_node) = iv_node_map.get(&iv) {
-                        if *other_node != node {
-                            return Err(runtime_error!("PRF node with non-unique iv"));
-                        }
-                    } else {
-                        iv_node_map.insert(iv, node);
+                let iv = match node.get_operation() {
+                    Operation::PRF(iv, _) => iv,
+                    Operation::PermutationFromPRF(iv, _) => iv,
+                    _ => continue,
+                };
+                if let Some(other_node) = iv_node_map.get(&iv) {
+                    if *other_node != node {
+                        return Err(runtime_error!("PRF node with non-unique iv"));
                     }
+                } else {
+                    iv_node_map.insert(iv, node);
                 }
             }
         }
@@ -1971,6 +1973,7 @@ mod tests {
                 g2.set_output_node(o)?;
                 g2.finalize()?;
             }
+
             c.set_main_graph(g2)?;
             c.finalize()?;
 
@@ -1998,5 +2001,42 @@ mod tests {
             Ok(())
         }()
         .unwrap()
+    }
+
+    #[test]
+    fn test_prf_ids_for_permutation_from_prf() -> Result<()> {
+        let c = create_context()?;
+        let g1 = c.create_graph()?;
+        {
+            let k = g1.random(array_type(vec![128], BIT))?;
+            g1.permutation_from_prf(k, 0, 10)?.set_as_output()?;
+            g1.finalize()?;
+        }
+        let g2 = c.create_graph()?;
+        {
+            let k = g2.random(array_type(vec![128], BIT))?;
+            g2.prf(k, 0, scalar_type(UINT64))?.set_as_output()?;
+            g2.finalize()?;
+        }
+        let g3 = c.create_graph()?;
+        {
+            let k = g3.random(array_type(vec![128], BIT))?;
+            g3.permutation_from_prf(k, 0, 11)?.set_as_output()?;
+            g3.finalize()?;
+        }
+        let g4 = c.create_graph()?;
+        {
+            let k = g4.random(array_type(vec![128], BIT))?;
+            g4.prf(k, 0, scalar_type(INT32))?.set_as_output()?;
+            g4.finalize()?;
+        }
+
+        c.set_main_graph(g2)?;
+        c.finalize()?;
+        assert!(check_prf_id(c.clone()).is_err());
+
+        let c = uniquify_prf_id(c)?;
+        assert!(check_prf_id(c).is_ok());
+        Ok(())
     }
 }

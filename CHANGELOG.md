@@ -1,3 +1,11 @@
+# Changes in CipherCore 0.1.3
+
+* **Better SMPC protocol for Private set intersection** The new protocol follows the description of the Join protocol from <https://eprint.iacr.org/2019/518.pdf>. The operation is renamed from `SetIntersection` to `Join`, and supports four join flavors: Inner, Left, Union and Full.
+* **Concatenate** Primitive operation to concatenate arrays.
+* **Apply permutation** Primitive operation that permutes private or public data using a private or public permutation.
+* **General matrix multiplication** Primitive operation `Gemm` that generalizes `Matmul`.
+* **Division** Two algorithms implemented as custom operations: Approximate GoldschmidtDivision and slow but exact LongDivision.
+
 # Changes in CipherCore 0.1.2
 
 * **Runtime documentation + examples** We now provide [detailed documentation](https://github.com/ciphermodelabs/ciphercore/blob/main/reference/runtime.md) for CipherCore runtime, which can be used to execute a secure protocol produced by CipherCore compiler between actual parties over the network. [E-mail us](mailto:ciphercore@ciphermode.tech) to request access to play with runtime.
