@@ -129,6 +129,7 @@ pub enum Operation {
     NOP,
     Random(Type),
     PRF(u64, Type),
+    PermutationFromPRF(u64, u64),
     Stack(ArrayShape),
     Concatenate(u64),
     Constant(Type, Value),
@@ -179,6 +180,24 @@ impl fmt::Display for Operation {
             }
         };
         write!(f, "{operation_name}")
+    }
+}
+
+impl Operation {
+    pub fn is_prf_operation(&self) -> bool {
+        matches!(
+            self,
+            Operation::PRF(_, _) | Operation::PermutationFromPRF(_, _)
+        )
+    }
+    pub fn update_prf_id(&self, prf_id: u64) -> Result<Self> {
+        match self {
+            Operation::PRF(_, scalar_type) => Ok(Operation::PRF(prf_id, scalar_type.clone())),
+            Operation::PermutationFromPRF(_, size) => {
+                Ok(Operation::PermutationFromPRF(prf_id, *size))
+            }
+            _ => Err(runtime_error!("Operation is not a PRF operation")),
+        }
     }
 }
 
@@ -776,6 +795,11 @@ impl Node {
     #[doc(hidden)]
     pub fn prf(&self, iv: u64, output_type: Type) -> Result<Node> {
         self.get_graph().prf(self.clone(), iv, output_type)
+    }
+
+    #[doc(hidden)]
+    pub fn permutation_from_prf(&self, iv: u64, n: u64) -> Result<Node> {
+        self.get_graph().permutation_from_prf(self.clone(), iv, n)
     }
 
     /// Adds a node to the parent graph converting an integer array or scalar associated with the node to the binary form.
@@ -3025,6 +3049,10 @@ impl Graph {
 
     pub(crate) fn prf(&self, key: Node, iv: u64, output_type: Type) -> Result<Node> {
         self.add_node(vec![key], vec![], Operation::PRF(iv, output_type))
+    }
+
+    pub(crate) fn permutation_from_prf(&self, key: Node, iv: u64, n: u64) -> Result<Node> {
+        self.add_node(vec![key], vec![], Operation::PermutationFromPRF(iv, n))
     }
 
     pub(super) fn is_finalized(&self) -> bool {

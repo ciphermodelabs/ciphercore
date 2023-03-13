@@ -438,6 +438,7 @@ fn get_number_of_node_dependencies(operation: Operation) -> Option<u64> {
         | Operation::Reshape(_)
         | Operation::NOP
         | Operation::PRF(_, _)
+        | Operation::PermutationFromPRF(_, _)
         | Operation::A2B
         | Operation::B2A(_)
         | Operation::TupleGet(_)
@@ -941,6 +942,25 @@ impl TypeInferenceWorker {
                 if s.len() != 1 || s[0] != 128 || st != BIT {
                     return Err(runtime_error!("PRF key must consist of 128 bits: {s:?}"));
                 }
+                self.register_result(node, ot.clone())?;
+                Ok(ot)
+            }
+            Operation::PermutationFromPRF(_, n) => {
+                let t = node_dependencies_types[0].clone();
+                if !t.is_array() {
+                    return Err(runtime_error!("PRF key must be an array: {t:?}"));
+                }
+                let s = t.get_shape();
+                let st = t.get_scalar_type();
+                if s.len() != 1 || s[0] != 128 || st != BIT {
+                    return Err(runtime_error!("PRF key must consist of 128 bits: {s:?}"));
+                }
+                if n > 2u64.pow(30) {
+                    return Err(runtime_error!(
+                        "Permutation length should be less than 2^30"
+                    ));
+                }
+                let ot = array_type(vec![n], UINT64);
                 self.register_result(node, ot.clone())?;
                 Ok(ot)
             }
@@ -2247,6 +2267,34 @@ mod tests {
             31337,
             vector_type(123, tuple_type(vec![])),
         );
+    }
+
+    fn test_permutation_from_prf_worker(t: Type, iv: u64, n: u64) {
+        let context = create_unchecked_context().unwrap();
+        let mut worker = create_type_inference_worker(context.clone());
+        let graph = context.create_graph().unwrap();
+        let key = graph.input(t).unwrap();
+        let out = graph.permutation_from_prf(key, iv, n).unwrap();
+        let t_result = worker.process_node(out).unwrap();
+        assert_eq!(array_type(vec![n], UINT64), t_result);
+    }
+
+    fn test_permutation_from_prf_worker_fail(t: Type, iv: u64, n: u64) {
+        let context = create_unchecked_context().unwrap();
+        let mut worker = create_type_inference_worker(context.clone());
+        let graph = context.create_graph().unwrap();
+        let key = graph.input(t).unwrap();
+        let out = graph.permutation_from_prf(key, iv, n).unwrap();
+        let e = worker.process_node(out);
+        assert!(e.is_err());
+    }
+
+    #[test]
+    fn test_permutation_from_prf() {
+        test_permutation_from_prf_worker(array_type(vec![128], BIT), 31337, 100);
+        test_permutation_from_prf_worker_fail(array_type(vec![127], BIT), 31337, 100);
+        test_permutation_from_prf_worker_fail(array_type(vec![128], INT32), 31337, 100);
+        test_permutation_from_prf_worker_fail(tuple_type(vec![]), 31337, 100);
     }
 
     fn test_stack_worker(outer_shape: ArrayShape, inner_types: Vec<Type>, result_type: Type) {
