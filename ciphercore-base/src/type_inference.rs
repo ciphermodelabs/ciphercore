@@ -704,9 +704,9 @@ impl TypeInferenceWorker {
                 let n = t.get_shape()[0];
                 let p = node_dependencies_types[1].clone();
                 if let Type::Array(shape, st) = p.clone() {
-                    if shape.len() != 1 || shape[0] != n || st != UINT64 {
+                    if shape.len() != 1 || shape[0] != n || st == BIT || st.get_signed() {
                         return Err(runtime_error!(
-                            "Permutation should be a 1D UINT64 array of shape [{n}]. Found type: {p:?}"
+                            "Permutation should be a 1D UINT* array of shape [{n}]. Found type: {p:?}"
                         ));
                     }
                 } else {
@@ -799,10 +799,9 @@ impl TypeInferenceWorker {
                 if !t.is_array() {
                     return Err(runtime_error!("Input type should be an array: {t:?}"));
                 }
-                if t.get_scalar_type() != UINT64 {
-                    return Err(runtime_error!(
-                        "Input elements must be unsigned 64-bit integers: {t:?}"
-                    ));
+                let st = t.get_scalar_type();
+                if st == BIT || st.get_signed() {
+                    return Err(runtime_error!("Input elements must be UINT*: {t:?}"));
                 }
                 if t.get_shape().len() > 1 {
                     return Err(runtime_error!(
@@ -1382,11 +1381,19 @@ impl TypeInferenceWorker {
                     ));
                 }
                 let indices_t = node_dependencies_types[1].clone();
-                // TODO: support UINT32
-                if !matches!(indices_t, Type::Array(_, UINT64)) {
-                    return Err(runtime_error!(
-                        "Indices must be an array of UINT64: {indices_t:?}"
-                    ));
+                match indices_t.clone() {
+                    Type::Array(_, st) => {
+                        if st.get_signed() || st == BIT {
+                            return Err(runtime_error!(
+                                "Indices must be an array of UINT*: {indices_t:?}"
+                            ));
+                        }
+                    }
+                    _ => {
+                        return Err(runtime_error!(
+                            "Indices must be an array of UINT*: {indices_t:?}"
+                        ));
+                    }
                 }
                 let input_shape = input_t.get_shape();
                 if axis >= input_shape.len() as u64 {
@@ -1606,7 +1613,7 @@ impl TypeInferenceWorker {
 mod tests {
     use super::*;
     use crate::data_types::{
-        create_scalar_type, ArrayShape, Type, BIT, INT32, INT8, UINT32, UINT8,
+        create_scalar_type, ArrayShape, Type, BIT, INT32, INT8, UINT16, UINT32, UINT8,
     };
     use crate::data_values::Value;
     use crate::graphs::{
@@ -3109,14 +3116,14 @@ mod tests {
 
             gather_helper(
                 array_type(vec![4], BIT),
-                array_type(vec![3], UINT64),
+                array_type(vec![3], UINT8),
                 0,
                 Some(array_type(vec![3], BIT)),
             )?;
 
             gather_helper(
                 array_type(vec![2, 3, 7, 5], BIT),
-                array_type(vec![2, 3], UINT64),
+                array_type(vec![2, 3], UINT32),
                 2,
                 Some(array_type(vec![2, 3, 2, 3, 5], BIT)),
             )?;
@@ -3125,7 +3132,7 @@ mod tests {
             gather_helper(array_type(vec![2, 3, 4], BIT), scalar_type(UINT64), 1, None)?;
             gather_helper(
                 array_type(vec![2, 3, 4], BIT),
-                array_type(vec![2], UINT32),
+                array_type(vec![2], INT32),
                 1,
                 None,
             )?;
@@ -3265,10 +3272,12 @@ mod tests {
         || -> Result<()> {
             let t = array_type(vec![10], UINT64);
             test_inverse_permutation_worker(t.clone(), t)?;
+            let t = array_type(vec![10], UINT16);
+            test_inverse_permutation_worker(t.clone(), t)?;
 
             test_inverse_permutation_fail(scalar_type(UINT64))?;
             test_inverse_permutation_fail(array_type(vec![10, 5], UINT64))?;
-            test_inverse_permutation_fail(array_type(vec![10], UINT32))?;
+            test_inverse_permutation_fail(array_type(vec![10], INT32))?;
 
             Ok(())
         }()
@@ -4392,7 +4401,7 @@ mod tests {
     }
 
     #[test]
-    fn test_random_shuffle() -> Result<()> {
+    fn test_apply_permutation() -> Result<()> {
         let context = create_unchecked_context()?;
         let mut worker = create_type_inference_worker(context.clone());
         let graph = context.create_graph()?;
@@ -4400,30 +4409,38 @@ mod tests {
         let tin = array_type(vec![10, 20], UINT64);
         let i = graph.input(tin.clone())?;
         let p = graph.input(array_type(vec![10], UINT64))?;
-        let o = graph.apply_permutation(i, p.clone())?;
-        let tout = worker.process_node(o.clone())?;
+        let o = graph.apply_permutation(i, p)?;
+        let tout = worker.process_node(o)?;
+        assert_eq!(tout, tin);
+        // UINT8.
+        let tin = array_type(vec![10], UINT64);
+        let i = graph.input(tin.clone())?;
+        let p = graph.input(array_type(vec![10], UINT8))?;
+        let o = graph.apply_permutation(i, p)?;
+        let tout = worker.process_node(o)?;
         assert_eq!(tout, tin);
         // Incompatible shapes
         let i = graph.input(tin.clone())?;
         let p = graph.input(array_type(vec![11], UINT64))?;
         let o = graph.apply_permutation(i, p)?;
-        assert!(worker.process_node(o.clone()).is_err());
+        assert!(worker.process_node(o).is_err());
         // Incorrect permutation type.
         let i = graph.input(tin.clone())?;
         let p = graph.input(vector_type(10, scalar_type(UINT64)))?;
         let o = graph.apply_permutation(i, p)?;
-        assert!(worker.process_node(o.clone()).is_err());
+        assert!(worker.process_node(o).is_err());
         // Incorrect array type.
         let tin = vector_type(10, scalar_type(UINT32));
         let i = graph.input(tin.clone())?;
         let p = graph.input(array_type(vec![10], UINT64))?;
         let o = graph.apply_permutation(i, p)?;
-        assert!(worker.process_node(o.clone()).is_err());
+        assert!(worker.process_node(o).is_err());
         // Incorrect permutation type.
+        let tin = array_type(vec![10], UINT64);
         let i = graph.input(tin.clone())?;
-        let p = graph.input(array_type(vec![10], UINT32))?;
+        let p = graph.input(array_type(vec![10], INT32))?;
         let o = graph.apply_permutation(i, p)?;
-        assert!(worker.process_node(o.clone()).is_err());
+        assert!(worker.process_node(o).is_err());
         Ok(())
     }
 }

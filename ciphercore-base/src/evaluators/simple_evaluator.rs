@@ -860,6 +860,7 @@ impl Evaluator for SimpleEvaluator {
                 let t = node.get_type()?;
                 let n = t.get_shape()[0];
 
+                let permutation_type = node.get_node_dependencies()[1].get_type()?;
                 let indexes_permutation = dependencies_values[1]
                     .to_flattened_array_u64(node.get_node_dependencies()[1].get_type()?)?;
                 if indexes_permutation
@@ -882,7 +883,10 @@ impl Evaluator for SimpleEvaluator {
                 evaluate_gather(
                     vec![
                         dependencies_values[0].clone(),
-                        Value::from_flattened_array(&permutation, UINT64)?,
+                        Value::from_flattened_array(
+                            &permutation,
+                            permutation_type.get_scalar_type(),
+                        )?,
                     ],
                     node,
                     0,
@@ -1371,7 +1375,7 @@ mod tests {
     use crate::{
         data_types::{
             named_tuple_type, scalar_type, tuple_type, vector_type, ArrayShape, ScalarType, INT16,
-            INT32, UINT32, UINT64, UINT8,
+            INT32, INT64, UINT16, UINT32, UINT64, UINT8,
         },
         evaluators::{evaluate_simple_evaluator, random_evaluate},
         graphs::{create_context, util::simple_context, JoinType},
@@ -1765,44 +1769,64 @@ mod tests {
 
     #[test]
     fn test_apply_permutation() -> Result<()> {
-        let helper = |input_shape: Vec<u64>,
-                      permutation_shape: Vec<u64>,
-                      inputs: Vec<Value>|
-         -> Result<Vec<u64>> {
+        let helper = |inputs: Vec<TypedValue>| -> Result<Vec<u64>> {
             let c = simple_context(|g| {
-                let inp = g.input(array_type(input_shape.clone(), UINT32))?;
-                let permutation = g.input(array_type(permutation_shape.clone(), UINT64))?;
+                let inp = g.input(inputs[0].t.clone())?;
+                let permutation = g.input(inputs[1].t.clone())?;
                 inp.apply_permutation(permutation)
             })?;
             let g = c.get_main_graph()?;
             let o = g.get_output_node()?;
-            let result_value = random_evaluate(g, inputs)?;
+            let result_value = random_evaluate(g, inputs.into_iter().map(|tv| tv.value).collect())?;
             let result_type = o.get_type()?;
             result_value.to_flattened_array_u64(result_type)
         };
-        let input = Value::from_flattened_array(&[1, 2, 3, 4, 5], UINT32)?;
-        let permutation = Value::from_flattened_array(&[0, 4, 2, 1, 3], UINT64)?;
+        let input = TypedValue::new(
+            array_type(vec![5], UINT32),
+            Value::from_flattened_array(&[1, 2, 3, 4, 5], UINT32)?,
+        )?;
+        // UINT16
+        let permutation = TypedValue::new(
+            array_type(vec![5], UINT16),
+            Value::from_flattened_array(&[0, 4, 2, 1, 3], UINT16)?,
+        )?;
         let expected = vec![1, 5, 3, 2, 4];
-        assert_eq!(
-            helper(vec![5], vec![5], vec![input, permutation])?,
-            expected
-        );
+        assert_eq!(helper(vec![input.clone(), permutation])?, expected);
+        // UINT64
+        let permutation = TypedValue::new(
+            array_type(vec![5], UINT64),
+            Value::from_flattened_array(&[0, 4, 2, 1, 3], UINT64)?,
+        )?;
+        let expected = vec![1, 5, 3, 2, 4];
+        assert_eq!(helper(vec![input.clone(), permutation])?, expected);
 
         // Not a valid permutation.
-        let input = Value::from_flattened_array(&[1, 2, 3, 4, 5], UINT32)?;
-        let permutation = Value::from_flattened_array(&[4, 3, 2, 1, 5], UINT64)?;
-        assert!(helper(vec![5], vec![5], vec![input, permutation]).is_err());
+        let permutation = TypedValue::new(
+            array_type(vec![5], UINT64),
+            Value::from_flattened_array(&[5, 4, 2, 1, 3], UINT64)?,
+        )?;
+        assert!(helper(vec![input.clone(), permutation]).is_err());
+
+        // Permutation type must be unsigned.
+        let permutation = TypedValue::new(
+            array_type(vec![5], INT64),
+            Value::from_flattened_array(&[5, 4, 2, 1, 3], INT64)?,
+        )?;
+        assert!(helper(vec![input, permutation]).is_err());
 
         // [3,2,2]-array
-        let input = Value::from_flattened_array(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], UINT32)?;
+        let input = TypedValue::new(
+            array_type(vec![3, 2, 2], UINT32),
+            Value::from_flattened_array(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], UINT32)?,
+        )?;
         // [3]-array
-        let permutation = Value::from_flattened_array(&[2, 0, 1], UINT64)?;
+        let permutation = TypedValue::new(
+            array_type(vec![3], UINT32),
+            Value::from_flattened_array(&[2, 0, 1], UINT32)?,
+        )?;
         // output [3,2,2]-array
         let expected = vec![9, 10, 11, 12, 1, 2, 3, 4, 5, 6, 7, 8];
-        assert_eq!(
-            helper(vec![3, 2, 2], vec![3], vec![input, permutation])?,
-            expected
-        );
+        assert_eq!(helper(vec![input, permutation])?, expected);
         Ok(())
     }
 
