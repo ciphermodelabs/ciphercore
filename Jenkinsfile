@@ -76,22 +76,23 @@ pipeline {
              }
            }
          }
-         stage('Coverage') {
-           agent any
-           steps {
-             prepare()
-             dir("${CI_DIR}") {
-               sh './run_coverage_docker.sh'
-               publishHTML(target: [
-                 allowMissing: false,
-                 alwaysLinkToLastBuild: true,
-                 keepAll: true,
-                 reportDir: 'coverage_output',
-                 reportFiles: 'coverage_summary_ciphercore-utils.html,coverage_report_ciphercore-utils.html,coverage_summary_ciphercore-base.html,coverage_report_ciphercore-base.html,coverage_summary_ciphercore-evaluators.html,coverage_report_ciphercore-evaluators.html,coverage_summary_ciphercore-runtime.html,coverage_report_ciphercore-runtime.html',
-                 reportName: 'Code Coverage'])
-             }
-           }
-         }
+         //  These should be re-enabled once performance issues are resolved.
+         //stage('Coverage') {
+         //  agent any
+         //  steps {
+         //    prepare()
+         //    dir("${CI_DIR}") {
+         //      sh './run_coverage_docker.sh'
+         //      publishHTML(target: [
+         //        allowMissing: false,
+         //        alwaysLinkToLastBuild: true,
+         //        keepAll: true,
+         //        reportDir: 'coverage_output',
+         //        reportFiles: 'coverage_summary_ciphercore-utils.html,coverage_report_ciphercore-utils.html,coverage_summary_ciphercore-base.html,coverage_report_ciphercore-base.html,coverage_summary_ciphercore-evaluators.html,coverage_report_ciphercore-evaluators.html,coverage_summary_ciphercore-runtime.html,coverage_report_ciphercore-runtime.html',
+         //        reportName: 'Code Coverage'])
+         //    }
+         //  }
+         //}
        } 
     }
   }
