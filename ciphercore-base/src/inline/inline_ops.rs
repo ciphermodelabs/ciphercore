@@ -224,7 +224,7 @@ fn recursively_inline_graph(
             .ephemeral_context_mapping
             .contains_node(node.clone())
         {
-            if !matches!(node.get_operation(), Operation::Input(_)) {
+            if !node.get_operation().is_input() {
                 panic!("Logic error: non-input node is already processed");
             }
             continue;
@@ -307,7 +307,7 @@ fn assign_input_nodes(
 ) -> Result<()> {
     let mut input_nodes = vec![];
     for node in graph.get_nodes() {
-        if let Operation::Input(_) = node.get_operation() {
+        if node.get_operation().is_input() {
             input_nodes.push(node.clone());
         }
     }

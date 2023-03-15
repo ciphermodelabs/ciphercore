@@ -66,7 +66,8 @@ pub(super) fn optimize_graph_constants(
                 Ok(constant_cache.get(&key).unwrap().clone())
             }
         };
-        let new_node = match node.get_operation() {
+        let op = node.get_operation();
+        let new_node = match op {
             Operation::Constant(t, val) => {
                 if !node.get_annotations()?.is_empty() {
                     return Err(runtime_error!(
@@ -79,8 +80,7 @@ pub(super) fn optimize_graph_constants(
             }
             _ => {
                 let mut deps = vec![];
-                let mut is_const_node = !matches!(node.get_operation(), Operation::Input(_))
-                    && !matches!(node.get_operation(), Operation::Random(_));
+                let mut is_const_node = !op.is_input() && !op.is_randomizing()?;
                 for dep in node.get_node_dependencies() {
                     let resolved_dep = node_mapping.get(&dep);
                     match resolved_dep {
@@ -162,9 +162,12 @@ mod tests {
                 let i1 = g.input(scalar_type(UINT64))?;
                 let i2 = g.input(scalar_type(UINT64))?;
                 let n = i1.add(i2)?;
-                let r = g.random(scalar_type(UINT64))?;
+                let r1 = g.random(scalar_type(UINT64))?;
+                let r2 = g.random_permutation(5)?;
+                let r3 = r2.cuckoo_to_permutation()?;
+                let r4 = r2.decompose_switching_map(5)?;
                 let o1 = n.add(g.constant(scalar_type(UINT64), Value::from_scalar(1, UINT64)?)?)?;
-                o1.add(r)
+                g.create_tuple(vec![o1.add(r1)?, r3, r4])
             })?;
 
             let mut evaluator = SimpleEvaluator::new(None)?;

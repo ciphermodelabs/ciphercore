@@ -199,6 +199,67 @@ impl Operation {
             _ => Err(runtime_error!("Operation is not a PRF operation")),
         }
     }
+
+    pub fn is_input(&self) -> bool {
+        matches!(self, Operation::Input(_))
+    }
+
+    // If an operation computes a randomized output, return true
+    pub fn is_randomizing(&self) -> Result<bool> {
+        match self {
+            Operation::Random(_)
+            | Operation::RandomPermutation(_)
+            | Operation::CuckooToPermutation
+            | Operation::DecomposeSwitchingMap(_) => Ok(true),
+            Operation::Input(_)
+            | Operation::A2B
+            | Operation::Add
+            | Operation::ApplyPermutation(_)
+            | Operation::ArrayToVector
+            | Operation::Assert(_)
+            | Operation::B2A(_)
+            | Operation::Subtract
+            | Operation::Multiply
+            | Operation::MixedMultiply
+            | Operation::Matmul
+            | Operation::Dot
+            | Operation::Gemm(_, _)
+            | Operation::Truncate(_)
+            | Operation::Sum(_)
+            | Operation::Concatenate(_)
+            | Operation::CreateNamedTuple(_)
+            | Operation::CreateTuple
+            | Operation::CreateVector(_)
+            | Operation::CuckooHash
+            | Operation::SegmentCumSum
+            | Operation::PermuteAxes(_)
+            | Operation::Get(_)
+            | Operation::Gather(_)
+            | Operation::GetSlice(_)
+            | Operation::Reshape(_)
+            | Operation::NOP
+            | Operation::InversePermutation
+            | Operation::PRF(_, _)
+            | Operation::PermutationFromPRF(_, _)
+            | Operation::Stack(_)
+            | Operation::NamedTupleGet(_)
+            | Operation::TupleGet(_)
+            | Operation::Constant(_, _)
+            | Operation::VectorGet
+            | Operation::Zip
+            | Operation::Repeat(_)
+            | Operation::VectorToArray
+            | Operation::Join(_, _)
+            | Operation::Print(_)
+            | Operation::Shard(_) => Ok(false),
+            Operation::Call | Operation::Iterate => Err(runtime_error!(
+                "The status of operations calling other graphs cannot be defined"
+            )),
+            Operation::Custom(_) => Err(runtime_error!(
+                "The status of custom operations cannot be defined"
+            )),
+        }
+    }
 }
 
 struct NodeBody {
@@ -4034,7 +4095,7 @@ impl Context {
         }
         let mut result = vec![];
         for node in graph.get_nodes() {
-            if let Operation::Input(_) = node.get_operation() {
+            if node.get_operation().is_input() {
                 let node_id = node.get_id();
                 let node_name = cell
                     .nodes_names
@@ -4644,17 +4705,11 @@ mod tests {
             .map(|x| x.get_operation())
             .collect();
         assert!(operations.len() == 3);
-        match operations[0] {
-            Operation::Input(_) => {}
-            _ => {
-                panic!("Input expected");
-            }
+        if !operations[0].is_input() {
+            panic!("Input expected");
         }
-        match operations[1] {
-            Operation::Input(_) => {}
-            _ => {
-                panic!("Input expected");
-            }
+        if !operations[1].is_input() {
+            panic!("Input expected");
         }
         match operations[2] {
             Operation::Add => {}

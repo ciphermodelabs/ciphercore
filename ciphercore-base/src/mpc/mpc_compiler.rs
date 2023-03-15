@@ -1206,7 +1206,7 @@ where
     print_stats(context4.get_main_graph()?)?;
     let mut number_of_inputs = 0;
     for node in context4.get_main_graph()?.get_nodes() {
-        if let Operation::Input(_) = node.get_operation() {
+        if node.get_operation().is_input() {
             number_of_inputs += 1;
         }
     }
