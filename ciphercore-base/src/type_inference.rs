@@ -433,6 +433,7 @@ fn get_number_of_node_dependencies(operation: Operation) -> Option<u64> {
         | Operation::PermuteAxes(_)
         | Operation::InversePermutation
         | Operation::CuckooToPermutation
+        | Operation::Sort(_)
         | Operation::Get(_)
         | Operation::GetSlice(_)
         | Operation::Reshape(_)
@@ -714,6 +715,60 @@ impl TypeInferenceWorker {
                         "Permutation should be a 1D array of shape [{n}]. Found type: {p:?}"
                     ));
                 }
+                self.register_result(node, t.clone())?;
+                Ok(t)
+            }
+            Operation::Sort(key) => {
+                let error = |t, n| {
+                    runtime_error!(
+                    "Sort supported only for Arrays with the same first dimension {n:?}. Found type: {t:?}"
+                )
+                };
+                if node_dependencies_types.len() != 1
+                    || !node_dependencies_types[0].is_named_tuple()
+                {
+                    return Err(runtime_error!(
+                        "Sort operation requires 1 argument of type named tuple"
+                    ));
+                }
+                let elements = match node_dependencies_types[0].clone() {
+                    Type::NamedTuple(elements) => elements,
+                    _ => {
+                        return Err(runtime_error!(
+                            "Sort operation requires 1 argument of type named tuple"
+                        ))
+                    }
+                };
+
+                let mut n = None;
+                let mut found_key = false;
+                for (name, t) in elements {
+                    if !t.is_array() {
+                        return Err(error(t, n));
+                    }
+                    if name == key {
+                        found_key = true;
+                        let shape = t.get_shape();
+                        if shape.len() != 2 || t.get_scalar_type() != BIT {
+                            return Err(runtime_error!(
+                                "The key array should be 2-dimensional BIT, found {t:?}"
+                            ));
+                        }
+                    }
+                    if n.is_none() {
+                        let shape = t.get_shape();
+                        n = Some(shape[0]);
+                    }
+                    if n != Some(t.get_shape()[0]) {
+                        return Err(error(t, n));
+                    }
+                }
+                if !found_key {
+                    return Err(runtime_error!(
+                        "Sort operation cannot find a column named {key:?}"
+                    ));
+                }
+                let t = node_dependencies_types[0].clone();
                 self.register_result(node, t.clone())?;
                 Ok(t)
             }
@@ -1090,6 +1145,14 @@ impl TypeInferenceWorker {
                         .map(|(x, y)| (x.clone(), y.clone()))
                         .collect(),
                 );
+                let mut ordered_fields = fields.clone();
+                ordered_fields.sort();
+                ordered_fields.dedup();
+                if ordered_fields.len() != fields.len() {
+                    return Err(runtime_error!(
+                        "Duplicate fields in named tuple: {fields:?}"
+                    ));
+                }
                 self.register_result(node, result.clone())?;
                 Ok(result)
             }
@@ -4441,6 +4504,54 @@ mod tests {
         let p = graph.input(array_type(vec![10], INT32))?;
         let o = graph.apply_permutation(i, p)?;
         assert!(worker.process_node(o).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_sort() -> Result<()> {
+        let context = create_unchecked_context()?;
+        let mut worker = create_type_inference_worker(context.clone());
+        let graph = context.create_graph()?;
+        let key = "random_name_of_key_column".to_string();
+        let mut helper = |t: Type| {
+            let i = graph.input(t.clone())?;
+            let o = graph.sort(i, key.clone())?;
+            worker.process_node(o)
+        };
+        // 1 array.
+        let tin = named_tuple_type(vec![(key.clone(), array_type(vec![100, 32], BIT))]);
+        let tout = helper(tin.clone())?;
+        assert_eq!(tout, tin);
+        // multiple arrays.
+        let tin = named_tuple_type(vec![
+            ("v1".to_string(), array_type(vec![100], UINT64)),
+            (key.clone(), array_type(vec![100, 32], BIT)),
+            ("v2".to_string(), array_type(vec![100, 20, 2], INT32)),
+        ]);
+        let tout = helper(tin.clone())?;
+        assert_eq!(tout, tin);
+        // missing key.
+        let tin = named_tuple_type(vec![
+            ("v1".to_string(), array_type(vec![100], UINT64)),
+            ("v2".to_string(), array_type(vec![100, 20, 2], INT32)),
+        ]);
+        assert!(helper(tin.clone()).is_err());
+        // incompatible shapes.
+        let tin = named_tuple_type(vec![
+            ("v1".to_string(), array_type(vec![100], UINT64)),
+            (key.clone(), array_type(vec![100, 32], BIT)),
+            ("v2".to_string(), array_type(vec![101, 20, 2], INT32)),
+        ]);
+        assert!(helper(tin.clone()).is_err());
+        // incorrect key type.
+        let tin = named_tuple_type(vec![(key.clone(), array_type(vec![100], UINT64))]);
+        assert!(helper(tin.clone()).is_err());
+        // incorrect key shape.
+        let tin = named_tuple_type(vec![(key.clone(), array_type(vec![100], BIT))]);
+        assert!(helper(tin.clone()).is_err());
+        // incorrect key type and shape.
+        let tin = named_tuple_type(vec![(key.clone(), array_type(vec![100, 32], UINT64))]);
+        assert!(helper(tin.clone()).is_err());
         Ok(())
     }
 }

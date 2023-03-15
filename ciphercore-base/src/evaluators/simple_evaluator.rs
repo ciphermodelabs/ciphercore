@@ -13,6 +13,7 @@ use crate::random::{Prf, PRNG, SEED_SIZE};
 use crate::slices::slice_index;
 use crate::type_inference::transpose_shape;
 use crate::typed_value::TypedValue;
+use crate::typed_value_operations::TypedValueOperations;
 
 use std::cmp::min;
 use std::collections::hash_map::Entry;
@@ -856,11 +857,9 @@ impl Evaluator for SimpleEvaluator {
                 Ok(new_value)
             }
             Operation::ApplyPermutation(inverse_permutation) => {
-                // TODO: consider to optimize it once we have a use case for it.
                 let t = node.get_type()?;
                 let n = t.get_shape()[0];
 
-                let permutation_type = node.get_node_dependencies()[1].get_type()?;
                 let indexes_permutation = dependencies_values[1]
                     .to_flattened_array_u64(node.get_node_dependencies()[1].get_type()?)?;
                 if indexes_permutation
@@ -881,16 +880,45 @@ impl Evaluator for SimpleEvaluator {
                     indexes_permutation
                 };
                 evaluate_gather(
-                    vec![
-                        dependencies_values[0].clone(),
-                        Value::from_flattened_array(
-                            &permutation,
-                            permutation_type.get_scalar_type(),
-                        )?,
-                    ],
-                    node,
+                    TypedValue::new(t.clone(), dependencies_values[0].clone())?,
+                    permutation,
+                    t,
                     0,
                 )
+            }
+            Operation::Sort(key) => {
+                let tv = TypedValue::new(
+                    node.get_node_dependencies()[0].get_type()?,
+                    dependencies_values[0].clone(),
+                )?;
+                let arrays = tv.to_vector()?;
+                let mut key_array = None;
+                let key = Some(key);
+                for tv in arrays.iter() {
+                    if tv.name == key {
+                        key_array = Some(tv.clone());
+                        break;
+                    }
+                }
+                let key_array = key_array.ok_or_else(|| {
+                    runtime_error!("Input doesn't contain a key named {:?}.", key)
+                })?;
+                let t = key_array.t.clone();
+                let n = t.get_shape()[0];
+                let sorting_permutation =
+                    get_sorting_permutation(key_array.value.to_flattened_array_u64(t)?, n)?;
+
+                let mut result = vec![];
+                for array in arrays {
+                    result.push(evaluate_gather(
+                        array.clone(),
+                        sorting_permutation.clone(),
+                        array.t,
+                        0,
+                    )?);
+                }
+
+                Ok(Value::from_vector(result))
             }
             Operation::Truncate(scale) => {
                 // For signed scalar type, we interpret a number 0 <= x < modulus as follows:
@@ -1252,7 +1280,15 @@ impl Evaluator for SimpleEvaluator {
 
                 Value::from_flattened_array(&result_array, input_st)
             }
-            Operation::Gather(axis) => evaluate_gather(dependencies_values, node, axis),
+            Operation::Gather(axis) => {
+                let input = TypedValue::new(
+                    node.get_node_dependencies()[0].get_type()?,
+                    dependencies_values[0].clone(),
+                )?;
+                let indices = dependencies_values[1]
+                    .to_flattened_array_u64(node.get_node_dependencies()[1].get_type()?)?;
+                evaluate_gather(input, indices, node.get_type()?, axis)
+            }
             Operation::Concatenate(axis) => {
                 let dependencies = node.get_node_dependencies();
                 let result_t = node.get_type()?;
@@ -1313,6 +1349,22 @@ impl Evaluator for SimpleEvaluator {
     }
 }
 
+fn get_sorting_permutation<T: Clone + Eq + PartialEq + Ord + PartialOrd>(
+    array: Vec<T>,
+    n: u64,
+) -> Result<Vec<u64>> {
+    let chunk_size = array.len() / n as usize;
+    let mut enumerated = array
+        .chunks(chunk_size)
+        .map(|x| x.to_vec())
+        .zip(0..n)
+        .collect::<Vec<(Vec<T>, u64)>>();
+    // Stable sort.
+    enumerated.sort_by(|a, b| a.0.cmp(&b.0));
+    let indexes_permutation = enumerated.into_iter().map(|x| x.1).collect::<Vec<u64>>();
+    Ok(indexes_permutation)
+}
+
 fn execute_inverse_permutation(values: Vec<u64>) -> Result<Vec<u64>> {
     let mut result = vec![0u64; values.len()];
     for i in 0..values.len() {
@@ -1327,18 +1379,17 @@ fn execute_inverse_permutation(values: Vec<u64>) -> Result<Vec<u64>> {
     Ok(result)
 }
 
-fn evaluate_gather(dependencies_values: Vec<Value>, node: Node, axis: u64) -> Result<Value> {
-    let input_value = dependencies_values[0].clone();
-    let indices_value = dependencies_values[1].clone();
-
-    let input_t = node.get_node_dependencies()[0].get_type()?;
-    let input_entries = input_value.to_flattened_array_u64(input_t.clone())?;
-    let indices_t = node.get_node_dependencies()[1].get_type()?;
-    let indices_entries = indices_value.to_flattened_array_u64(indices_t)?;
+fn evaluate_gather(
+    input: TypedValue,
+    indices: Vec<u64>,
+    result_type: Type,
+    axis: u64,
+) -> Result<Value> {
+    let input_entries = input.value.to_flattened_array_u64(input.t.clone())?;
 
     let mut output_entries = vec![];
 
-    let input_shape = input_t.get_shape();
+    let input_shape = input.t.get_shape();
 
     // Number of subarrays whose indices are selected
     let num_arrays = input_shape[..axis as usize]
@@ -1353,7 +1404,7 @@ fn evaluate_gather(dependencies_values: Vec<Value>, node: Node, axis: u64) -> Re
         .product::<u64>();
 
     for array_i in 0..num_arrays {
-        for index_entry in indices_entries.iter() {
+        for index_entry in indices.iter() {
             if *index_entry >= input_shape[axis as usize] {
                 return Err(runtime_error!("Incorrect index"));
             }
@@ -1363,8 +1414,6 @@ fn evaluate_gather(dependencies_values: Vec<Value>, node: Node, axis: u64) -> Re
             );
         }
     }
-
-    let result_type = node.get_type()?;
     Value::from_flattened_array(&output_entries, result_type.get_scalar_type())
 }
 
@@ -1378,7 +1427,7 @@ mod tests {
             INT32, INT64, UINT16, UINT32, UINT64, UINT8,
         },
         evaluators::{evaluate_simple_evaluator, random_evaluate},
-        graphs::{create_context, util::simple_context, JoinType},
+        graphs::{create_context, util::simple_context, JoinType, SliceElement},
         random::chi_statistics,
         type_inference::NULL_HEADER,
         typed_value_operations::{FromVectorMode, TypedValueArrayOperations, TypedValueOperations},
@@ -3567,6 +3616,99 @@ mod tests {
             Ok(())
         }()
         .unwrap();
+    }
+
+    #[test]
+    fn test_sort() -> Result<()> {
+        let helper = |inputs: Vec<TypedValue>| -> Result<Vec<Vec<u64>>> {
+            let c = simple_context(|g| {
+                let nodes = inputs
+                    .iter()
+                    .map(|tv| g.input(tv.t.clone()))
+                    .collect::<Result<Vec<_>>>()?;
+                let key = "key".to_string();
+                let mut named_nodes = vec![(
+                    key.clone(),
+                    nodes[0].a2b()?.get_slice(vec![
+                        SliceElement::Ellipsis,
+                        SliceElement::SubArray(None, None, Some(-1)),
+                    ])?,
+                )];
+                for (i, node) in nodes.into_iter().enumerate().skip(1) {
+                    named_nodes.push((format!("value_{}", i), node));
+                }
+                let result = g.sort(g.create_named_tuple(named_nodes)?, key.clone())?;
+                let mut values = vec![result
+                    .named_tuple_get(key)?
+                    .get_slice(vec![
+                        SliceElement::Ellipsis,
+                        SliceElement::SubArray(None, None, Some(-1)),
+                    ])?
+                    .b2a(inputs[0].t.get_scalar_type())?];
+                for i in (0..inputs.len()).into_iter().skip(1) {
+                    values.push(result.named_tuple_get(format!("value_{}", i))?);
+                }
+                g.create_tuple(values)
+            })?;
+            let g = c.get_main_graph()?;
+            let o = g.get_output_node()?;
+            let result_value = random_evaluate(g, inputs.into_iter().map(|tv| tv.value).collect())?;
+            let result_type = o.get_type()?;
+            let types = match result_type {
+                Type::Tuple(types) => types,
+                _ => unreachable!(),
+            };
+            result_value
+                .to_vector()?
+                .into_iter()
+                .zip(types.into_iter())
+                .map(|(v, t)| v.to_flattened_array_u64((*t).clone()))
+                .collect()
+        };
+        // Simple case.
+        let input = Value::from_flattened_array(&[0, 1, 2, 2, 3], UINT32)?;
+        let expected = vec![0, 1, 2, 2, 3];
+        assert_eq!(
+            helper(vec![TypedValue::new(array_type(vec![5], UINT32), input)?])?[0],
+            expected
+        );
+        // Multiple arrays.
+        let input1 = Value::from_flattened_array(&[3, 1, 2, 0, 2], UINT32)?;
+        let input2 = Value::from_flattened_array(&[1, 2, 3, 44444444444444u64, 5], UINT64)?;
+        let res = helper(vec![
+            TypedValue::new(array_type(vec![5], UINT32), input1)?,
+            TypedValue::new(array_type(vec![5], UINT64), input2)?,
+        ])?;
+        let expected = vec![vec![0, 1, 2, 2, 3], vec![44444444444444, 2, 3, 5, 1]];
+        assert_eq!(res, expected);
+        // Stable sort.
+        let input1 = Value::from_flattened_array(&[3, 0, 0, 3, 0], UINT8)?;
+        let input2 = Value::from_flattened_array(&[1, 2, 3, 4, 5], UINT64)?;
+        let res = helper(vec![
+            TypedValue::new(array_type(vec![5], UINT8), input1)?,
+            TypedValue::new(array_type(vec![5], UINT64), input2)?,
+        ])?;
+        let expected = vec![vec![0, 0, 0, 3, 3], vec![2, 3, 5, 1, 4]];
+        assert_eq!(res, expected);
+        // 2d arrays.
+        let input1 = Value::from_flattened_array(&[2, 1, 0], UINT8)?;
+        let input2 = Value::from_flattened_array(&[1, 2, 3, 4, 5, 1, 2, 4, 5, 1, 1, 1], UINT64)?;
+        let res = helper(vec![
+            TypedValue::new(array_type(vec![3], UINT8), input1)?,
+            TypedValue::new(array_type(vec![3, 2, 2], UINT64), input2)?,
+        ])?;
+        let expected = vec![vec![0, 1, 2], vec![5, 1, 1, 1, 5, 1, 2, 4, 1, 2, 3, 4]];
+        assert_eq!(res, expected);
+
+        // Incorrect sizes.
+        let input1 = Value::from_flattened_array(&[1, 0, 0], UINT8)?;
+        let input2 = Value::from_flattened_array(&[1, 2, 3, 4, 5], UINT64)?;
+        assert!(helper(vec![
+            TypedValue::new(array_type(vec![3], UINT8), input1)?,
+            TypedValue::new(array_type(vec![5], UINT64), input2)?,
+        ])
+        .is_err());
+        Ok(())
     }
 
     fn permutation_from_prf_helper(n: u64) -> Result<()> {

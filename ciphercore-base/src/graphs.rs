@@ -159,6 +159,7 @@ pub enum Operation {
     // SQL joins
     Join(JoinType, HashMap<String, String>),
     ApplyPermutation(bool),
+    Sort(String),
     Custom(CustomOperation),
     // Operations used for debugging graphs.
     Print(String),
@@ -243,6 +244,7 @@ impl Operation {
             | Operation::PermutationFromPRF(_, _)
             | Operation::Stack(_)
             | Operation::NamedTupleGet(_)
+            | Operation::Sort(_)
             | Operation::TupleGet(_)
             | Operation::Constant(_, _)
             | Operation::VectorGet
@@ -719,6 +721,38 @@ impl Node {
     #[doc(hidden)]
     pub fn apply_inverse_permutation(&self, p: Node) -> Result<Node> {
         self.get_graph().apply_inverse_permutation(self.clone(), p)
+    }
+
+    /// Adds a node that sorts a table given as named tuple according to the column given by the key argument.
+    /// The key column must be a 2-d BIT array of shape [n, b], interpreted as bitstrings of length b.
+    /// Other columns in the named tuple must be arrays of arbitrary type and shape, as long as they
+    /// share the first dimension: [n, ...].
+    /// Bitstrings are sorted lexicographically, and the sorting algorithm is stable: preserving relative
+    /// order of entries in other arrays where the corresponding key entries match.
+    ///
+    /// # Arguments
+    /// * `key` - name of the field to sort on it, this array must be 2-d of type BIT.
+    ///
+    /// # Returns
+    ///
+    /// New sorted node
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{BIT, INT32, UINT64, array_type, named_tuple_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let v1 = g.input(array_type(vec![20], INT32)).unwrap();
+    /// let v2 = g.input(array_type(vec![20, 10, 2], UINT64)).unwrap();
+    /// let k = g.input(array_type(vec![20, 32], BIT)).unwrap();
+    /// let a = g.create_named_tuple(vec![("key".to_string(), k), ("value1".to_string(), v1), ("value2".to_string(), v2)]).unwrap();
+    /// let a = a.sort("key".to_string()).unwrap();
+    /// ```
+    #[doc(hidden)]
+    pub fn sort(&self, key: String) -> Result<Node> {
+        self.get_graph().sort(self.clone(), key)
     }
 
     /// Adds a node to the parent graph that divides a scalar or each entry of the array associated with the node by a positive constant integer `scale`.
@@ -1744,6 +1778,39 @@ impl Graph {
     #[doc(hidden)]
     pub fn apply_inverse_permutation(&self, a: Node, p: Node) -> Result<Node> {
         self.add_node(vec![a, p], vec![], Operation::ApplyPermutation(true))
+    }
+
+    /// Adds a node that sorts a table given as named tuple according to the column given by the key argument.
+    /// The key column must be a 2-d BIT array of shape [n, b], interpreted as bitstrings of length b.
+    /// Other columns in the named tuple must be arrays of arbitrary type and shape, as long as they
+    /// share the first dimension: [n, ...].
+    /// Bitstrings are sorted lexicographically, and the sorting algorithm is stable: preserving relative
+    /// order of entries in other arrays where the corresponding key entries match.
+    ///
+    /// # Arguments
+    /// * `a` - node containing a named tuple -- arrays to sort.
+    /// * `key` - name of the field to sort on it, this array must be 2-d of type BIT.
+    ///
+    /// # Returns
+    ///
+    /// New sorted node
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{BIT, INT32, UINT64, array_type, named_tuple_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let v1 = g.input(array_type(vec![20], INT32)).unwrap();
+    /// let v2 = g.input(array_type(vec![20, 10, 2], UINT64)).unwrap();
+    /// let k = g.input(array_type(vec![20, 32], BIT)).unwrap();
+    /// let a = g.create_named_tuple(vec![("key".to_string(), k), ("value1".to_string(), v1), ("value2".to_string(), v2)]).unwrap();
+    /// let a = g.sort(a, "key".to_string()).unwrap();
+    /// ```
+    #[doc(hidden)]
+    pub fn sort(&self, a: Node, key: String) -> Result<Node> {
+        self.add_node(vec![a], vec![], Operation::Sort(key))
     }
 
     /// Adds a node that divides a scalar or each entry of an array by a positive constant integer `scale`.
