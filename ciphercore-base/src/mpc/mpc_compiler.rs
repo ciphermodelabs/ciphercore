@@ -253,6 +253,7 @@ fn propagate_private_annotations(
             | Operation::GetSlice(_)
             | Operation::Reshape(_)
             | Operation::Sum(_)
+            | Operation::CumSum(_)
             | Operation::Get(_)
             | Operation::CreateTuple
             | Operation::CreateNamedTuple(_)
@@ -702,6 +703,7 @@ pub(super) fn compile_to_mpc_graph(
             | Operation::GetSlice(_)
             | Operation::Reshape(_)
             | Operation::Sum(_)
+            | Operation::CumSum(_)
             | Operation::Get(_)
             | Operation::Repeat(_) => {
                 let dependencies = node.get_node_dependencies();
@@ -1722,6 +1724,14 @@ mod tests {
             Operation::Sum(vec![0, 1]),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn test_cum_sum() -> Result<()> {
+        test_helper_one_input(array_type(vec![10, 5, 12], INT32), Operation::CumSum(0))?;
+        test_helper_one_input(array_type(vec![10, 5, 12], INT32), Operation::CumSum(1))?;
+        test_helper_one_input(array_type(vec![10, 5, 12], INT32), Operation::CumSum(2))?;
+        Ok(())
     }
 
     #[test]

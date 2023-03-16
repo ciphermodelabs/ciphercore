@@ -595,6 +595,25 @@ fn evaluate_sum(node: Node, input_value: Value, axes: ArrayShape) -> Result<Valu
     }
 }
 
+fn evaluate_cum_sum(node: Node, input_value: Value, axis: u64) -> Result<Value> {
+    let t = node.get_node_dependencies()[0].get_type()?;
+    let in_vec = input_value.to_flattened_array_u64(t.clone())?;
+    let (shape, st) = match t {
+        Type::Array(shape, st) => (shape, st),
+        _ => return Err(runtime_error!("Inconsistency with type checker")),
+    };
+    let mut out_vec = in_vec.clone();
+    for i in 0..in_vec.len() {
+        let mut index = number_to_index(i as u64, &shape);
+        if index[axis as usize] > 0 {
+            index[axis as usize] -= 1;
+            let j = index_to_number(&index, &shape) as usize;
+            out_vec[i] = add_u64(out_vec[i], out_vec[j], st.get_modulus());
+        }
+    }
+    Value::from_flattened_array(&out_vec, st)
+}
+
 // Choose `a` if `c = 1` and `b` if `c=0` in constant time.
 //
 // `c` must be equal to `0` or `1`.
@@ -852,6 +871,7 @@ impl Evaluator for SimpleEvaluator {
                 Value::from_flattened_array(&result, t.get_scalar_type())
             }
             Operation::Sum(axes) => evaluate_sum(node, dependencies_values[0].clone(), axes),
+            Operation::CumSum(axis) => evaluate_cum_sum(node, dependencies_values[0].clone(), axis),
             Operation::Reshape(new_type) => {
                 let dependency_value = dependencies_values[0].clone();
                 let dependency_value_flattened = flatten_value(dependency_value);
@@ -3798,6 +3818,34 @@ mod tests {
                 array_type(vec![2], INT32)
             ]))?,
             vec![1, 1, 1]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_cum_sum() -> Result<()> {
+        let cum_sum = |tv: TypedValue, axis: u64| -> Result<TypedValue> {
+            let c = simple_context(|g| g.cum_sum(g.input(tv.t)?, axis))?;
+            let g = c.get_main_graph()?;
+            let o = g.get_output_node()?;
+            TypedValue::new(o.get_type()?, random_evaluate(g, vec![tv.value])?)
+        };
+        let tv = |arr, st| TypedValue::from_ndarray(arr, st);
+        assert_eq!(
+            cum_sum(tv(array![1, 1, 1, 1, 1].into_dyn(), UINT8)?, 0)?,
+            tv(array![1, 2, 3, 4, 5].into_dyn(), UINT8)?
+        );
+        assert_eq!(
+            cum_sum(tv(array![[1, 2, 3], [4, 5, 6]].into_dyn(), INT32)?, 0)?,
+            tv(array![[1, 2, 3], [5, 7, 9]].into_dyn(), INT32)?
+        );
+        assert_eq!(
+            cum_sum(tv(array![[1, 2, 3], [4, 5, 6]].into_dyn(), INT64)?, 1)?,
+            tv(array![[1, 3, 6], [4, 9, 15]].into_dyn(), INT64)?
+        );
+        assert_eq!(
+            cum_sum(tv(array![1, 1, 1, 1, 1].into_dyn(), BIT)?, 0)?,
+            tv(array![1, 0, 1, 0, 1].into_dyn(), BIT)?
         );
         Ok(())
     }

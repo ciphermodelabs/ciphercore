@@ -432,6 +432,7 @@ fn get_number_of_node_dependencies(operation: Operation) -> Option<u64> {
         | Operation::RandomPermutation(_) => Some(0),
         Operation::Truncate(_)
         | Operation::Sum(_)
+        | Operation::CumSum(_)
         | Operation::PermuteAxes(_)
         | Operation::InversePermutation
         | Operation::CuckooToPermutation
@@ -827,6 +828,18 @@ impl TypeInferenceWorker {
                 } else {
                     array_type(rs, st)
                 };
+                self.register_result(node, result.clone())?;
+                Ok(result)
+            }
+            Operation::CumSum(axis) => {
+                let t = node_dependencies_types[0].clone();
+                if !t.is_array() {
+                    return Err(runtime_error!("Can't cum_sum this type: {t:?}"));
+                }
+                if axis >= t.get_shape().len() as u64 {
+                    return Err(runtime_error!("Invalid axis: {axis}"));
+                }
+                let result = t;
                 self.register_result(node, result.clone())?;
                 Ok(result)
             }
@@ -2039,6 +2052,27 @@ mod tests {
         test_sum_worker_fail(array_type(vec![10, 20, 30], INT32), vec![3, 1]);
         test_sum_worker_fail(scalar_type(INT32), vec![]);
         test_sum_worker_fail(tuple_type(vec![]), vec![]);
+    }
+
+    #[test]
+    fn test_cum_sum() -> Result<()> {
+        let context = create_unchecked_context()?;
+        let mut worker = create_type_inference_worker(context.clone());
+        let graph = context.create_graph()?;
+        let mut helper = |shape, scalar_type, axis| {
+            let i = graph.input(array_type(shape, scalar_type))?;
+            worker.process_node(i.cum_sum(axis)?)
+        };
+        assert_eq!(
+            helper(vec![10, 20], UINT64, 0)?,
+            array_type(vec![10, 20], UINT64)
+        );
+        assert_eq!(
+            helper(vec![10, 20], INT32, 1)?,
+            array_type(vec![10, 20], INT32)
+        );
+        assert!(helper(vec![10, 20], UINT8, 2).is_err());
+        Ok(())
     }
 
     fn test_permute_axes_worker(t0: Type, s: ArrayShape, t1: Type) {

@@ -124,6 +124,7 @@ pub enum Operation {
     Gemm(bool, bool),
     Truncate(u64),
     Sum(ArrayShape),
+    CumSum(u64),
     PermuteAxes(ArrayShape),
     Get(ArrayShape),
     GetSlice(Slice),
@@ -240,6 +241,7 @@ impl Operation {
             | Operation::Gemm(_, _)
             | Operation::Truncate(_)
             | Operation::Sum(_)
+            | Operation::CumSum(_)
             | Operation::Concatenate(_)
             | Operation::CreateNamedTuple(_)
             | Operation::CreateTuple
@@ -805,6 +807,25 @@ impl Node {
     /// ```
     pub fn sum(&self, axes: ArrayShape) -> Result<Node> {
         self.get_graph().sum(self.clone(), axes)
+    }
+
+    /// Adds a node to the parent graph that computes the cumulative sum of elements along a given axis.
+    ///
+    /// Applies [Graph::cum_sum] to the parent graph, `this` node and `axis`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{INT32, array_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = array_type(vec![3, 2], INT32);
+    /// let n1 = g.input(t).unwrap();
+    /// let n2 = n1.cum_sum(1).unwrap();
+    /// ```
+    pub fn cum_sum(&self, axis: u64) -> Result<Node> {
+        self.get_graph().cum_sum(self.clone(), axis)
     }
 
     /// Adds a node to the parent graph that permutes the array associated with the node along given axes.
@@ -1929,6 +1950,34 @@ impl Graph {
     /// ```
     pub fn sum(&self, a: Node, axes: ArrayShape) -> Result<Node> {
         self.add_node(vec![a], vec![], Operation::Sum(axes))
+    }
+
+    /// Adds a node that computes the cumulative sum of elements along a given axis. (see [numpy.cumsum](https://numpy.org/doc/stable/reference/generated/numpy.cumsum.html)).
+    ///
+    /// For example, summing the array `[[1000, 200], [30, 4]]` along the first or the second axes results in the arrays `[[1000, 200], [1030, 204]]` or `[[1000, 1200], [30, 34]]`, respectively.
+    ///
+    /// # Arguments
+    ///
+    /// * `a` - node containing an array
+    /// * `axis` - axis along which the cumulative sum is computed
+    ///
+    /// # Returns
+    ///
+    /// New cumulative sum node
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{INT32, array_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = array_type(vec![3, 2], INT32);
+    /// let n1 = g.input(t).unwrap();
+    /// let n2 = g.cum_sum(n1, 1).unwrap();
+    /// ```
+    pub fn cum_sum(&self, a: Node, axis: u64) -> Result<Node> {
+        self.add_node(vec![a], vec![], Operation::CumSum(axis))
     }
 
     /// Adds a node that permutes an array along given axes (see [numpy.transpose](https://numpy.org/doc/stable/reference/generated/numpy.transpose.html)). This function generalizes matrix transposition.
