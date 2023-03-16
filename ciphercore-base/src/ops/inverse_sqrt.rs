@@ -110,7 +110,7 @@ impl CustomOperationBody for InverseSqrt {
             let input_state = g_highest_one_bit.input(bit_type.clone())?;
             let input_bit = g_highest_one_bit.input(bit_type.clone())?;
 
-            let one = constant_scalar(&g_highest_one_bit, 1, BIT)?;
+            let one = g_highest_one_bit.ones(scalar_type(BIT))?;
             let not_input_state = one.add(input_state.clone())?;
             // If input state is 1, then the highest bit has been already encountered.
             // All other bits can be set to zero.

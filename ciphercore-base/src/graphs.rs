@@ -108,6 +108,8 @@ pub struct ShardConfig {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Operation {
     Input(Type),
+    Zeros(Type),
+    Ones(Type),
     Add,
     Subtract,
     Multiply,
@@ -205,6 +207,15 @@ impl Operation {
         matches!(self, Operation::Input(_))
     }
 
+    pub fn is_const_optimizable(&self) -> Result<bool> {
+        match self {
+            // Zeros and Ones exist precisely because we don't want to store them as Constants
+            // to keep the graph size small.
+            Operation::Zeros(_) | Operation::Ones(_) => Ok(false),
+            op => Ok(!op.is_input() && !op.is_randomizing()?),
+        }
+    }
+
     // If an operation computes a randomized output, return true
     pub fn is_randomizing(&self) -> Result<bool> {
         match self {
@@ -213,6 +224,8 @@ impl Operation {
             | Operation::CuckooToPermutation
             | Operation::DecomposeSwitchingMap(_) => Ok(true),
             Operation::Input(_)
+            | Operation::Zeros(_)
+            | Operation::Ones(_)
             | Operation::A2B
             | Operation::Add
             | Operation::ApplyPermutation(_)
@@ -1416,6 +1429,56 @@ impl Graph {
     /// ```
     pub fn input(&self, input_type: Type) -> Result<Node> {
         self.add_node(vec![], vec![], Operation::Input(input_type))
+    }
+
+    /// Adds an node with zeros of given type.
+    ///
+    /// Compared to `constant` this node does produce a big value array in serialized graph.
+    ///
+    /// # Arguments
+    ///
+    /// `t` - node type
+    ///
+    /// # Returns
+    ///
+    /// New node with zeros of given type.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{UINT8, array_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let z = g.zeros(array_type(vec![10, 20], UINT8)).unwrap();
+    /// ```
+    pub fn zeros(&self, t: Type) -> Result<Node> {
+        self.add_node(vec![], vec![], Operation::Zeros(t))
+    }
+
+    /// Adds an node with ones of given type.
+    ///
+    /// Compared to `constant` this node does produce a big value array in serialized graph.
+    ///
+    /// # Arguments
+    ///
+    /// `t` - node type
+    ///
+    /// # Returns
+    ///
+    /// New node with ones of given type.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{UINT8, array_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let z = g.ones(array_type(vec![10, 20], UINT8)).unwrap();
+    /// ```
+    pub fn ones(&self, t: Type) -> Result<Node> {
+        self.add_node(vec![], vec![], Operation::Ones(t))
     }
 
     /// Adds a node that sums two arrays or scalars of the same scalar type elementwise.

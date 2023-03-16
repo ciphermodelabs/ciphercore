@@ -114,7 +114,7 @@ impl CustomOperationBody for SubtractMPC {
             (Type::Tuple(v0), Type::Array(_, _) | Type::Scalar(_)) => {
                 check_private_tuple(v0)?;
                 let mut outputs = vec![];
-                let zero = g.constant(t1.clone(), Value::zero_of_type(t1))?;
+                let zero = g.zeros(t1)?;
                 for i in 0..PARTIES as u64 {
                     let a0i = g.tuple_get(i0.clone(), i)?;
                     let share = if i == 0 {
@@ -129,7 +129,7 @@ impl CustomOperationBody for SubtractMPC {
             (Type::Array(_, _) | Type::Scalar(_), Type::Tuple(v1)) => {
                 check_private_tuple(v1)?;
                 let mut outputs = vec![];
-                let zero = g.constant(t0.clone(), Value::zero_of_type(t0))?;
+                let zero = g.zeros(t0)?;
                 for i in 0..PARTIES as u64 {
                     let a1i = g.tuple_get(i1.clone(), i)?;
                     let share = if i == 0 {

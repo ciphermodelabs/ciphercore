@@ -216,7 +216,7 @@ impl CustomOperationBody for LowMC {
         let flattened_state_t = array_type(flattened_state_shape, BIT);
 
         // Create a mask for bit extraction
-        let one = g.constant(array_type(vec![1, 1], BIT), Value::from_scalar(1, BIT)?)?;
+        let one = g.ones(array_type(vec![1, 1], BIT))?;
         let two_zeros = zeros(&g, array_type(vec![2, 1], BIT))?;
 
         // mask that extracts every third bit s_boxes_per_round times

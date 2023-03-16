@@ -630,6 +630,8 @@ impl Evaluator for SimpleEvaluator {
             Operation::Input(_) | Operation::Call | Operation::Iterate => {
                 panic!("Should not be here!");
             }
+            Operation::Zeros(t) => Ok(Value::zero_of_type(t)),
+            Operation::Ones(t) => Ok(Value::one_of_type(t)?),
             Operation::Add
             | Operation::Subtract
             | Operation::Multiply
@@ -3741,5 +3743,62 @@ mod tests {
         permutation_from_prf_helper(10)?;
         permutation_from_prf_helper(40)?;
         permutation_from_prf_helper(500)
+    }
+
+    fn value_to_flattened_array_u64(v: Value, t: Type) -> Result<Vec<u64>> {
+        match t {
+            Type::Scalar(st) => Ok(vec![v.to_u64(st)?]),
+            Type::Array(_, _) => Ok(v.to_flattened_array_u64(t)?),
+            Type::Tuple(vec_t) => Ok(v
+                .to_vector()?
+                .into_iter()
+                .zip(vec_t.into_iter())
+                .map(|(v, t)| value_to_flattened_array_u64(v, (*t).clone()))
+                .collect::<Result<Vec<_>>>()?
+                .concat()),
+            _ => Err(runtime_error!("not implemented")),
+        }
+    }
+
+    #[test]
+    fn test_zeros() -> Result<()> {
+        let helper = |t| {
+            let c = simple_context(|g| g.zeros(t))?;
+            let g = c.get_main_graph()?;
+            let o = g.get_output_node()?;
+            value_to_flattened_array_u64(random_evaluate(g, vec![])?, o.get_type()?)
+        };
+        assert_eq!(helper(scalar_type(INT32))?, vec![0]);
+        assert_eq!(helper(array_type(vec![5], INT32))?, vec![0, 0, 0, 0, 0]);
+        assert_eq!(helper(array_type(vec![3, 2], BIT))?, vec![0, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            helper(tuple_type(vec![
+                scalar_type(BIT),
+                array_type(vec![2], INT32)
+            ]))?,
+            vec![0, 0, 0]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_ones() -> Result<()> {
+        let helper = |t| {
+            let c = simple_context(|g| g.ones(t))?;
+            let g = c.get_main_graph()?;
+            let o = g.get_output_node()?;
+            value_to_flattened_array_u64(random_evaluate(g, vec![])?, o.get_type()?)
+        };
+        assert_eq!(helper(scalar_type(INT32))?, vec![1]);
+        assert_eq!(helper(array_type(vec![5], INT32))?, vec![1, 1, 1, 1, 1]);
+        assert_eq!(helper(array_type(vec![3, 2], BIT))?, vec![1, 1, 1, 1, 1, 1]);
+        assert_eq!(
+            helper(tuple_type(vec![
+                scalar_type(BIT),
+                array_type(vec![2], INT32)
+            ]))?,
+            vec![1, 1, 1]
+        );
+        Ok(())
     }
 }

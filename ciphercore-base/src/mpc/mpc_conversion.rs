@@ -13,9 +13,7 @@ use crate::inline::inline_ops::{
 use crate::mpc::mpc_arithmetic::{AddMPC, MultiplyMPC};
 use crate::mpc::mpc_compiler::{check_private_tuple, compile_to_mpc_graph, PARTIES};
 use crate::ops::adder::BinaryAddTransposed;
-use crate::ops::utils::{
-    constant_scalar, pull_out_bits, pull_out_bits_for_type, put_in_bits, zeros,
-};
+use crate::ops::utils::{pull_out_bits, pull_out_bits_for_type, put_in_bits, zeros};
 use crate::type_inference::a2b_type_inference;
 
 use serde::{Deserialize, Serialize};
@@ -94,11 +92,7 @@ impl CustomOperationBody for A2BMPC {
             input_bits.push(pull_out_bits(input.tuple_get(i as u64)?.a2b()?)?);
         }
 
-        // this is a hacky way to create an array of shape `bits_t`, but without
-        // storing big constant inside generated json graph
-        let zero = constant_scalar(&g, 0, BIT)?;
-        let zero_bits = input_bits[0].multiply(zero)?;
-
+        let zero_bits = g.zeros(input_bits[0].get_type()?)?;
         for share_id in 0..PARTIES {
             let mut bit_share = vec![];
             // for every arithmetic share X create its binary sharing as

@@ -315,7 +315,7 @@ fn propagate_private_annotations(
                     }
                 }
             }
-            Operation::Constant(_, _) => {
+            Operation::Constant(_, _) | Operation::Zeros(_) | Operation::Ones(_) => {
                 // Constants are always public
             }
             Operation::VectorGet => {
@@ -692,6 +692,8 @@ pub(super) fn compile_to_mpc_graph(
                 }
             }
             Operation::Constant(t, v) => out_graph.constant(t, v)?,
+            Operation::Zeros(t) => out_graph.zeros(t)?,
+            Operation::Ones(t) => out_graph.ones(t)?,
             Operation::PermuteAxes(_)
             | Operation::ArrayToVector
             | Operation::VectorToArray
@@ -1559,8 +1561,7 @@ mod tests {
             let o = if op != Operation::VectorGet {
                 g.add_node(input_nodes, vec![], op)?
             } else {
-                let index = g.constant(scalar_type(UINT64), Value::from_scalar(0, UINT64)?)?;
-                input_nodes[0].vector_get(index)?
+                input_nodes[0].vector_get(g.zeros(scalar_type(UINT64))?)?
             };
             o.set_name("Plaintext operation")?;
             Ok(o)

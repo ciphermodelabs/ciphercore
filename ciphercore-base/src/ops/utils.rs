@@ -1,7 +1,6 @@
 use std::ops::Not;
 
-use crate::data_types::{array_type, ArrayShape, ScalarType, Type, BIT};
-use crate::data_values::Value;
+use crate::data_types::{array_type, scalar_type, ArrayShape, ScalarType, Type, BIT};
 use crate::errors::Result;
 use crate::graphs::{Context, Graph, Node, SliceElement};
 use crate::typed_value::TypedValue;
@@ -114,12 +113,17 @@ pub fn put_in_bits(x: Node) -> Result<Node> {
     }
 }
 
+/// Deprecated: Use `g.zeros(t)` directly.
 pub fn zeros(g: &Graph, t: Type) -> Result<Node> {
-    g.constant(t.clone(), Value::zero_of_type(t))
+    g.zeros(t)
 }
 
 pub fn zeros_like(x: Node) -> Result<Node> {
     zeros(&x.get_graph(), x.get_type()?)
+}
+
+pub fn ones_like(x: Node) -> Result<Node> {
+    x.get_graph().ones(x.get_type()?)
 }
 
 // Adds several zero rows to the end or beginning of the array
@@ -156,8 +160,7 @@ pub fn multiply_fixed_point(node1: Node, node2: Node, precision: u64) -> Result<
 /// Converts (individual) bits to 0/1 in arithmetic form.
 pub fn single_bit_to_arithmetic(node: Node, st: ScalarType) -> Result<Node> {
     let g = node.get_graph();
-    let one = constant_scalar(&g, 1, st)?;
-    one.mixed_multiply(node)
+    g.ones(scalar_type(st))?.mixed_multiply(node)
 }
 
 /// Similar to `numpy.expand_dims` `<https://numpy.org/doc/stable/reference/generated/numpy.expand_dims.html>`.
@@ -219,7 +222,7 @@ fn cumulative_or(data: Node, n: u64) -> Result<Node> {
     } else {
         data
     };
-    let data = data.add(constant_scalar(&g, 1, BIT)?)?;
+    let data = data.add(g.ones(scalar_type(BIT))?)?;
     let mut suffix_or = data;
     for i in 0..k {
         let shift = 2_i64.pow(i);
@@ -228,7 +231,7 @@ fn cumulative_or(data: Node, n: u64) -> Result<Node> {
             suffix_or.get_slice(vec![SliceElement::SubArray(Some(shift), None, None)])?,
         )?;
     }
-    suffix_or.add(constant_scalar(&g, 1, BIT)?)
+    suffix_or.add(g.ones(scalar_type(BIT))?)
 }
 
 // Works only on positive integers from (0; 2^denominator_cap_2k).
@@ -406,6 +409,7 @@ mod tests {
     use crate::{
         custom_ops::run_instantiation_pass,
         data_types::{scalar_type, INT64, UINT32},
+        data_values::Value,
         evaluators::random_evaluate,
         graphs::{create_context, util::simple_context},
         typed_value_operations::TypedValueArrayOperations,

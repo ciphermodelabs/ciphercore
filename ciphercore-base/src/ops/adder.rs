@@ -3,7 +3,7 @@ use crate::custom_ops::{CustomOperation, CustomOperationBody};
 use crate::data_types::{array_type, Type, BIT};
 use crate::errors::Result;
 use crate::graphs::{Context, Graph, Node, SliceElement};
-use crate::ops::utils::{constant_scalar, expand_dims, put_in_bits};
+use crate::ops::utils::{expand_dims, put_in_bits};
 
 use serde::{Deserialize, Serialize};
 
@@ -296,11 +296,9 @@ fn calculate_carry_bits(
     if !bit_len.is_power_of_two() {
         return Err(runtime_error!("BinaryAdd only supports numbers with number of bits, which is a power of 2. {} bits provided.", bit_len));
     }
-    let zero = constant_scalar(&graph, 0, BIT)?;
-    let mut carries = nodes[0]
-        .propagate
-        .get_slice(vec![SliceElement::SubArray(Some(0), Some(1), None)])?
-        .multiply(zero)?;
+    let mut shape = nodes[0].propagate.get_type()?.get_shape();
+    shape[0] = 1;
+    let mut carries = graph.zeros(array_type(shape, BIT))?;
     // Two special cases for the overflow_bit=false optimization:
     // If the input is 1 bit long: ignore input and just return zero:
     if !overflow_bit && bit_len == 1 {

@@ -425,6 +425,8 @@ fn join_inference(
 fn get_number_of_node_dependencies(operation: Operation) -> Option<u64> {
     match operation {
         Operation::Input(_)
+        | Operation::Zeros(_)
+        | Operation::Ones(_)
         | Operation::Random(_)
         | Operation::Constant(_, _)
         | Operation::RandomPermutation(_) => Some(0),
@@ -640,6 +642,14 @@ impl TypeInferenceWorker {
                     return Err(runtime_error!("Input with an invalid type: {input_type:?}"));
                 }
                 let result = input_type;
+                self.register_result(node, result.clone())?;
+                Ok(result)
+            }
+            Operation::Zeros(t) | Operation::Ones(t) => {
+                if !t.is_valid() {
+                    return Err(runtime_error!("Invalid type: {t:?}"));
+                }
+                let result = t;
                 self.register_result(node, result.clone())?;
                 Ok(result)
             }
@@ -1694,6 +1704,7 @@ mod tests {
         let e = worker.process_node(node);
         assert!(e.is_err());
     }
+
     #[test]
     fn test_input() {
         let context = create_unchecked_context().unwrap();
@@ -1702,6 +1713,29 @@ mod tests {
         let t = scalar_type(BIT);
         let node = graph.input(t.clone()).unwrap();
         assert_eq!(worker.process_node(node).unwrap(), t.clone());
+    }
+
+    #[test]
+    fn test_zeros_and_ones() -> Result<()> {
+        let context = create_unchecked_context()?;
+        let mut worker = create_type_inference_worker(context.clone());
+        let graph = context.create_graph()?;
+        assert_eq!(
+            worker.process_node(graph.zeros(scalar_type(UINT64))?)?,
+            scalar_type(UINT64)
+        );
+        assert_eq!(
+            worker.process_node(graph.zeros(array_type(vec![50, 30], UINT64))?)?,
+            array_type(vec![50, 30], UINT64)
+        );
+        assert_eq!(
+            worker.process_node(graph.ones(array_type(vec![17], BIT))?)?,
+            array_type(vec![17], BIT)
+        );
+        assert!(worker
+            .process_node(graph.ones(array_type(vec![], BIT))?)
+            .is_err());
+        Ok(())
     }
 
     #[test]
