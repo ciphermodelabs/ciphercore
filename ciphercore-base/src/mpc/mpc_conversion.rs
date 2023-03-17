@@ -533,9 +533,8 @@ mod tests {
         let output = random_evaluate(mpc_graph.clone(), inputs)?;
         let st = t.get_scalar_type();
 
-        if output_parties.is_empty() {
-            let out = output.access_vector(|v| {
-                let modulus = st.get_modulus();
+        let out = if output_parties.is_empty() {
+            output.access_vector(|v| {
                 let mut res = vec![0; expected.len()];
                 for val in v {
                     let arr = match t.clone() {
@@ -551,28 +550,31 @@ mod tests {
                         if op == Operation::A2B {
                             res[i] ^= arr[i];
                         } else {
-                            res[i] = if let Some(m) = modulus {
-                                (res[i] + arr[i]) % m
-                            } else {
-                                res[i] + arr[i]
-                            };
+                            res[i] = res[i].wrapping_add(arr[i]);
                         }
                     }
                 }
                 Ok(res)
-            })?;
-            assert_eq!(out, expected);
+            })?
         } else {
             assert!(output.check_type(t.clone())?);
-            let out = match t.clone() {
+            match t.clone() {
                 Type::Scalar(_) => vec![output.to_u64(st.clone())?],
                 Type::Array(_, _) => output.to_flattened_array_u64(t.clone())?,
                 _ => {
                     panic!("Shouldn't be here");
                 }
-            };
-            assert_eq!(out, expected);
-        }
+            }
+        };
+        let (expected, out) = if let Some(m) = st.get_modulus() {
+            (
+                expected.iter().map(|x| (x % m)).collect(),
+                out.iter().map(|x| (x % m)).collect(),
+            )
+        } else {
+            (expected, out)
+        };
+        assert_eq!(out, expected);
         Ok(())
     }
 
@@ -660,11 +662,11 @@ mod tests {
             Ok(())
         };
         helper_runs(vec![85], scalar_type(st.clone()))?;
-        helper_runs(vec![u32::MAX as u64 - 12345677], scalar_type(st.clone()))?;
+        helper_runs(vec![-12345677i32 as u64], scalar_type(st.clone()))?;
         helper_runs(vec![2, 85], array_type(vec![2], st.clone()))?;
         helper_runs(vec![0, 255], array_type(vec![2], st.clone()))?;
         helper_runs(
-            vec![12345678, u32::MAX as u64 - 12345677],
+            vec![12345678, -12345677i32 as u64],
             array_type(vec![2], st.clone()),
         )?;
         Ok(())

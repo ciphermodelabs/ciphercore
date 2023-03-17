@@ -475,7 +475,13 @@ mod tests {
             .to_flattened_array_u64(array_type(vec![5], INT16))?;
             assert_eq!(
                 result_v,
-                vec![1024, 2047, 1, (1u64 << 15) + 1024, (1u64 << 15) - 1 + 1024]
+                vec![
+                    1024,
+                    2047,
+                    1,
+                    (i16::MIN + 1024) as u64,
+                    (i16::MAX.wrapping_add(1024)) as u64,
+                ]
             );
         }
         {

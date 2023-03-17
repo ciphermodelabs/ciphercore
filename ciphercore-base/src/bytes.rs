@@ -1,4 +1,4 @@
-use crate::data_types::{scalar_size_in_bits, scalar_size_in_bytes};
+use crate::data_types::scalar_size_in_bytes;
 use crate::data_types::{ScalarType, BIT};
 use crate::errors::Result;
 
@@ -97,7 +97,7 @@ pub fn multiply_vectors_u64(vec1: &[u64], vec2: &[u64], modulus: Option<u64>) ->
 /// Converts any integer of standard type to u64. This is a generic version of the `as u64`
 /// command that is not supported by any trait in the standard library and thus cannot
 /// support generic input.
-fn as_u64<T: TryInto<u64> + Not<Output = T> + Copy>(x: T, st: ScalarType) -> Result<u64> {
+fn as_u64<T: TryInto<u64> + Not<Output = T> + Copy>(x: T) -> Result<u64> {
     match x.try_into() {
         Ok(ux) => Ok(ux), // x is a positive integer (try_into passed)
         Err(_) => {
@@ -105,7 +105,7 @@ fn as_u64<T: TryInto<u64> + Not<Output = T> + Copy>(x: T, st: ScalarType) -> Res
             // flip the bits of x including the sign bit
             // e.g. x = 10111000 -> 01000111
             let neg_x = !x;
-            //now neg_x is a positive integer that should pass through try_into
+            // now neg_x is a positive integer that should pass through try_into
             // e.g 01000111 -> 0..001000111
             let neg_x_u64 = match neg_x.try_into() {
                 Ok(m) => m,
@@ -113,16 +113,8 @@ fn as_u64<T: TryInto<u64> + Not<Output = T> + Copy>(x: T, st: ScalarType) -> Res
                     return Err(runtime_error!("The integer of this size is not supported"));
                 }
             };
-            // u64 mask with the number of 1 in LSBs is equal to the length
-            // of the signed type of x
-            // e.g. 0..011111111 for INT8 (i8)
-            let mask = match st.get_modulus() {
-                Some(_) => (1 << scalar_size_in_bits(st)) - 1,
-                None => u64::MAX,
-            };
-            // flip the negated bits of x by XORing with the mask
-            // e.g. 0..001000111^0..011111111 -> 0..010111000
-            Ok(neg_x_u64 ^ mask)
+            // flip the bits again
+            Ok(!neg_x_u64)
         }
     }
 }
@@ -157,8 +149,8 @@ pub fn vec_to_bytes<T: TryInto<u64> + Not<Output = T> + TryInto<u8> + Copy>(
             }
         }
         _ => {
-            let byte_length = scalar_size_in_bytes(st.clone()) as usize;
-            let x_u64s = vec_to_u64(x, st)?;
+            let byte_length = scalar_size_in_bytes(st) as usize;
+            let x_u64s = vec_as_u64(x)?;
             for x_u64 in x_u64s {
                 let x_elem_bytes = x_u64.to_le_bytes();
                 for x_elem_byte in x_elem_bytes.iter().take(byte_length) {
@@ -170,15 +162,16 @@ pub fn vec_to_bytes<T: TryInto<u64> + Not<Output = T> + TryInto<u8> + Copy>(
     Ok(x_bytes)
 }
 
+pub fn vec_as_u64<T: TryInto<u64> + Not<Output = T> + Copy>(x: &[T]) -> Result<Vec<u64>> {
+    x.iter().map(|x| as_u64(*x)).collect::<Result<_>>()
+}
+
+/// Deprecated: Use vec_as_u64
 pub fn vec_to_u64<T: TryInto<u64> + Not<Output = T> + Copy>(
     x: &[T],
-    st: ScalarType,
+    _st: ScalarType,
 ) -> Result<Vec<u64>> {
-    let mut x_u64s = vec![];
-    for xi in x {
-        x_u64s.push(as_u64(*xi, st.clone())?);
-    }
-    Ok(x_u64s)
+    vec_as_u64(x)
 }
 
 /// Can return excess zero elements when ScalarType = BIT and
@@ -195,7 +188,14 @@ pub fn vec_from_bytes(x: &[u8], st: ScalarType) -> Result<Vec<u64>> {
             }
         }
         _ => {
-            let byte_length = scalar_size_in_bytes(st) as usize;
+            let byte_length = scalar_size_in_bytes(st.clone()) as usize;
+            // Whether to look at the leading bit when padding to 8 bytes.
+            let pad_with_sign_bit = st.get_signed() && byte_length < 8;
+            // E.g. 0xFFFFFFFFFFFF0000 if byte_length == 2.
+            let sign_mask = match pad_with_sign_bit {
+                false => 0,
+                true => u64::MAX ^ ((1 << (byte_length * 8)) - 1),
+            };
             if x.len() % byte_length != 0 {
                 return Err(runtime_error!("Incompatible vector and scalar type"));
             }
@@ -203,6 +203,12 @@ pub fn vec_from_bytes(x: &[u8], st: ScalarType) -> Result<Vec<u64>> {
                 let mut res = 0u64;
                 for (i, xi) in x_slice.iter().enumerate() {
                     res += (*xi as u64) << (i * 8);
+                }
+                if pad_with_sign_bit {
+                    let sign_bit = res >> (byte_length * 8 - 1);
+                    if sign_bit == 1 {
+                        res |= sign_mask;
+                    }
                 }
                 x_u64s.push(res);
             }
@@ -219,27 +225,33 @@ mod tests {
     #[test]
     fn test_as_u64() {
         //correct input
-        assert_eq!(0u64, as_u64(0u8, UINT8).unwrap());
-        assert_eq!(255u64, as_u64(u8::MAX, UINT8).unwrap());
-        assert_eq!(0u64, as_u64(0u16, UINT16).unwrap());
-        assert_eq!(65535u64, as_u64(u16::MAX, UINT16).unwrap());
-        assert_eq!(0u64, as_u64(0u32, UINT32).unwrap());
-        assert_eq!(4294967295u64, as_u64(u32::MAX, UINT32).unwrap());
-        assert_eq!(0u64, as_u64(0u64, UINT64).unwrap());
-        assert_eq!(u64::MAX, as_u64(u64::MAX, UINT64).unwrap());
-
-        assert_eq!(0u64, as_u64(0i8, INT8).unwrap());
-        assert_eq!(128u64, as_u64(i8::MIN, INT8).unwrap());
-        assert_eq!(0u64, as_u64(0i16, INT16).unwrap());
-        assert_eq!(32768u64, as_u64(i16::MIN, INT16).unwrap());
-        assert_eq!(0u64, as_u64(0i32, INT32).unwrap());
-        assert_eq!(2147483648u64, as_u64(i32::MIN, INT32).unwrap());
-        assert_eq!(0u64, as_u64(0i64, INT64).unwrap());
-        assert_eq!((1u64 << 63), as_u64(i64::MIN, INT64).unwrap());
+        for x in [u8::MIN, u8::MAX, 0] {
+            assert_eq!(x as u64, as_u64(x).unwrap());
+        }
+        for x in [i8::MIN, i8::MAX, 0] {
+            assert_eq!(x as u64, as_u64(x).unwrap());
+        }
+        for x in [u16::MIN, u16::MAX, 0] {
+            assert_eq!(x as u64, as_u64(x).unwrap());
+        }
+        for x in [i16::MIN, i16::MAX, 0] {
+            assert_eq!(x as u64, as_u64(x).unwrap());
+        }
+        for x in [u32::MIN, u32::MAX, 0] {
+            assert_eq!(x as u64, as_u64(x).unwrap());
+        }
+        for x in [i32::MIN, i32::MAX, 0] {
+            assert_eq!(x as u64, as_u64(x).unwrap());
+        }
+        for x in [u64::MIN, u64::MAX, 0] {
+            assert_eq!(x as u64, as_u64(x).unwrap());
+        }
+        for x in [i64::MIN, i64::MAX, 0] {
+            assert_eq!(x as u64, as_u64(x).unwrap());
+        }
 
         //malformed input
-        let e = as_u64(i128::MAX, INT32);
-        assert!(e.is_err());
+        assert!(as_u64(i128::MAX).is_err());
     }
 
     fn vec_to_bytes_helper<T: TryInto<u64> + Not<Output = T> + TryInto<u8> + Copy>(
@@ -427,31 +439,31 @@ mod tests {
         ));
         assert!(vec_from_bytes_helper(
             &vec![255u8, 128u8],
-            &vec![255u64, 128u64],
+            &vec![-1i8 as u64, -128i8 as u64],
             INT8
         ));
 
         assert!(vec_from_bytes_helper(&vec![0u8; 4], &vec![0u64; 2], INT16));
         assert!(vec_from_bytes_helper(
             &vec![255u8, 255u8, 10u8, 100u8],
-            &vec![(1u64 << 16) - 1, 25610u64],
+            &vec![-1i16 as u64, 25610u64],
             INT16
         ));
         assert!(vec_from_bytes_helper(
             &vec![156u8, 254u8, 10u8, 100u8],
-            &vec![(1u64 << 16) - 356, 25610u64],
+            &vec![-356i16 as u64, 25610u64],
             INT16
         ));
 
         assert!(vec_from_bytes_helper(&vec![0u8; 8], &vec![0u64; 2], INT32));
         assert!(vec_from_bytes_helper(
             &vec![255u8, 255u8, 255u8, 255u8, 128u8, 119u8, 142u8, 6u8],
-            &vec![(1u64 << 32) - 1u64, 110_000_000u64],
+            &vec![-1i32 as u64, 110_000_000u64],
             INT32
         ));
         assert!(vec_from_bytes_helper(
             &vec![155u8, 200u8, 250u8, 185u8, 128u8, 119u8, 142u8, 6u8],
-            &vec![(1u64 << 32) - 1_174_746_981u64, 110_000_000u64],
+            &vec![-1_174_746_981i32 as u64, 110_000_000u64],
             INT32
         ));
 

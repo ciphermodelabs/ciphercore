@@ -754,7 +754,7 @@ impl TypedValue {
     /// # use ciphercore_base::data_types::INT32;
     /// # use ciphercore_base::typed_value::TypedValue;
     /// let v = TypedValue::from_scalar(-123456, INT32).unwrap();
-    /// assert_eq!(v.to_u64().unwrap(), -123456i32 as u32 as u64);
+    /// assert_eq!(v.to_u64().unwrap(), -123456i32 as u64);
     /// ```
     pub fn to_u64(&self) -> Result<u64> {
         if let Type::Scalar(st) = &self.t {
@@ -2088,7 +2088,7 @@ mod tests {
                 .unwrap()
                 .to_u64()
                 .unwrap(),
-            4294967223
+            -73i32 as u64
         );
     }
     #[test]
