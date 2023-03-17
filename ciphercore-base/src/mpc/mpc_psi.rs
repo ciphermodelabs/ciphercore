@@ -2098,13 +2098,14 @@ impl CustomOperationBody for SwitchingMPC {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::time::Instant;
 
     use ndarray::array;
 
     use super::*;
 
     use crate::custom_ops::{run_instantiation_pass, CustomOperation};
-    use crate::data_types::{scalar_type, ArrayShape, INT16, INT32, INT64};
+    use crate::data_types::{scalar_type, ArrayShape, INT16, INT32, INT64, INT8};
     use crate::data_values::Value;
     use crate::evaluators::{evaluate_simple_evaluator, random_evaluate};
 
@@ -3084,62 +3085,43 @@ mod tests {
         evaluate_join_helper(c, input_values, expected, Some(prng_seed), 1)
     }
 
-    fn probabilistic_join_helper(
+    fn private_join_data_helper(
+        join_type: JoinType,
         types_x: Vec<(String, Type)>,
         types_y: Vec<(String, Type)>,
-        op: Operation,
+        headers: Vec<(String, String)>,
         values_x: Vec<Vec<u64>>,
         values_y: Vec<Vec<u64>>,
         expected: Vec<(String, Vec<u64>)>,
-        is_x_private: bool,
-        is_y_private: bool,
-        num_trials: u64,
     ) -> Result<()> {
-        let c = join_context(
-            types_x.clone(),
-            types_y.clone(),
-            op,
-            is_x_private,
-            is_y_private,
-        )?;
-        let input_values = build_join_columns(types_x, types_y, values_x, values_y)?;
-
-        evaluate_join_helper(c, input_values, expected, None, num_trials)
+        let mut headers_map = HashMap::new();
+        for (h0, h1) in headers {
+            headers_map.insert(h0, h1);
+        }
+        deterministic_join_helper(
+            types_x,
+            types_y,
+            Operation::Join(join_type, headers_map),
+            values_x,
+            values_y,
+            expected,
+            true,
+            true,
+        )
     }
 
     #[test]
-    fn test_private_psi() -> Result<()> {
-        let data_helper = |types_x: Vec<(String, Type)>,
-                           types_y: Vec<(String, Type)>,
-                           headers: Vec<(String, String)>,
-                           values_x: Vec<Vec<u64>>,
-                           values_y: Vec<Vec<u64>>,
-                           expected: Vec<(String, Vec<u64>)>|
-         -> Result<()> {
-            let mut headers_map = HashMap::new();
-            for (h0, h1) in headers {
-                headers_map.insert(h0, h1);
-            }
-            deterministic_join_helper(
-                types_x,
-                types_y,
-                Operation::Join(JoinType::Inner, headers_map),
-                values_x,
-                values_y,
-                expected,
-                true,
-                true,
-            )
-        };
-        data_helper(
+    fn test_private_psi_1() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Inner,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
-                ("b".to_owned(), array_type(vec![5], INT32)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
+                ("b".to_owned(), array_type(vec![5], INT8)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
-                ("c".to_owned(), array_type(vec![6], INT32)),
+                ("c".to_owned(), array_type(vec![6], INT8)),
                 ("d".to_owned(), array_type(vec![6], INT16)),
             ],
             vec![("b".to_owned(), "c".to_owned())],
@@ -3159,11 +3141,15 @@ mod tests {
                 ("b".to_owned(), vec![0, 0, 30, 40, 0]),
                 ("d".to_owned(), vec![0, 0, 300, 400, 0]),
             ],
-        )?;
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_psi_2() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Inner,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
                 ("b".to_owned(), array_type(vec![5, 4], BIT)),
             ],
             vec![
@@ -3213,12 +3199,15 @@ mod tests {
                 ),
                 ("c".to_owned(), vec![0, 0, 300, 0, 0]),
             ],
-        )?;
-
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_psi_3() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Inner,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
                 ("b".to_owned(), array_type(vec![5, 4], BIT)),
                 ("c".to_owned(), array_type(vec![5], INT16)),
             ],
@@ -3276,18 +3265,21 @@ mod tests {
                 ("c".to_owned(), vec![0, 0, 300, 400, 0]),
                 ("f".to_owned(), vec![0, 0, 0, 0, 0, 0, 1, 1, 0, 0]),
             ],
-        )?;
-
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_psi_4() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Inner,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
-                ("b".to_owned(), array_type(vec![5, 2], INT32)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
+                ("b".to_owned(), array_type(vec![5, 2], INT8)),
                 ("c".to_owned(), array_type(vec![5], INT16)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
-                ("b".to_owned(), array_type(vec![6, 2], INT32)),
+                ("b".to_owned(), array_type(vec![6, 2], INT8)),
                 ("c".to_owned(), array_type(vec![6], INT16)),
                 ("d".to_owned(), array_type(vec![6], BIT)),
             ],
@@ -3317,18 +3309,21 @@ mod tests {
                 ("c".to_owned(), vec![0, 0, 0, 400, 0]),
                 ("d".to_owned(), vec![0, 0, 0, 1, 0]),
             ],
-        )?;
-
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_psi_5() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Inner,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
-                ("b".to_owned(), array_type(vec![5], INT32)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
+                ("b".to_owned(), array_type(vec![5], INT8)),
                 ("c".to_owned(), array_type(vec![5], INT16)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
-                ("b".to_owned(), array_type(vec![6], INT32)),
+                ("b".to_owned(), array_type(vec![6], INT8)),
                 ("c".to_owned(), array_type(vec![6], INT16)),
                 ("d".to_owned(), array_type(vec![6], BIT)),
             ],
@@ -3355,18 +3350,21 @@ mod tests {
                 ("c".to_owned(), vec![0, 0, 0, 0, 0]),
                 ("d".to_owned(), vec![0, 0, 0, 0, 0]),
             ],
-        )?;
-
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_psi_6() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Inner,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
-                ("b".to_owned(), array_type(vec![5], INT32)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
+                ("b".to_owned(), array_type(vec![5], INT8)),
                 ("c".to_owned(), array_type(vec![5], INT16)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
-                ("b".to_owned(), array_type(vec![6], INT32)),
+                ("b".to_owned(), array_type(vec![6], INT8)),
                 ("c".to_owned(), array_type(vec![6], INT16)),
                 ("d".to_owned(), array_type(vec![6], BIT)),
             ],
@@ -3393,16 +3391,19 @@ mod tests {
                 ("c".to_owned(), vec![0, 0, 0, 0, 0]),
                 ("d".to_owned(), vec![0, 0, 0, 0, 0]),
             ],
-        )?;
-
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_psi_7() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Inner,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                ("a".to_owned(), array_type(vec![1], INT64)),
+                ("a".to_owned(), array_type(vec![1], INT8)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                ("b".to_owned(), array_type(vec![1], INT64)),
+                ("b".to_owned(), array_type(vec![1], INT8)),
             ],
             vec![("a".to_owned(), "b".to_owned())],
             vec![vec![1], vec![10]],
@@ -3411,19 +3412,22 @@ mod tests {
                 (NULL_HEADER.to_owned(), vec![1]),
                 ("a".to_owned(), vec![10]),
             ],
-        )?;
-
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_psi_8() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Inner,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                ("a".to_owned(), array_type(vec![1], INT64)),
-                ("b".to_owned(), array_type(vec![1], INT64)),
-                ("c".to_owned(), array_type(vec![1], INT64)),
+                ("a".to_owned(), array_type(vec![1], INT8)),
+                ("b".to_owned(), array_type(vec![1], INT8)),
+                ("c".to_owned(), array_type(vec![1], INT8)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                ("b".to_owned(), array_type(vec![1], INT64)),
-                ("a".to_owned(), array_type(vec![1], INT64)),
+                ("b".to_owned(), array_type(vec![1], INT8)),
+                ("a".to_owned(), array_type(vec![1], INT8)),
             ],
             vec![
                 ("a".to_owned(), "a".to_owned()),
@@ -3437,19 +3441,22 @@ mod tests {
                 ("b".to_owned(), vec![3]),
                 ("c".to_owned(), vec![4]),
             ],
-        )?;
-
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_psi_9() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Inner,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                ("a".to_owned(), array_type(vec![1], INT64)),
-                ("b".to_owned(), array_type(vec![1], INT64)),
-                ("c".to_owned(), array_type(vec![1], INT64)),
+                ("a".to_owned(), array_type(vec![1], INT8)),
+                ("b".to_owned(), array_type(vec![1], INT8)),
+                ("c".to_owned(), array_type(vec![1], INT8)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("b".to_owned(), array_type(vec![5], INT64)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5], INT8)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
             ],
             vec![
                 ("a".to_owned(), "a".to_owned()),
@@ -3469,17 +3476,18 @@ mod tests {
             ],
         )?;
 
-        data_helper(
+        private_join_data_helper(
+            JoinType::Inner,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("b".to_owned(), array_type(vec![5], INT64)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5], INT8)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                ("a".to_owned(), array_type(vec![1], INT64)),
-                ("b".to_owned(), array_type(vec![1], INT64)),
-                ("c".to_owned(), array_type(vec![1], INT64)),
+                ("a".to_owned(), array_type(vec![1], INT8)),
+                ("b".to_owned(), array_type(vec![1], INT8)),
+                ("c".to_owned(), array_type(vec![1], INT8)),
             ],
             vec![
                 ("a".to_owned(), "a".to_owned()),
@@ -3497,146 +3505,6 @@ mod tests {
                 ("a".to_owned(), vec![2, 0, 0, 0, 0]),
                 ("c".to_owned(), vec![4, 0, 0, 0, 0]),
             ],
-        )?;
-
-        let probabilistic_data_helper = |types_x: Vec<(String, Type)>,
-                                         types_y: Vec<(String, Type)>,
-                                         headers: Vec<(String, String)>,
-                                         values_x: Vec<Vec<u64>>,
-                                         values_y: Vec<Vec<u64>>,
-                                         expected: Vec<(String, Vec<u64>)>,
-                                         num_trials: u64|
-         -> Result<()> {
-            let mut headers_map = HashMap::new();
-            for (h0, h1) in headers {
-                headers_map.insert(h0, h1);
-            }
-            probabilistic_join_helper(
-                types_x,
-                types_y,
-                Operation::Join(JoinType::Inner, headers_map),
-                values_x,
-                values_y,
-                expected,
-                true,
-                true,
-                num_trials,
-            )
-        };
-
-        probabilistic_data_helper(
-            vec![
-                (NULL_HEADER.to_owned(), array_type(vec![2], BIT)),
-                ("a".to_owned(), array_type(vec![2], INT64)),
-                ("b".to_owned(), array_type(vec![2, 3], BIT)),
-            ],
-            vec![
-                (NULL_HEADER.to_owned(), array_type(vec![3], BIT)),
-                ("b".to_owned(), array_type(vec![3, 3], BIT)),
-                ("c".to_owned(), array_type(vec![3], INT16)),
-            ],
-            vec![("b".to_owned(), "b".to_owned())],
-            vec![
-                vec![1, 1],
-                vec![2, 3],
-                array!([[0, 1, 0], [0, 1, 1]]).into_raw_vec(),
-            ],
-            vec![
-                vec![1, 1, 1],
-                array!([[0, 1, 1], [1, 0, 0], [1, 0, 1]]).into_raw_vec(),
-                vec![300, 400, 500],
-            ],
-            vec![
-                (NULL_HEADER.to_owned(), vec![0, 1]),
-                ("a".to_owned(), vec![0, 3]),
-                (
-                    "b".to_owned(),
-                    array!([[0, 0, 0], [0, 1, 1]]).into_raw_vec(),
-                ),
-                ("c".to_owned(), vec![0, 300]),
-            ],
-            50,
-        )?;
-        probabilistic_data_helper(
-            vec![
-                (NULL_HEADER.to_owned(), array_type(vec![2], BIT)),
-                ("a".to_owned(), array_type(vec![2, 2], BIT)),
-                ("b".to_owned(), array_type(vec![2, 3], BIT)),
-            ],
-            vec![
-                (NULL_HEADER.to_owned(), array_type(vec![3], BIT)),
-                ("b".to_owned(), array_type(vec![3, 3], BIT)),
-                ("c".to_owned(), array_type(vec![3, 2], BIT)),
-            ],
-            vec![
-                ("b".to_owned(), "b".to_owned()),
-                ("a".to_owned(), "c".to_owned()),
-            ],
-            vec![
-                vec![1, 1],
-                array!([[1, 0], [1, 1]]).into_raw_vec(),
-                array!([[0, 1, 0], [0, 1, 1]]).into_raw_vec(),
-            ],
-            vec![
-                vec![1, 1, 1],
-                array!([[0, 1, 1], [1, 0, 0], [1, 0, 1]]).into_raw_vec(),
-                array!([[1, 1], [0, 0], [0, 1]]).into_raw_vec(),
-            ],
-            vec![
-                (NULL_HEADER.to_owned(), vec![0, 1]),
-                ("a".to_owned(), array!([[0, 0], [1, 1]]).into_raw_vec()),
-                (
-                    "b".to_owned(),
-                    array!([[0, 0, 0], [0, 1, 1]]).into_raw_vec(),
-                ),
-            ],
-            50,
-        )?;
-
-        probabilistic_data_helper(
-            vec![
-                (NULL_HEADER.to_owned(), array_type(vec![600], BIT)),
-                ("b".to_owned(), array_type(vec![600], INT16)),
-                ("a".to_owned(), array_type(vec![600], INT16)),
-            ],
-            vec![
-                (NULL_HEADER.to_owned(), array_type(vec![100], BIT)),
-                ("a".to_owned(), array_type(vec![100], INT16)),
-                ("b".to_owned(), array_type(vec![100], INT16)),
-            ],
-            vec![
-                ("a".to_owned(), "a".to_owned()),
-                ("b".to_owned(), "b".to_owned()),
-            ],
-            vec![
-                vec![1; 600],
-                (1..=600).collect(),
-                (1..=600).map(|x| 2 * x).collect(),
-            ],
-            vec![
-                vec![1; 100],
-                (591..=690).map(|x| 2 * x).collect(),
-                (591..=690).collect(),
-            ],
-            vec![
-                (
-                    NULL_HEADER.to_owned(),
-                    vec![0; 600]
-                        .iter()
-                        .enumerate()
-                        .map(|(i, _)| if i >= 590 { 1 } else { 0 })
-                        .collect(),
-                ),
-                (
-                    "b".to_owned(),
-                    (1..=600).map(|x| if x > 590 { x } else { 0 }).collect(),
-                ),
-                (
-                    "a".to_owned(),
-                    (1..=600).map(|x| if x > 590 { 2 * x } else { 0 }).collect(),
-                ),
-            ],
-            1,
         )?;
 
         Ok(())
@@ -3727,83 +3595,20 @@ mod tests {
         deterministic_join_helper(
             types_x, types_y, op, values_x, values_y, expected, false, false,
         )?;
-
-        let types_x = vec![
-            (NULL_HEADER.to_owned(), array_type(vec![3], BIT)),
-            ("a".to_owned(), array_type(vec![3, 2], BIT)),
-            ("b".to_owned(), array_type(vec![3, 3], BIT)),
-        ];
-        let types_y = vec![
-            (NULL_HEADER.to_owned(), array_type(vec![2], BIT)),
-            ("c".to_owned(), array_type(vec![2, 3], BIT)),
-            ("d".to_owned(), array_type(vec![2, 2], BIT)),
-        ];
-        let mut headers = HashMap::new();
-        headers.insert("a".to_owned(), "d".to_owned());
-        headers.insert("b".to_owned(), "c".to_owned());
-        let op = Operation::Join(JoinType::Inner, headers);
-        let values_x = vec![
-            vec![1, 1, 1],
-            array!([[0, 1], [1, 0], [1, 1]]).into_raw_vec(),
-            array!([[0, 1, 0], [1, 0, 0], [1, 1, 0]]).into_raw_vec(),
-        ];
-        let values_y = vec![
-            vec![1, 1],
-            array!([[1, 1, 0], [1, 0, 0]]).into_raw_vec(),
-            array!([[1, 1], [1, 0]]).into_raw_vec(),
-        ];
-        let expected = vec![
-            (NULL_HEADER.to_owned(), vec![0, 1, 1]),
-            (
-                "a".to_owned(),
-                array!([[0, 0], [1, 0], [1, 1]]).into_raw_vec(),
-            ),
-            (
-                "b".to_owned(),
-                array!([[0, 0, 0], [1, 0, 0], [1, 1, 0]]).into_raw_vec(),
-            ),
-        ];
-        probabilistic_join_helper(
-            types_x, types_y, op, values_x, values_y, expected, false, false, 50,
-        )?;
-
         Ok(())
     }
-
     #[test]
-    fn test_private_left_join() -> Result<()> {
-        let data_helper = |types_x: Vec<(String, Type)>,
-                           types_y: Vec<(String, Type)>,
-                           headers: Vec<(String, String)>,
-                           values_x: Vec<Vec<u64>>,
-                           values_y: Vec<Vec<u64>>,
-                           expected: Vec<(String, Vec<u64>)>|
-         -> Result<()> {
-            let mut headers_map = HashMap::new();
-            for (h0, h1) in headers {
-                headers_map.insert(h0, h1);
-            }
-            deterministic_join_helper(
-                types_x,
-                types_y,
-                Operation::Join(JoinType::Left, headers_map),
-                values_x,
-                values_y,
-                expected,
-                true,
-                true,
-            )
-        };
-
-        data_helper(
+    fn test_private_left_join_1() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Left,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
-                ("b".to_owned(), array_type(vec![5], INT32)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
+                ("b".to_owned(), array_type(vec![5], INT8)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
-                ("c".to_owned(), array_type(vec![6], INT32)),
+                ("c".to_owned(), array_type(vec![6], INT8)),
                 ("d".to_owned(), array_type(vec![6], INT16)),
             ],
             vec![("b".to_owned(), "c".to_owned())],
@@ -3823,12 +3628,15 @@ mod tests {
                 ("b".to_owned(), vec![10, 20, 30, 40, 50]),
                 ("d".to_owned(), vec![0, 0, 300, 400, 0]),
             ],
-        )?;
-
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_left_join_2() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Left,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
                 ("b".to_owned(), array_type(vec![5, 4], BIT)),
             ],
             vec![
@@ -3878,12 +3686,15 @@ mod tests {
                 ),
                 ("c".to_owned(), vec![0, 0, 300, 0, 0]),
             ],
-        )?;
-
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_left_join_3() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Left,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
                 ("b".to_owned(), array_type(vec![5, 4], BIT)),
                 ("c".to_owned(), array_type(vec![5], INT16)),
             ],
@@ -3941,18 +3752,21 @@ mod tests {
                 ("c".to_owned(), vec![100, 200, 300, 400, 500]),
                 ("f".to_owned(), vec![0, 0, 0, 0, 0, 0, 1, 1, 0, 0]),
             ],
-        )?;
-
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_left_join_4() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Left,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
-                ("b".to_owned(), array_type(vec![5, 2], INT32)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
+                ("b".to_owned(), array_type(vec![5, 2], INT8)),
                 ("c".to_owned(), array_type(vec![5], INT16)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
-                ("b".to_owned(), array_type(vec![6, 2], INT32)),
+                ("b".to_owned(), array_type(vec![6, 2], INT8)),
                 ("c".to_owned(), array_type(vec![6], INT16)),
                 ("d".to_owned(), array_type(vec![6], BIT)),
             ],
@@ -3982,18 +3796,21 @@ mod tests {
                 ("c".to_owned(), vec![100, 200, 0, 400, 500]),
                 ("d".to_owned(), vec![0, 0, 0, 1, 0]),
             ],
-        )?;
-
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_left_join_5() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Left,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
-                ("b".to_owned(), array_type(vec![5], INT32)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
+                ("b".to_owned(), array_type(vec![5], INT8)),
                 ("c".to_owned(), array_type(vec![5], INT16)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
-                ("b".to_owned(), array_type(vec![6], INT32)),
+                ("b".to_owned(), array_type(vec![6], INT8)),
                 ("c".to_owned(), array_type(vec![6], INT16)),
                 ("d".to_owned(), array_type(vec![6], BIT)),
             ],
@@ -4020,18 +3837,21 @@ mod tests {
                 ("c".to_owned(), vec![100, 200, 300, 400, 500]),
                 ("d".to_owned(), vec![0, 0, 0, 0, 0]),
             ],
-        )?;
-
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_left_join_6() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Left,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
-                ("b".to_owned(), array_type(vec![5], INT32)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
+                ("b".to_owned(), array_type(vec![5], INT8)),
                 ("c".to_owned(), array_type(vec![5], INT16)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
-                ("b".to_owned(), array_type(vec![6], INT32)),
+                ("b".to_owned(), array_type(vec![6], INT8)),
                 ("c".to_owned(), array_type(vec![6], INT16)),
                 ("d".to_owned(), array_type(vec![6], BIT)),
             ],
@@ -4058,9 +3878,12 @@ mod tests {
                 ("c".to_owned(), vec![0, 0, 0, 400, 500]),
                 ("d".to_owned(), vec![0, 0, 0, 0, 0]),
             ],
-        )?;
-
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_left_join_7() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Left,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
                 ("a".to_owned(), array_type(vec![1], INT64)),
@@ -4076,19 +3899,22 @@ mod tests {
                 (NULL_HEADER.to_owned(), vec![1]),
                 ("a".to_owned(), vec![10]),
             ],
-        )?;
-
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_left_join_8() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Left,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                ("a".to_owned(), array_type(vec![1], INT64)),
-                ("b".to_owned(), array_type(vec![1], INT64)),
-                ("c".to_owned(), array_type(vec![1], INT64)),
+                ("a".to_owned(), array_type(vec![1], INT8)),
+                ("b".to_owned(), array_type(vec![1], INT8)),
+                ("c".to_owned(), array_type(vec![1], INT8)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                ("b".to_owned(), array_type(vec![1], INT64)),
-                ("a".to_owned(), array_type(vec![1], INT64)),
+                ("b".to_owned(), array_type(vec![1], INT8)),
+                ("a".to_owned(), array_type(vec![1], INT8)),
             ],
             vec![
                 ("a".to_owned(), "a".to_owned()),
@@ -4102,19 +3928,22 @@ mod tests {
                 ("b".to_owned(), vec![3]),
                 ("c".to_owned(), vec![4]),
             ],
-        )?;
-
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_left_join_9() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Left,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                ("a".to_owned(), array_type(vec![1], INT64)),
-                ("b".to_owned(), array_type(vec![1], INT64)),
-                ("c".to_owned(), array_type(vec![1], INT64)),
+                ("a".to_owned(), array_type(vec![1], INT8)),
+                ("b".to_owned(), array_type(vec![1], INT8)),
+                ("c".to_owned(), array_type(vec![1], INT8)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("b".to_owned(), array_type(vec![5], INT64)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5], INT8)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
             ],
             vec![
                 ("a".to_owned(), "a".to_owned()),
@@ -4134,17 +3963,18 @@ mod tests {
             ],
         )?;
 
-        data_helper(
+        private_join_data_helper(
+            JoinType::Left,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("b".to_owned(), array_type(vec![5], INT64)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5], INT8)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                ("a".to_owned(), array_type(vec![1], INT64)),
-                ("b".to_owned(), array_type(vec![1], INT64)),
-                ("c".to_owned(), array_type(vec![1], INT64)),
+                ("a".to_owned(), array_type(vec![1], INT8)),
+                ("b".to_owned(), array_type(vec![1], INT8)),
+                ("c".to_owned(), array_type(vec![1], INT8)),
             ],
             vec![
                 ("a".to_owned(), "a".to_owned()),
@@ -4257,38 +4087,17 @@ mod tests {
     }
 
     #[test]
-    fn test_private_union_join() -> Result<()> {
-        let data_helper = |types_x: Vec<(String, Type)>,
-                           types_y: Vec<(String, Type)>,
-                           headers: Vec<(String, String)>,
-                           values_x: Vec<Vec<u64>>,
-                           values_y: Vec<Vec<u64>>,
-                           expected: Vec<(String, Vec<u64>)>|
-         -> Result<()> {
-            let mut headers_map = HashMap::new();
-            for (h0, h1) in headers {
-                headers_map.insert(h0, h1);
-            }
-            deterministic_join_helper(
-                types_x,
-                types_y,
-                Operation::Join(JoinType::Union, headers_map),
-                values_x,
-                values_y,
-                expected,
-                true,
-                true,
-            )
-        };
-        data_helper(
+    fn test_private_union_join_1() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Union,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
-                ("b".to_owned(), array_type(vec![5], INT32)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
+                ("b".to_owned(), array_type(vec![5], INT8)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
-                ("c".to_owned(), array_type(vec![6], INT32)),
+                ("c".to_owned(), array_type(vec![6], INT8)),
                 ("d".to_owned(), array_type(vec![6], INT16)),
             ],
             vec![("b".to_owned(), "c".to_owned())],
@@ -4317,11 +4126,15 @@ mod tests {
                     vec![0, 0, 0, 0, 0, 300, 210, 400, 410, 510, 610],
                 ),
             ],
-        )?;
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_union_join_2() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Union,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
                 ("b".to_owned(), array_type(vec![5, 4], BIT)),
             ],
             vec![
@@ -4383,11 +4196,15 @@ mod tests {
                     vec![0, 0, 0, 0, 0, 300, 0, 400, 410, 510, 610],
                 ),
             ],
-        )?;
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_union_join_3() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Union,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
                 ("b".to_owned(), array_type(vec![5, 4], BIT)),
                 ("c".to_owned(), array_type(vec![5], INT16)),
             ],
@@ -4462,18 +4279,21 @@ mod tests {
                     ],
                 ),
             ],
-        )?;
-
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_union_join_4() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Union,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
-                ("b".to_owned(), array_type(vec![5, 2], INT32)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
+                ("b".to_owned(), array_type(vec![5, 2], INT8)),
                 ("c".to_owned(), array_type(vec![5], INT16)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
-                ("b".to_owned(), array_type(vec![6, 2], INT32)),
+                ("b".to_owned(), array_type(vec![6, 2], INT8)),
                 ("c".to_owned(), array_type(vec![6], INT16)),
                 ("d".to_owned(), array_type(vec![6], BIT)),
             ],
@@ -4522,18 +4342,21 @@ mod tests {
                 ),
                 ("d".to_owned(), vec![0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0]),
             ],
-        )?;
-
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_union_join_5() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Union,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
-                ("b".to_owned(), array_type(vec![5], INT32)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
+                ("b".to_owned(), array_type(vec![5], INT8)),
                 ("c".to_owned(), array_type(vec![5], INT16)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
-                ("b".to_owned(), array_type(vec![6], INT32)),
+                ("b".to_owned(), array_type(vec![6], INT8)),
                 ("c".to_owned(), array_type(vec![6], INT16)),
                 ("d".to_owned(), array_type(vec![6], BIT)),
             ],
@@ -4569,18 +4392,21 @@ mod tests {
                 ),
                 ("d".to_owned(), vec![0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0]),
             ],
-        )?;
-
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_union_join_6() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Union,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
-                ("b".to_owned(), array_type(vec![5], INT32)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
+                ("b".to_owned(), array_type(vec![5], INT8)),
                 ("c".to_owned(), array_type(vec![5], INT16)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
-                ("b".to_owned(), array_type(vec![6], INT32)),
+                ("b".to_owned(), array_type(vec![6], INT8)),
                 ("c".to_owned(), array_type(vec![6], INT16)),
                 ("d".to_owned(), array_type(vec![6], BIT)),
             ],
@@ -4613,16 +4439,19 @@ mod tests {
                 ),
                 ("d".to_owned(), vec![0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0]),
             ],
-        )?;
-
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_union_join_7() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Union,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                ("a".to_owned(), array_type(vec![1], INT64)),
+                ("a".to_owned(), array_type(vec![1], INT8)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                ("b".to_owned(), array_type(vec![1], INT64)),
+                ("b".to_owned(), array_type(vec![1], INT8)),
             ],
             vec![("a".to_owned(), "b".to_owned())],
             vec![vec![1], vec![10]],
@@ -4631,19 +4460,22 @@ mod tests {
                 (NULL_HEADER.to_owned(), vec![0, 1]),
                 ("a".to_owned(), vec![0, 10]),
             ],
-        )?;
-
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_union_join_8() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Union,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                ("a".to_owned(), array_type(vec![1], INT64)),
-                ("b".to_owned(), array_type(vec![1], INT64)),
-                ("c".to_owned(), array_type(vec![1], INT64)),
+                ("a".to_owned(), array_type(vec![1], INT8)),
+                ("b".to_owned(), array_type(vec![1], INT8)),
+                ("c".to_owned(), array_type(vec![1], INT8)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                ("b".to_owned(), array_type(vec![1], INT64)),
-                ("a".to_owned(), array_type(vec![1], INT64)),
+                ("b".to_owned(), array_type(vec![1], INT8)),
+                ("a".to_owned(), array_type(vec![1], INT8)),
             ],
             vec![
                 ("a".to_owned(), "a".to_owned()),
@@ -4657,19 +4489,22 @@ mod tests {
                 ("b".to_owned(), vec![0, 3]),
                 ("c".to_owned(), vec![0, 0]),
             ],
-        )?;
-
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_union_join_9() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Union,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                ("a".to_owned(), array_type(vec![1], INT64)),
-                ("b".to_owned(), array_type(vec![1], INT64)),
-                ("c".to_owned(), array_type(vec![1], INT64)),
+                ("a".to_owned(), array_type(vec![1], INT8)),
+                ("b".to_owned(), array_type(vec![1], INT8)),
+                ("c".to_owned(), array_type(vec![1], INT8)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("b".to_owned(), array_type(vec![5], INT64)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5], INT8)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
             ],
             vec![
                 ("a".to_owned(), "a".to_owned()),
@@ -4689,17 +4524,18 @@ mod tests {
             ],
         )?;
 
-        data_helper(
+        private_join_data_helper(
+            JoinType::Union,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("b".to_owned(), array_type(vec![5], INT64)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5], INT8)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                ("a".to_owned(), array_type(vec![1], INT64)),
-                ("b".to_owned(), array_type(vec![1], INT64)),
-                ("c".to_owned(), array_type(vec![1], INT64)),
+                ("a".to_owned(), array_type(vec![1], INT8)),
+                ("b".to_owned(), array_type(vec![1], INT8)),
+                ("c".to_owned(), array_type(vec![1], INT8)),
             ],
             vec![
                 ("a".to_owned(), "a".to_owned()),
@@ -4829,39 +4665,18 @@ mod tests {
     }
 
     #[test]
-    fn test_private_full_join() -> Result<()> {
-        let data_helper = |types_x: Vec<(String, Type)>,
-                           types_y: Vec<(String, Type)>,
-                           headers: Vec<(String, String)>,
-                           values_x: Vec<Vec<u64>>,
-                           values_y: Vec<Vec<u64>>,
-                           expected: Vec<(String, Vec<u64>)>|
-         -> Result<()> {
-            let mut headers_map = HashMap::new();
-            for (h0, h1) in headers {
-                headers_map.insert(h0, h1);
-            }
-            deterministic_join_helper(
-                types_x,
-                types_y,
-                Operation::Join(JoinType::Full, headers_map),
-                values_x,
-                values_y,
-                expected,
-                true,
-                true,
-            )
-        };
-        data_helper(
+    fn test_private_full_join_1() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Full,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
-                ("b".to_owned(), array_type(vec![5], INT32)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
+                ("b".to_owned(), array_type(vec![5], INT8)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
-                ("c".to_owned(), array_type(vec![6], INT32)),
-                ("d".to_owned(), array_type(vec![6], INT16)),
+                ("c".to_owned(), array_type(vec![6], INT8)),
+                ("d".to_owned(), array_type(vec![6], INT8)),
             ],
             vec![("b".to_owned(), "c".to_owned())],
             vec![
@@ -4872,7 +4687,7 @@ mod tests {
             vec![
                 vec![1, 1, 1, 1, 1, 1],
                 vec![30, 21, 40, 41, 51, 61],
-                vec![300, 210, 400, 410, 510, 610],
+                vec![3, 2, 4, 1, 5, 6],
             ],
             vec![
                 (
@@ -4884,22 +4699,23 @@ mod tests {
                     "b".to_owned(),
                     vec![10, 20, 0, 0, 50, 30, 21, 40, 41, 51, 61],
                 ),
-                (
-                    "d".to_owned(),
-                    vec![0, 0, 0, 0, 0, 300, 210, 400, 410, 510, 610],
-                ),
+                ("d".to_owned(), vec![0, 0, 0, 0, 0, 3, 2, 4, 1, 5, 6]),
             ],
-        )?;
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_full_join_2() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Full,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
                 ("b".to_owned(), array_type(vec![5, 4], BIT)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
                 ("b".to_owned(), array_type(vec![6, 4], BIT)),
-                ("c".to_owned(), array_type(vec![6], INT16)),
+                ("c".to_owned(), array_type(vec![6], INT8)),
             ],
             vec![("b".to_owned(), "b".to_owned())],
             vec![
@@ -4925,7 +4741,7 @@ mod tests {
                     [1, 0, 0, 0]
                 ])
                 .into_raw_vec(),
-                vec![300, 210, 400, 410, 510, 610],
+                vec![30, 21, 40, 41, 51, 61],
             ],
             vec![
                 (
@@ -4950,23 +4766,24 @@ mod tests {
                     ])
                     .into_raw_vec(),
                 ),
-                (
-                    "c".to_owned(),
-                    vec![0, 0, 0, 0, 0, 300, 0, 400, 410, 510, 610],
-                ),
+                ("c".to_owned(), vec![0, 0, 0, 0, 0, 30, 0, 40, 41, 51, 61]),
             ],
-        )?;
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_full_join_3() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Full,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
                 ("b".to_owned(), array_type(vec![5, 4], BIT)),
-                ("c".to_owned(), array_type(vec![5], INT16)),
+                ("c".to_owned(), array_type(vec![5], INT8)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
                 ("d".to_owned(), array_type(vec![6, 4], BIT)),
-                ("e".to_owned(), array_type(vec![6], INT16)),
+                ("e".to_owned(), array_type(vec![6], INT8)),
                 ("f".to_owned(), array_type(vec![6, 2], BIT)),
             ],
             vec![
@@ -4984,7 +4801,7 @@ mod tests {
                     [0, 1, 0, 1]
                 ])
                 .into_raw_vec(),
-                vec![100, 200, 300, 400, 500],
+                vec![10, 20, 30, 40, 50],
             ],
             vec![
                 vec![1, 1, 1, 1, 1, 1],
@@ -4997,7 +4814,7 @@ mod tests {
                     [1, 0, 0, 0]
                 ])
                 .into_raw_vec(),
-                vec![300, 210, 400, 410, 510, 610],
+                vec![30, 21, 40, 41, 51, 61],
                 vec![0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0],
             ],
             vec![
@@ -5025,7 +4842,7 @@ mod tests {
                 ),
                 (
                     "c".to_owned(),
-                    vec![100, 200, 0, 0, 500, 300, 210, 400, 410, 510, 610],
+                    vec![10, 20, 0, 0, 50, 30, 21, 40, 41, 51, 61],
                 ),
                 (
                     "f".to_owned(),
@@ -5034,19 +4851,22 @@ mod tests {
                     ],
                 ),
             ],
-        )?;
-
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_full_join_4() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Full,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
-                ("b".to_owned(), array_type(vec![5, 2], INT32)),
-                ("c".to_owned(), array_type(vec![5], INT16)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
+                ("b".to_owned(), array_type(vec![5, 2], INT8)),
+                ("c".to_owned(), array_type(vec![5], INT8)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
-                ("b".to_owned(), array_type(vec![6, 2], INT32)),
-                ("c".to_owned(), array_type(vec![6], INT16)),
+                ("b".to_owned(), array_type(vec![6, 2], INT8)),
+                ("c".to_owned(), array_type(vec![6], INT8)),
                 ("d".to_owned(), array_type(vec![6], BIT)),
             ],
             vec![
@@ -5057,12 +4877,12 @@ mod tests {
                 vec![1, 1, 0, 1, 1],
                 vec![1, 2, 3, 4, 5],
                 array!([[10, 10], [20, 20], [30, 30], [40, 40], [50, 50]]).into_raw_vec(),
-                vec![100, 200, 300, 400, 500],
+                vec![10, 20, 30, 40, 50],
             ],
             vec![
                 vec![1, 0, 1, 1, 1, 0],
                 array!([[30, 30], [21, 21], [40, 40], [41, 41], [51, 51], [61, 61]]).into_raw_vec(),
-                vec![300, 210, 400, 410, 510, 610],
+                vec![30, 21, 40, 41, 51, 61],
                 vec![0, 1, 1, 0, 1, 0],
             ],
             vec![
@@ -5088,24 +4908,24 @@ mod tests {
                     ])
                     .into_raw_vec(),
                 ),
-                (
-                    "c".to_owned(),
-                    vec![100, 200, 0, 0, 500, 300, 0, 400, 410, 510, 0],
-                ),
+                ("c".to_owned(), vec![10, 20, 0, 0, 50, 30, 0, 40, 41, 51, 0]),
                 ("d".to_owned(), vec![0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0]),
             ],
-        )?;
-
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_full_join_5() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Full,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
-                ("b".to_owned(), array_type(vec![5], INT32)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
+                ("b".to_owned(), array_type(vec![5], INT8)),
                 ("c".to_owned(), array_type(vec![5], INT16)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
-                ("b".to_owned(), array_type(vec![6], INT32)),
+                ("b".to_owned(), array_type(vec![6], INT8)),
                 ("c".to_owned(), array_type(vec![6], INT16)),
                 ("d".to_owned(), array_type(vec![6], BIT)),
             ],
@@ -5141,18 +4961,21 @@ mod tests {
                 ),
                 ("d".to_owned(), vec![0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0]),
             ],
-        )?;
-
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_full_join_6() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Full,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
-                ("b".to_owned(), array_type(vec![5], INT32)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
+                ("b".to_owned(), array_type(vec![5], INT8)),
                 ("c".to_owned(), array_type(vec![5], INT16)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![6], BIT)),
-                ("b".to_owned(), array_type(vec![6], INT32)),
+                ("b".to_owned(), array_type(vec![6], INT8)),
                 ("c".to_owned(), array_type(vec![6], INT16)),
                 ("d".to_owned(), array_type(vec![6], BIT)),
             ],
@@ -5185,16 +5008,19 @@ mod tests {
                 ),
                 ("d".to_owned(), vec![0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0]),
             ],
-        )?;
-
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_full_join_7() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Full,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                ("a".to_owned(), array_type(vec![1], INT64)),
+                ("a".to_owned(), array_type(vec![1], INT8)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                ("b".to_owned(), array_type(vec![1], INT64)),
+                ("b".to_owned(), array_type(vec![1], INT8)),
             ],
             vec![("a".to_owned(), "b".to_owned())],
             vec![vec![1], vec![10]],
@@ -5203,19 +5029,22 @@ mod tests {
                 (NULL_HEADER.to_owned(), vec![0, 1]),
                 ("a".to_owned(), vec![0, 10]),
             ],
-        )?;
-
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_full_join_8() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Full,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                ("a".to_owned(), array_type(vec![1], INT64)),
-                ("b".to_owned(), array_type(vec![1], INT64)),
-                ("c".to_owned(), array_type(vec![1], INT64)),
+                ("a".to_owned(), array_type(vec![1], INT8)),
+                ("b".to_owned(), array_type(vec![1], INT8)),
+                ("c".to_owned(), array_type(vec![1], INT8)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                ("b".to_owned(), array_type(vec![1], INT64)),
-                ("a".to_owned(), array_type(vec![1], INT64)),
+                ("b".to_owned(), array_type(vec![1], INT8)),
+                ("a".to_owned(), array_type(vec![1], INT8)),
             ],
             vec![
                 ("a".to_owned(), "a".to_owned()),
@@ -5229,19 +5058,22 @@ mod tests {
                 ("b".to_owned(), vec![0, 3]),
                 ("c".to_owned(), vec![0, 4]),
             ],
-        )?;
-
-        data_helper(
+        )
+    }
+    #[test]
+    fn test_private_full_join_9() -> Result<()> {
+        private_join_data_helper(
+            JoinType::Full,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                ("a".to_owned(), array_type(vec![1], INT64)),
-                ("b".to_owned(), array_type(vec![1], INT64)),
-                ("c".to_owned(), array_type(vec![1], INT64)),
+                ("a".to_owned(), array_type(vec![1], INT8)),
+                ("b".to_owned(), array_type(vec![1], INT8)),
+                ("c".to_owned(), array_type(vec![1], INT8)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("b".to_owned(), array_type(vec![5], INT64)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5], INT8)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
             ],
             vec![
                 ("a".to_owned(), "a".to_owned()),
@@ -5261,17 +5093,18 @@ mod tests {
             ],
         )?;
 
-        data_helper(
+        private_join_data_helper(
+            JoinType::Full,
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![5], BIT)),
-                ("b".to_owned(), array_type(vec![5], INT64)),
-                ("a".to_owned(), array_type(vec![5], INT64)),
+                ("b".to_owned(), array_type(vec![5], INT8)),
+                ("a".to_owned(), array_type(vec![5], INT8)),
             ],
             vec![
                 (NULL_HEADER.to_owned(), array_type(vec![1], BIT)),
-                ("a".to_owned(), array_type(vec![1], INT64)),
-                ("b".to_owned(), array_type(vec![1], INT64)),
-                ("c".to_owned(), array_type(vec![1], INT64)),
+                ("a".to_owned(), array_type(vec![1], INT8)),
+                ("b".to_owned(), array_type(vec![1], INT8)),
+                ("c".to_owned(), array_type(vec![1], INT8)),
             ],
             vec![
                 ("a".to_owned(), "a".to_owned()),
