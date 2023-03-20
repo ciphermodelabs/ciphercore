@@ -3,14 +3,16 @@ use std::ops::Not;
 use serde::{Deserialize, Serialize};
 
 use crate::bytes::{add_vectors_u64, subtract_vectors_u64};
-use crate::custom_ops::CustomOperationBody;
+use crate::custom_ops::{run_instantiation_pass, ContextMappings, CustomOperationBody};
 use crate::data_types::{array_type, scalar_size_in_bytes, ScalarType, Type, BIT, UINT8};
 use crate::data_values::Value;
 use crate::errors::Result;
 use crate::graphs::{Context, Graph, Node, NodeAnnotation};
+use crate::inline::inline_common::DepthOptimizationLevel;
+use crate::inline::inline_ops::{inline_operations, InlineConfig, InlineMode};
 use crate::random::PRNG;
 
-use super::mpc_compiler::{KEY_LENGTH, PARTIES};
+use super::mpc_compiler::{compile_to_mpc_graph, KEY_LENGTH, PARTIES};
 
 // Computes the oblivious transfer (OT) protocol that has the following input and output.
 //
@@ -220,6 +222,50 @@ pub fn select_node(b: Node, a1: Node, a0: Node) -> Result<Node> {
         dif.multiply(b)?.add(a0)
     } else {
         dif.mixed_multiply(b)?.add(a0)
+    }
+}
+
+pub(super) fn convert_main_graph_to_mpc(
+    in_context: Context,
+    out_context: Context,
+    is_input_private: Vec<bool>,
+) -> Result<Graph> {
+    let instantiated_context = run_instantiation_pass(in_context)?.get_context();
+    let inlined_context = inline_operations(
+        instantiated_context,
+        InlineConfig {
+            default_mode: InlineMode::DepthOptimized(DepthOptimizationLevel::Default),
+            ..Default::default()
+        },
+    )?;
+
+    let mut context_map = ContextMappings::default();
+
+    // Compile to MPC
+    let main_g_inlined = inlined_context.get_main_graph()?;
+    let main_mpc_g = compile_to_mpc_graph(
+        main_g_inlined,
+        is_input_private,
+        out_context,
+        &mut context_map,
+    )?;
+    Ok(main_mpc_g)
+}
+
+pub(super) fn get_column(named_tuple_shares: &[Node], header: String) -> Result<Node> {
+    if named_tuple_shares.len() == PARTIES {
+        let mut shares = vec![];
+        for share in named_tuple_shares {
+            shares.push(share.named_tuple_get(header.clone())?);
+        }
+        named_tuple_shares[0].get_graph().create_tuple(shares)
+    } else if named_tuple_shares.len() == 1 {
+        named_tuple_shares[0].named_tuple_get(header)
+    } else {
+        Err(runtime_error!(
+            "Wrong number of shares {}",
+            named_tuple_shares.len()
+        ))
     }
 }
 

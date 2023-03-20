@@ -114,7 +114,7 @@ impl CustomOperationBody for SubtractMPC {
             (Type::Tuple(v0), Type::Array(_, _) | Type::Scalar(_)) => {
                 check_private_tuple(v0)?;
                 let mut outputs = vec![];
-                let zero = g.constant(t1.clone(), Value::zero_of_type(t1))?;
+                let zero = g.zeros(t1)?;
                 for i in 0..PARTIES as u64 {
                     let a0i = g.tuple_get(i0.clone(), i)?;
                     let share = if i == 0 {
@@ -129,7 +129,7 @@ impl CustomOperationBody for SubtractMPC {
             (Type::Array(_, _) | Type::Scalar(_), Type::Tuple(v1)) => {
                 check_private_tuple(v1)?;
                 let mut outputs = vec![];
-                let zero = g.constant(t0.clone(), Value::zero_of_type(t0))?;
+                let zero = g.zeros(t0)?;
                 for i in 0..PARTIES as u64 {
                     let a1i = g.tuple_get(i1.clone(), i)?;
                     let share = if i == 0 {
@@ -653,30 +653,31 @@ mod tests {
         let output = random_evaluate(mpc_graph.clone(), inputs)?;
         let output_type = array_type(dims.clone(), st.clone());
 
-        if output_parties.is_empty() {
+        let out = if output_parties.is_empty() {
             // check that mpc_output is a sharing of plain_output
             assert!(output.check_type(tuple_type(vec![output_type.clone(); PARTIES]))?);
-            // check that output is a sharing of expected
-            let out = output.access_vector(|v| {
+            // add up shared values.
+            output.access_vector(|v| {
                 let flat_dims: u64 = dims.iter().product();
-                let mut res = vec![0; flat_dims as usize];
+                let mut res: Vec<u64> = vec![0; flat_dims as usize];
                 for val in v {
                     let arr = val.to_flattened_array_u64(output_type.clone())?;
                     for i in 0..flat_dims {
-                        res[i as usize] += arr[i as usize];
+                        res[i as usize] = res[i as usize].wrapping_add(arr[i as usize]);
                     }
                 }
-                if let Some(m) = st.get_modulus() {
-                    Ok(res.iter().map(|x| x % m).collect())
-                } else {
-                    Ok(res)
-                }
-            })?;
-            assert_eq!(out, expected)
+                Ok(res)
+            })?
         } else {
             assert!(output.check_type(output_type.clone())?);
-            assert_eq!(output.to_flattened_array_u64(output_type)?, expected);
-        }
+            output.to_flattened_array_u64(output_type)?
+        };
+        let out = if let Some(m) = st.get_modulus() {
+            out.iter().map(|x| x % m).collect()
+        } else {
+            out
+        };
+        assert_eq!(out, expected);
         Ok(())
     }
 

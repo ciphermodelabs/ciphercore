@@ -541,7 +541,7 @@ impl Value {
     /// # use ciphercore_base::data_values::Value;
     /// # use ciphercore_base::data_types::INT32;
     /// let v = Value::from_scalar(-123456, INT32).unwrap();
-    /// assert_eq!(v.to_u64(INT32).unwrap(), -123456i32 as u32 as u64);
+    /// assert_eq!(v.to_u64(INT32).unwrap(), -123456i32 as u64);
     /// ```
     pub fn to_u64(&self, st: ScalarType) -> Result<u64> {
         let v = self.access_bytes(|bytes| vec_from_bytes(bytes, st.clone()))?;
@@ -567,7 +567,7 @@ impl Value {
     /// # use ciphercore_base::data_values::Value;
     /// # use ciphercore_base::data_types::INT32;
     /// let v = Value::from_scalar(-123456, INT32).unwrap();
-    /// assert_eq!(v.to_i64(INT32).unwrap(), -123456i32 as u32 as i64);
+    /// assert_eq!(v.to_i64(INT32).unwrap(), -123456i32 as i64);
     /// ```
     pub fn to_i64(&self, st: ScalarType) -> Result<i64> {
         Ok(self.to_u64(st)? as i64)
@@ -785,7 +785,7 @@ impl Value {
     /// # use ciphercore_base::data_types::{array_type, INT32};
     /// let v = Value::from_flattened_array(&[-123, 123], INT32).unwrap();
     /// let a = v.to_flattened_array_u64(array_type(vec![2], INT32)).unwrap();
-    /// assert_eq!(a, vec![-123i32 as u32 as u64, 123i32 as u32 as u64]);
+    /// assert_eq!(a, vec![-123i32 as u64, 123i32 as u64]);
     /// ```
     pub fn to_flattened_array_u64(&self, t: Type) -> Result<Vec<u64>> {
         if !t.is_array() {
@@ -826,7 +826,7 @@ impl Value {
     /// # use ciphercore_base::data_types::{array_type, INT32};
     /// let v = Value::from_flattened_array(&[-123, 123], INT32).unwrap();
     /// let a = v.to_flattened_array_i64(array_type(vec![2], INT32)).unwrap();
-    /// assert_eq!(a, vec![-123i32 as u32 as i64, 123i32 as u32 as i64]);
+    /// assert_eq!(a, vec![-123, 123]);
     /// ```
     pub fn to_flattened_array_i64(&self, t: Type) -> Result<Vec<i64>> {
         Ok(self
@@ -1051,6 +1051,53 @@ impl Value {
         }
     }
 
+    /// Generates a value of a given type with all-one bytes.
+    ///
+    /// # Arguments
+    ///
+    /// `t` - the type of a new value
+    ///
+    /// # Returns
+    ///
+    /// "One" value of type `t`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::data_values::Value;
+    /// # use ciphercore_base::data_types::{array_type, INT32};
+    /// # use ciphercore_base::data_values::ToNdarray;
+    /// # use ndarray::array;
+    /// let v = Value::one_of_type(array_type(vec![2, 2], INT32)).unwrap();
+    /// let a = ToNdarray::<u8>::to_ndarray(&v,array_type(vec![2, 2], INT32) ).unwrap();
+    /// assert_eq!(a, array![[1, 1], [1, 1]].into_dyn());
+    /// ```
+    pub fn one_of_type(t: Type) -> Result<Value> {
+        match t {
+            Type::Scalar(st) => Ok(Value::from_bytes(vec_to_bytes(&[1], st)?)),
+            Type::Array(shape, st) => {
+                let n: u64 = shape.iter().product();
+                Ok(Value::from_bytes(vec_to_bytes(&vec![1; n as usize], st)?))
+            }
+            Type::Vector(len, t1) => Ok(Value::from_vector(vec![
+                Value::one_of_type((*t1).clone())?;
+                len as usize
+            ])),
+            Type::Tuple(element_types) => Ok(Value::from_vector(
+                element_types
+                    .iter()
+                    .map(|t| Value::one_of_type((**t).clone()))
+                    .collect::<Result<_>>()?,
+            )),
+            Type::NamedTuple(element_types) => Ok(Value::from_vector(
+                element_types
+                    .iter()
+                    .map(|(_, t)| Value::one_of_type((**t).clone()))
+                    .collect::<Result<_>>()?,
+            )),
+        }
+    }
+
     fn from_serializable_value(value: SerializableValue) -> Result<Value> {
         value.access(
             |bytes| Ok(Value::from_bytes(bytes.to_vec())),
@@ -1270,7 +1317,7 @@ impl ToNdarray<i32> for Value {
 /// let a = array![[-123, 123], [-456, 456]].into_dyn();
 /// let v = Value::from_ndarray(a, INT32).unwrap();
 /// let a = ToNdarray::<u64>::to_ndarray(&v,array_type(vec![2, 2], INT32)).unwrap();
-/// assert_eq!(a, array![[-123i32 as u32 as u64, 123i32 as u32 as u64], [-456i32 as u32 as u64, 456i32 as u32 as u64]].into_dyn());
+/// assert_eq!(a, array![[-123i32 as u64, 123i32 as u64], [-456i32 as u64, 456i32 as u64]].into_dyn());
 /// ```
 impl ToNdarray<u64> for Value {
     fn to_ndarray(&self, t: Type) -> Result<ndarray::ArrayD<u64>> {
@@ -1347,7 +1394,7 @@ impl ToNdarray<bool> for Value {
 /// let a = array![[-123, 123], [-456, 456]].into_dyn();
 /// let v = Value::from_ndarray(a, INT32).unwrap();
 /// let a = ToNdarray::<i64>::to_ndarray(&v,array_type(vec![2, 2], INT32)).unwrap();
-/// assert_eq!(a, array![[-123i32 as u32 as i64, 123i32 as u32 as i64], [-456i32 as u32 as i64, 456i32 as u32 as i64]].into_dyn());
+/// assert_eq!(a, array![[-123i32 as i64, 123i32 as i64], [-456i32 as i64, 456i32 as i64]].into_dyn());
 /// ```
 impl ToNdarray<i64> for Value {
     fn to_ndarray(&self, t: Type) -> Result<ndarray::ArrayD<i64>> {
@@ -1736,6 +1783,37 @@ mod tests {
                 .unwrap());
         }
     }
+
+    #[test]
+    fn test_one_value_of_type() -> Result<()> {
+        let types = vec![
+            scalar_type(BIT),
+            scalar_type(INT32),
+            scalar_type(UINT64),
+            array_type(vec![2, 3], BIT),
+            array_type(vec![1, 7], INT32),
+            array_type(vec![10, 10], UINT64),
+            tuple_type(vec![]),
+            tuple_type(vec![scalar_type(BIT), scalar_type(BIT)]),
+            tuple_type(vec![scalar_type(INT32), scalar_type(BIT)]),
+            tuple_type(vec![tuple_type(vec![]), array_type(vec![5, 5], INT32)]),
+            vector_type(10, tuple_type(vec![])),
+            vector_type(
+                10,
+                tuple_type(vec![vector_type(5, scalar_type(INT32)), scalar_type(BIT)]),
+            ),
+            named_tuple_type(vec![
+                ("field 1".to_string(), scalar_type(BIT)),
+                ("field 2".to_string(), scalar_type(INT32)),
+            ]),
+        ];
+        for t in types {
+            let v = Value::one_of_type(t.clone())?;
+            assert!(v.check_type(t.clone())?, "\nvalue: {v:?}\ntype: {t:?}");
+        }
+        Ok(())
+    }
+
     #[test]
     fn test_get_types_vector() {
         let t = vector_type(100, scalar_type(UINT16));
@@ -1799,8 +1877,8 @@ mod tests {
             assert_eq!(v.to_i16(INT32)?, (-123456i32) as i16);
             assert_eq!(v.to_u32(INT32)?, (-123456i32) as u32);
             assert_eq!(v.to_i32(INT32)?, (-123456i32) as i32);
-            assert_eq!(v.to_u64(INT32)?, 4294843840u64);
-            assert_eq!(v.to_i64(INT32)?, 4294843840i64);
+            assert_eq!(v.to_u64(INT32)?, (-123456i32) as u64);
+            assert_eq!(v.to_i64(INT32)?, (-123456i32) as i64);
 
             assert_eq!(Value::from_scalar(156, UINT8)?.to_bit()?, false);
             assert_eq!(Value::from_scalar(157, UINT8)?.to_bit()?, true);
@@ -1839,11 +1917,11 @@ mod tests {
             );
             assert_eq!(
                 v.to_flattened_array_u64(array_type(vec![1], INT32))?,
-                &[4294843840u64]
+                &[(-123456i32) as u64]
             );
             assert_eq!(
                 v.to_flattened_array_i64(array_type(vec![1], INT32))?,
-                &[4294843840i64]
+                &[(-123456i32) as i64]
             );
             Ok(())
         }()
@@ -1899,12 +1977,12 @@ mod tests {
             {
                 let a = ToNdarray::<u64>::to_ndarray(&v, array_type(vec![1], INT32))?;
                 assert_eq!(a.shape(), &[1]);
-                assert_eq!(a[[0]], 4294843840u64);
+                assert_eq!(a[[0]], -123456i32 as u64);
             }
             {
                 let a = ToNdarray::<i64>::to_ndarray(&v, array_type(vec![1], INT32))?;
                 assert_eq!(a.shape(), &[1]);
-                assert_eq!(a[[0]], 4294843840i64);
+                assert_eq!(a[[0]], -123456i32 as i64);
             }
             Ok(())
         }()

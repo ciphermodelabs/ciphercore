@@ -52,7 +52,7 @@ fn get_graphviz_node_def(node: Node) -> Result<String> {
     let mut type_str = String::from("");
 
     let node_operation = node.get_operation();
-    if let Operation::Input(_) = node_operation {
+    if node_operation.is_input() {
         is_input_node = true;
     }
     if node == node.get_graph().get_output_node()? {

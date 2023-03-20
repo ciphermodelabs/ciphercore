@@ -3,7 +3,7 @@ use crate::custom_ops::CustomOperationBody;
 use crate::data_types::{Type, BIT, INT64};
 use crate::errors::Result;
 use crate::graphs::{Context, Graph, Node, SliceElement};
-use crate::ops::utils::{constant_scalar, reduce_mul, unsqueeze};
+use crate::ops::utils::{ones_like, reduce_mul, unsqueeze};
 use crate::typed_value::TypedValue;
 use crate::typed_value_operations::TypedValueArrayOperations;
 
@@ -128,7 +128,7 @@ pub fn is_multiplication_safe_from_overflow(x: Node, y: Node) -> Result<Node> {
     let xy_bits = xy_bits.multiply(mask)?;
     // Now, all that remains is to check that `xy_bits` is zero.
     // This is surprisingly non-trivial, we need to reduce it across all dimensions.
-    let one = constant_scalar(&g, 1, BIT)?;
+    let one = ones_like(xy_bits.clone())?;
     let not_xy_bits = xy_bits.add(one)?;
     let mut reduction_result = not_xy_bits;
     while reduction_result.get_type()?.is_array() {

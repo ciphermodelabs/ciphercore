@@ -1,7 +1,6 @@
 //! Multiplexer (Mux) operation that takes three inputs a, b, c and returns b if a is 1 or c if a is 0.
 use crate::custom_ops::CustomOperationBody;
 use crate::data_types::{scalar_type, Type, BIT};
-use crate::data_values::Value;
 use crate::errors::Result;
 use crate::graphs::{Context, Graph};
 
@@ -74,9 +73,7 @@ impl CustomOperationBody for Mux {
                 .set_as_output()?;
         } else {
             let i_choice0 = i_choice0.mixed_multiply(i_flag.clone())?;
-            let i_choice1 = i_choice1.mixed_multiply(
-                i_flag.add(g.constant(scalar_type(BIT), Value::from_scalar(1, BIT)?)?)?,
-            )?;
+            let i_choice1 = i_choice1.mixed_multiply(i_flag.add(g.ones(scalar_type(BIT))?)?)?;
             i_choice0.add(i_choice1)?.set_as_output()?;
         }
         g.finalize()?;

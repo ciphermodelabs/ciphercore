@@ -1,5 +1,5 @@
 use crate::errors::Result;
-use crate::graphs::{copy_node_name, Graph, Node, Operation};
+use crate::graphs::{copy_node_name, Graph, Node};
 use std::collections::{HashMap, HashSet};
 
 /// This optimization removes the nodes from which the output node is not reachable.
@@ -19,7 +19,7 @@ pub(super) fn optimize_graph_dangling_nodes(graph: Graph, out_graph: Graph) -> R
     }
     let mut node_mapping = HashMap::<Node, Node>::new();
     for node in graph.get_nodes() {
-        if !matches!(node.get_operation(), Operation::Input(_)) && !useful_nodes.contains(&node) {
+        if !node.get_operation().is_input() && !useful_nodes.contains(&node) {
             continue;
         }
         let mut deps = vec![];
@@ -55,9 +55,9 @@ mod tests {
     use super::*;
     use crate::data_types::{scalar_type, UINT64};
     use crate::data_values::Value;
-    use crate::graphs::contexts_deep_equal;
     use crate::graphs::create_context;
     use crate::graphs::util::simple_context;
+    use crate::graphs::{contexts_deep_equal, Operation};
 
     #[test]
     fn test_no_dangling_nodes() {

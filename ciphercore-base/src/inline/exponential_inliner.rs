@@ -256,7 +256,7 @@ fn extract_state_from_mapping(
         let g = mapping.get_graph();
         let out0 = mapping.tuple_get(0)?;
         let out1 = mapping.tuple_get(1)?;
-        let one = constant_scalar(&g, 1, BIT)?;
+        let one = g.ones(scalar_type(BIT))?;
         let not_initial_state = initial_state.add(one)?;
         out0.multiply(not_initial_state)?
             .add(out1.multiply(initial_state)?)

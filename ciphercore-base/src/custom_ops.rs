@@ -2,7 +2,6 @@
 //! A custom operation can be thought of as a polymorphic function, i.e., where the number of inputs and their types can vary.
 //! Two basic examples of custom operations are provided: [Not] and [Or].
 use crate::data_types::{scalar_type, Type, BIT};
-use crate::data_values::Value;
 use crate::errors::Result;
 use crate::graphs::{copy_node_name, create_context, Context, Graph, Node, Operation};
 
@@ -288,7 +287,7 @@ impl CustomOperationBody for Not {
         }
         let g = context.create_graph()?;
         g.input(arguments_types[0].clone())?
-            .add(g.constant(scalar_type(BIT), Value::from_scalar(1, BIT)?)?)?
+            .add(g.ones(scalar_type(BIT))?)?
             .set_as_output()?;
         g.finalize()?;
         Ok(g)
@@ -1057,7 +1056,7 @@ mod tests {
             let expected_c = create_context()?;
             let not_g = expected_c.create_graph()?;
             let i = not_g.input(array_type(vec![5], BIT))?;
-            let c = not_g.constant(scalar_type(BIT), Value::from_bytes(vec![1]))?;
+            let c = not_g.ones(scalar_type(BIT))?;
             let o = not_g.add(i, c)?;
             not_g.set_output_node(o)?;
             not_g.set_name("__Not::<b[5]>")?;
@@ -1085,14 +1084,14 @@ mod tests {
             let expected_c = create_context()?;
             let not_g_2 = expected_c.create_graph()?;
             let i = not_g_2.input(array_type(vec![3, 5], BIT))?;
-            let c = not_g_2.constant(scalar_type(BIT), Value::from_bytes(vec![1]))?;
+            let c = not_g_2.ones(scalar_type(BIT))?;
             let o = not_g_2.add(i, c)?;
             not_g_2.set_output_node(o)?;
             not_g_2.set_name("__Not::<b[3, 5]>")?;
             not_g_2.finalize()?;
             let not_g = expected_c.create_graph()?;
             let i = not_g.input(array_type(vec![5], BIT))?;
-            let c = not_g.constant(scalar_type(BIT), Value::from_bytes(vec![1]))?;
+            let c = not_g.ones(scalar_type(BIT))?;
             let o = not_g.add(i, c)?;
             not_g.set_output_node(o)?;
             not_g.set_name("__Not::<b[5]>")?;

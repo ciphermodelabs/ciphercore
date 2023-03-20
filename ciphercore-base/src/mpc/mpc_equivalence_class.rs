@@ -241,23 +241,26 @@ pub(super) fn generate_equivalence_class(
                     (*input_class.get_class_vector()[field_id as usize]).clone()
                 }
 
-                Operation::NamedTupleGet(ref field_name) => {
-                    let tuple_type = dependencies[0].get_type()?;
-                    let mut field_id: Option<u64> = None;
-                    if let Type::NamedTuple(ref v) = tuple_type {
-                        for (id, (current_field_name, _)) in v.iter().enumerate() {
-                            if current_field_name.eq(field_name) {
-                                field_id = Some(id as u64);
-                                break;
-                            }
-                        }
-                    }
-                    let field_id_raw = field_id.unwrap();
-                    let input_class = dependencies_class[0].clone();
-                    if !input_class.is_vector() {
-                        panic!("NamedTupleGet input class should be Vector")
-                    }
-                    (*input_class.get_class_vector()[field_id_raw as usize]).clone()
+                Operation::NamedTupleGet(ref field_name) => extract_named_tuple_field_class(
+                    dependencies[0].get_type()?,
+                    field_name,
+                    dependencies_class[0].clone(),
+                )?,
+
+                Operation::Sort(ref key) => {
+                    let class = dependencies_class[0].clone();
+                    let key_column_class = extract_named_tuple_field_class(
+                        dependencies[0].get_type()?,
+                        key,
+                        class.clone(),
+                    )?;
+                    let classes = class
+                        .get_class_vector()
+                        .into_iter()
+                        .map(|x| combine_class(key_column_class.clone(), (*x).clone()))
+                        .collect::<Result<Vec<EquivalenceClasses>>>()?;
+
+                    vector_class(classes)
                 }
 
                 Operation::Random(t) => recursive_class_filler(
@@ -430,6 +433,27 @@ pub(super) fn generate_equivalence_class(
         }
     }
     Ok(equivalence_classes)
+}
+
+fn extract_named_tuple_field_class(
+    t: Type,
+    key: &String,
+    class: EquivalenceClasses,
+) -> Result<EquivalenceClasses> {
+    let mut field_id: Option<u64> = None;
+    if let Type::NamedTuple(ref v) = t {
+        for (id, (current_field_name, _)) in v.iter().enumerate() {
+            if current_field_name.eq(key) {
+                field_id = Some(id as u64);
+                break;
+            }
+        }
+    }
+    let field_id_raw = field_id.unwrap();
+    if !class.is_vector() {
+        panic!("NamedTupleGet input class should be Vector")
+    }
+    Ok((*class.get_class_vector()[field_id_raw as usize]).clone())
 }
 
 fn get_input_class(t: Type, input_party: &IOStatus) -> Result<EquivalenceClasses> {

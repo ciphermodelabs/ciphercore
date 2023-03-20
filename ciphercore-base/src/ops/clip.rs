@@ -1,7 +1,6 @@
 //! Clip function that returns a given value if it is inside of the interval [0,2<sup>k</sup>] and clips values outside this interval to its edges.
 use crate::custom_ops::{CustomOperation, CustomOperationBody, Or};
-use crate::data_types::{array_type, get_size_in_bits, scalar_type, vector_type, Type, BIT};
-use crate::data_values::Value;
+use crate::data_types::{array_type, scalar_type, vector_type, Type, BIT};
 use crate::errors::Result;
 use crate::graphs::{Context, Graph, GraphAnnotation, SliceElement};
 use crate::ops::multiplexer::Mux;
@@ -86,12 +85,7 @@ impl CustomOperationBody for Clip2K {
         let input_bits = pull_out_bits(input)?;
         let is_negative = input_bits.get(vec![num_bits - 1])?;
         let zero_bit = zeros(&g, bit_type.clone())?;
-        let all_ones = Value::from_bytes(vec![
-            255u8;
-            ((get_size_in_bits(bit_type.clone())? + 7) / 8)
-                as usize
-        ]);
-        let one_bit = g.constant(bit_type.clone(), all_ones)?;
+        let one_bit = g.ones(bit_type.clone())?;
         let top_bits = input_bits
             .get_slice(vec![SliceElement::SubArray(
                 Some(self.k as i64),
@@ -135,6 +129,7 @@ mod tests {
 
     use crate::custom_ops::{run_instantiation_pass, CustomOperation};
     use crate::data_types::{array_type, tuple_type, INT32, INT64};
+    use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
     use crate::graphs::create_context;
     use crate::graphs::util::simple_context;

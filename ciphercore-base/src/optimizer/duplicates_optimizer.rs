@@ -13,13 +13,14 @@ struct NodeKey {
 
 impl NodeKey {
     pub fn new(node: Node, dep_ids: Vec<u64>) -> Result<Option<Self>> {
-        if node.get_operation().is_prf_operation() {
-            // Don't try to de-duplicate PRF operations.
+        let op = node.get_operation();
+        if op.is_prf_operation() || op.is_randomizing()? || op.is_input() {
+            // Don't try to de-duplicate PRF, randomizing and input operations.
             return Ok(None);
         }
-        match node.get_operation() {
-            Operation::Constant(_, _) | Operation::Input(_) | Operation::Random(_) => {
-                // Don't try to de-duplicate these operations.
+        match op {
+            Operation::Constant(_, _) => {
+                // Don't try to de-duplicate constant.
                 Ok(None)
             }
             Operation::Custom(_) => Err(runtime_error!(
@@ -130,7 +131,12 @@ mod tests {
                 let i1 = g.input(scalar_type(UINT64))?;
                 let i2 = g.input(scalar_type(UINT64))?;
                 let n = i1.add(i2)?;
-                n.add(g.constant(scalar_type(UINT64), Value::from_scalar(1, UINT64)?)?)
+                let r1 = g.random(scalar_type(UINT64))?;
+                let r2 = g.random_permutation(5)?;
+                let r3 = r2.cuckoo_to_permutation()?;
+                let r4 = r2.decompose_switching_map(5)?;
+                let o = n.add(g.constant(scalar_type(UINT64), Value::from_scalar(1, UINT64)?)?)?;
+                g.create_tuple(vec![o, r1, r3, r4])
             })?;
 
             let new_c = create_context()?;

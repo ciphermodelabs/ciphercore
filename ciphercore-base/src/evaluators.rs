@@ -63,7 +63,7 @@ pub trait Evaluator {
         let nodes = graph.get_nodes();
 
         for node in nodes.iter() {
-            if let Operation::Input(_) = node.get_operation() {
+            if node.get_operation().is_input() {
                 num_input_nodes += 1;
             }
         }

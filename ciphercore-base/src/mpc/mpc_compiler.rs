@@ -20,6 +20,7 @@ use std::collections::HashSet;
 
 use super::mpc_arithmetic::GemmMPC;
 use super::mpc_psi::JoinMPC;
+use super::mpc_radix_sort::RadixSortMPC;
 
 // We implement the ABY3 protocol, which has 3 parties involved
 pub const PARTIES: usize = 3;
@@ -252,12 +253,14 @@ fn propagate_private_annotations(
             | Operation::GetSlice(_)
             | Operation::Reshape(_)
             | Operation::Sum(_)
+            | Operation::CumSum(_)
             | Operation::Get(_)
             | Operation::CreateTuple
             | Operation::CreateNamedTuple(_)
             | Operation::CreateVector(_)
             | Operation::Stack(_)
             | Operation::ApplyPermutation(_)
+            | Operation::Sort(_)
             | Operation::Concatenate(_)
             | Operation::Zip
             | Operation::Repeat(_) => {
@@ -286,6 +289,9 @@ fn propagate_private_annotations(
                     use_prf_for_mul = true;
                     use_prf_for_b2a = true;
                 }
+                if matches!(op, Operation::Sort(_)) && private_nodes.contains(&dependencies[0]) {
+                    use_prf_for_mul = true;
+                }
                 if matches!(op, Operation::ApplyPermutation(_))
                     && private_nodes.contains(&dependencies[1])
                 {
@@ -310,7 +316,7 @@ fn propagate_private_annotations(
                     }
                 }
             }
-            Operation::Constant(_, _) => {
+            Operation::Constant(_, _) | Operation::Zeros(_) | Operation::Ones(_) => {
                 // Constants are always public
             }
             Operation::VectorGet => {
@@ -398,6 +404,7 @@ pub(super) fn compile_to_mpc_graph(
     // - every private node has at least one private input node;
     // all the public inputs are promoted to private (except for VectorGet);
     // - a private VectorGet node has a private input vector node and a public index node.
+    // TODO: extract it to the method.
     let apply_op = |node_to_be_private: Node,
                     op: Operation,
                     node_dependencies: Vec<Node>,
@@ -583,6 +590,26 @@ pub(super) fn compile_to_mpc_graph(
                     out_graph.custom_op(custom_op, vec![new_input, new_permutation])?
                 }
             }
+            Operation::Sort(key) => {
+                let dependencies = node.get_node_dependencies();
+                let mut mapped_dependencies = dependencies
+                    .into_iter()
+                    .map(|d| out_mapping.get_node(d))
+                    .collect::<Vec<Node>>();
+                let custom_op = CustomOperation::new(RadixSortMPC::new(key));
+                if private_nodes.contains(&node) {
+                    // If one input set is private, MPC protocols requires invoking PRFs.
+                    // Thus, PRF keys must be provided.
+                    let keys = match prf_keys_mul {
+                        Some(ref k) => k.clone(),
+                        None => {
+                            return Err(runtime_error!("Propagation of annotations failed"));
+                        }
+                    };
+                    mapped_dependencies.push(keys);
+                }
+                out_graph.custom_op(custom_op, mapped_dependencies)?
+            }
             Operation::Truncate(scale) => {
                 let dependencies = node.get_node_dependencies();
                 let input = dependencies[0].clone();
@@ -667,6 +694,8 @@ pub(super) fn compile_to_mpc_graph(
                 }
             }
             Operation::Constant(t, v) => out_graph.constant(t, v)?,
+            Operation::Zeros(t) => out_graph.zeros(t)?,
+            Operation::Ones(t) => out_graph.ones(t)?,
             Operation::PermuteAxes(_)
             | Operation::ArrayToVector
             | Operation::VectorToArray
@@ -675,6 +704,7 @@ pub(super) fn compile_to_mpc_graph(
             | Operation::GetSlice(_)
             | Operation::Reshape(_)
             | Operation::Sum(_)
+            | Operation::CumSum(_)
             | Operation::Get(_)
             | Operation::Repeat(_) => {
                 let dependencies = node.get_node_dependencies();
@@ -1206,7 +1236,7 @@ where
     print_stats(context4.get_main_graph()?)?;
     let mut number_of_inputs = 0;
     for node in context4.get_main_graph()?.get_nodes() {
-        if let Operation::Input(_) = node.get_operation() {
+        if node.get_operation().is_input() {
             number_of_inputs += 1;
         }
     }
@@ -1534,8 +1564,7 @@ mod tests {
             let o = if op != Operation::VectorGet {
                 g.add_node(input_nodes, vec![], op)?
             } else {
-                let index = g.constant(scalar_type(UINT64), Value::from_scalar(0, UINT64)?)?;
-                input_nodes[0].vector_get(index)?
+                input_nodes[0].vector_get(g.zeros(scalar_type(UINT64))?)?
             };
             o.set_name("Plaintext operation")?;
             Ok(o)
@@ -1696,6 +1725,14 @@ mod tests {
             Operation::Sum(vec![0, 1]),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn test_cum_sum() -> Result<()> {
+        test_helper_one_input(array_type(vec![10, 5, 12], INT32), Operation::CumSum(0))?;
+        test_helper_one_input(array_type(vec![10, 5, 12], INT32), Operation::CumSum(1))?;
+        test_helper_one_input(array_type(vec![10, 5, 12], INT32), Operation::CumSum(2))?;
+        Ok(())
     }
 
     #[test]

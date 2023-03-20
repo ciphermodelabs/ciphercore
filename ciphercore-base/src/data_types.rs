@@ -813,6 +813,40 @@ impl Type {
     }
 }
 
+impl Type {
+    /// Returns a vector of tuples created from the named tuple.
+    ///
+    /// This function reverse the result of `named_tuple_type()`.
+    ///
+    /// # Returns
+    ///
+    /// Vector of tuples (type name, type)
+    ///
+    /// # Example
+    /// ```
+    /// # use ciphercore_base::data_types::{UINT8, UINT32, Type, array_type, vector_type, named_tuple_type};
+    /// let st0 = Type::Scalar(UINT8);
+    /// let st1 = Type::Scalar(UINT32);
+    /// let vec_t = vec![("age".to_owned(), st0), ("zip".to_owned(), st1)];
+    /// let t = named_tuple_type(vec_t.clone());
+    /// assert_eq!(vec_t, t.get_named_types().unwrap());
+    /// ```
+    pub fn get_named_types(&self) -> Result<Vec<(String, Type)>> {
+        // TODO: pyo3 support
+        if let Type::NamedTuple(v) = self {
+            let mut res = vec![];
+            for (name, t) in v {
+                res.push((name.clone(), (*t.to_owned()).clone()));
+            }
+            Ok(res)
+        } else {
+            Err(runtime_error!(
+                "Can't get named types. Input type must be NamedTuple."
+            ))
+        }
+    }
+}
+
 // column header -> column type
 #[doc(hidden)]
 pub type HeadersTypes = Vec<(String, Arc<Type>)>;
