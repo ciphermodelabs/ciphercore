@@ -2037,7 +2037,6 @@ impl CustomOperationBody for SwitchingMPC {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::time::Instant;
 
     use ndarray::array;
 
