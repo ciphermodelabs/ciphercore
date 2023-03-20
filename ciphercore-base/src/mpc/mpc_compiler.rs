@@ -404,6 +404,7 @@ pub(super) fn compile_to_mpc_graph(
     // - every private node has at least one private input node;
     // all the public inputs are promoted to private (except for VectorGet);
     // - a private VectorGet node has a private input vector node and a public index node.
+    // TODO: extract it to the method.
     let apply_op = |node_to_be_private: Node,
                     op: Operation,
                     node_dependencies: Vec<Node>,

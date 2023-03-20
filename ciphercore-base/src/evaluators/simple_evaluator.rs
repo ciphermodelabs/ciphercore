@@ -3732,7 +3732,6 @@ mod tests {
         .is_err());
         Ok(())
     }
-
     fn permutation_from_prf_helper(n: u64) -> Result<()> {
         let c = simple_context(|g| {
             let k = g.random(array_type(vec![128], BIT))?;

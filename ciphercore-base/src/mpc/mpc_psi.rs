@@ -1,16 +1,12 @@
 use std::collections::HashMap;
 
-use crate::custom_ops::{
-    run_instantiation_pass, ContextMappings, CustomOperation, CustomOperationBody,
-};
+use crate::custom_ops::{CustomOperation, CustomOperationBody};
 use crate::data_types::{
     array_type, get_size_in_bits, get_types_vector, named_tuple_type, tuple_type, Type, BIT, UINT64,
 };
 use crate::errors::Result;
 use crate::graphs::util::simple_context;
 use crate::graphs::{Context, Graph, JoinType, Node, NodeAnnotation, SliceElement};
-use crate::inline::inline_common::DepthOptimizationLevel;
-use crate::inline::inline_ops::{inline_operations, InlineConfig, InlineMode};
 use crate::ops::comparisons::Equal;
 use crate::ops::utils::{extend_with_zeros, zeros, zeros_like};
 use crate::type_inference::NULL_HEADER;
@@ -20,26 +16,13 @@ use serde::{Deserialize, Serialize};
 use super::low_mc::{LowMC, LowMCBlockSize, LOW_MC_KEY_SIZE};
 use super::mpc_arithmetic::{AddMPC, GemmMPC, MixedMultiplyMPC, MultiplyMPC, SubtractMPC};
 use super::mpc_compiler::{
-    check_private_tuple, compile_to_mpc_graph, get_node_shares, get_zero_shares, IOStatus,
-    KEY_LENGTH, PARTIES,
+    check_private_tuple, get_node_shares, get_zero_shares, IOStatus, KEY_LENGTH, PARTIES,
 };
-use super::utils::select_node;
+use super::utils::{convert_main_graph_to_mpc, get_column, select_node};
 
 type ColumnHeaderTypes = Vec<(String, Type)>;
 
 const PRF_OUTPUT_SIZE: u64 = 80;
-
-fn get_named_types(t: Type) -> Vec<(String, Type)> {
-    if let Type::NamedTuple(v) = t {
-        let mut res = vec![];
-        for (name, t) in v {
-            res.push((name, (*t).clone()));
-        }
-        res
-    } else {
-        panic!("Can't get named types. Input type must be NamedTuple.")
-    }
-}
 
 fn is_type_shared(t: &Type) -> bool {
     t.is_tuple()
@@ -51,23 +34,6 @@ fn generate_shared_random_array(t: Type, prf_keys: &[Node]) -> Result<Node> {
         shares.push(key.prf(0, t.clone())?);
     }
     prf_keys[0].get_graph().create_tuple(shares)
-}
-
-fn get_column(named_tuple_shares: &[Node], header: String) -> Result<Node> {
-    if named_tuple_shares.len() == PARTIES {
-        let mut shares = vec![];
-        for share in named_tuple_shares {
-            shares.push(share.named_tuple_get(header.clone())?);
-        }
-        named_tuple_shares[0].get_graph().create_tuple(shares)
-    } else if named_tuple_shares.len() == 1 {
-        named_tuple_shares[0].named_tuple_get(header)
-    } else {
-        Err(runtime_error!(
-            "Wrong number of shares {}",
-            named_tuple_shares.len()
-        ))
-    }
 }
 
 fn get_column_type(column: &Node) -> Result<Type> {
@@ -200,7 +166,7 @@ fn reveal_array(a: Node, party_id: u64) -> Result<Node> {
 }
 
 fn sum_named_columns(a: Node, b: Node) -> Result<Node> {
-    let header_types = get_named_types(a.get_type()?);
+    let header_types = a.get_type()?.get_named_types()?;
     let mut result_columns = vec![];
     for (header, _) in header_types {
         let c = a
@@ -215,7 +181,7 @@ fn random_pad_columns(columns: Node, num_extra_rows: u64, prf_keys: &[Node]) -> 
     let graph = columns.get_graph();
     let header_types = {
         let tuple_types_vec = get_types_vector(columns.get_type()?)?;
-        get_named_types((*tuple_types_vec[0]).clone())
+        tuple_types_vec[0].get_named_types()?
     };
     // Null header should contain zeros to avoid false positives while comparing the rows
     let null_header_shares = get_zero_shares(
@@ -286,33 +252,6 @@ fn zero_pad_column(
             g.concatenate(vec![column, zero_rows], 0)
         }
     }
-}
-
-fn convert_main_graph_to_mpc(
-    in_context: Context,
-    out_context: Context,
-    is_input_private: Vec<bool>,
-) -> Result<Graph> {
-    let instantiated_context = run_instantiation_pass(in_context)?.get_context();
-    let inlined_context = inline_operations(
-        instantiated_context,
-        InlineConfig {
-            default_mode: InlineMode::DepthOptimized(DepthOptimizationLevel::Default),
-            ..Default::default()
-        },
-    )?;
-
-    let mut context_map = ContextMappings::default();
-
-    // Compile to MPC
-    let main_g_inlined = inlined_context.get_main_graph()?;
-    let main_mpc_g = compile_to_mpc_graph(
-        main_g_inlined,
-        is_input_private,
-        out_context,
-        &mut context_map,
-    )?;
-    Ok(main_mpc_g)
 }
 
 fn get_equality_graph(
@@ -715,9 +654,9 @@ fn check_and_extract_dataset_parameters(
         let t_vec = get_types_vector(t)?;
 
         check_private_tuple(t_vec.clone())?;
-        get_named_types((*t_vec[0]).clone())
+        t_vec[0].get_named_types()?
     } else {
-        get_named_types(t)
+        t.get_named_types()?
     };
     let num_entries = column_header_types[0].1.get_shape()[0];
 
@@ -1474,7 +1413,7 @@ fn check_and_extract_map_input_parameters(
     if !share_t.is_named_tuple() {
         return Err(runtime_error!("Each share must be a named tuple"));
     }
-    let column_header_types = get_named_types(share_t);
+    let column_header_types = share_t.get_named_types()?;
     let mut num_entries = 0;
     for v in &column_header_types {
         let column_type = v.1.clone();
@@ -2111,6 +2050,7 @@ mod tests {
 
     use crate::graphs::util::simple_context;
     use crate::graphs::Operation;
+    use crate::inline::inline_common::DepthOptimizationLevel;
     use crate::inline::inline_ops::{inline_operations, InlineConfig, InlineMode};
     use crate::mpc::mpc_compiler::{generate_prf_key_triple, prepare_for_mpc_evaluation, IOStatus};
     use crate::mpc::mpc_equivalence_class::{
@@ -2977,7 +2917,7 @@ mod tests {
             let result =
                 evaluate_simple_evaluator(inlined_g.clone(), input_values.clone(), prng_seed)?;
 
-            let result_type_vec = get_named_types(inlined_g.get_output_node()?.get_type()?);
+            let result_type_vec = inlined_g.get_output_node()?.get_type()?.get_named_types()?;
 
             let result_columns = result.to_vector()?;
             assert_eq!(result_columns.len(), expected.len());
