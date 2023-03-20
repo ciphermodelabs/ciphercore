@@ -79,7 +79,7 @@ impl CustomOperationBody for TaylorExponent {
         };
 
         let g = context.create_graph()?;
-        let arg = g.input(t)?;
+        let arg = g.input(t.clone())?;
         // Below, we compute 2 ** (arg / ln(2)) rather than exp(arg).
         // `x` is arg * ln(2).
         let one_over_ln2_int = (((1 << self.fixed_precision_points) as f64) / 2.0_f64.ln()) as u64;
@@ -94,7 +94,7 @@ impl CustomOperationBody for TaylorExponent {
         // Note that if we're looking at the int part, we're computing the product of 2 ** (2 ** k) if k'th bit is 1.
         // Since we work with 31-bit fixed-point arithmetic, the exponent is limited from above by 31 - fixed_precision_points.
         let max_exp_bits = (31f64 - self.fixed_precision_points as f64).log2().ceil() as u64;
-        let one = constant_scalar(&g, 1, sc.clone())?;
+        let one = g.ones(t)?;
         let mut exp_integer = one.clone();
         for i in self.fixed_precision_points..self.fixed_precision_points + max_exp_bits {
             let bit = x_bits.get(vec![i])?;

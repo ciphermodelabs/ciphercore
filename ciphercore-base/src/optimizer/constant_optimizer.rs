@@ -66,7 +66,8 @@ pub(super) fn optimize_graph_constants(
                 Ok(constant_cache.get(&key).unwrap().clone())
             }
         };
-        let new_node = match node.get_operation() {
+        let op = node.get_operation();
+        let new_node = match op {
             Operation::Constant(t, val) => {
                 if !node.get_annotations()?.is_empty() {
                     return Err(runtime_error!(
@@ -77,10 +78,9 @@ pub(super) fn optimize_graph_constants(
                 constant_nodes.insert(node.clone(), value_ptr);
                 resolve_const(t, val, node.get_name()?)?
             }
-            _ => {
+            op => {
                 let mut deps = vec![];
-                let mut is_const_node = !matches!(node.get_operation(), Operation::Input(_))
-                    && !matches!(node.get_operation(), Operation::Random(_));
+                let mut is_const_node = op.is_const_optimizable()?;
                 for dep in node.get_node_dependencies() {
                     let resolved_dep = node_mapping.get(&dep);
                     match resolved_dep {
@@ -124,11 +124,23 @@ pub(super) fn optimize_graph_constants(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data_types::{scalar_type, UINT64};
+    use crate::data_types::{array_type, scalar_type, UINT64};
     use crate::evaluators::simple_evaluator::SimpleEvaluator;
-    use crate::graphs::contexts_deep_equal;
     use crate::graphs::create_context;
     use crate::graphs::util::simple_context;
+    use crate::graphs::{contexts_deep_equal, Context};
+
+    fn optimize_context(c: &Context) -> Result<Context> {
+        let mut evaluator = SimpleEvaluator::new(None)?;
+        evaluator.preprocess(c.clone())?;
+        let new_c = create_context()?;
+        let new_g = new_c.create_graph()?;
+        optimize_graph_constants(c.get_main_graph()?.clone(), new_g.clone(), &mut evaluator)?;
+        new_g.finalize()?;
+        new_g.set_as_main()?;
+        new_c.finalize()?;
+        Ok(new_c)
+    }
 
     #[test]
     fn test_no_duplicates() {
@@ -139,17 +151,7 @@ mod tests {
                 let n = i1.add(i2)?;
                 n.add(g.constant(scalar_type(UINT64), Value::from_scalar(1, UINT64)?)?)
             })?;
-
-            let mut evaluator = SimpleEvaluator::new(None)?;
-            evaluator.preprocess(c.clone())?;
-            let new_c = create_context()?;
-            let new_g = new_c.create_graph()?;
-            optimize_graph_constants(c.get_main_graph()?.clone(), new_g.clone(), &mut evaluator)?;
-            new_g.finalize()?;
-            new_g.set_as_main()?;
-            new_c.finalize()?;
-
-            assert!(contexts_deep_equal(new_c, c));
+            assert!(contexts_deep_equal(optimize_context(&c)?, c));
             Ok(())
         }()
         .unwrap();
@@ -162,21 +164,34 @@ mod tests {
                 let i1 = g.input(scalar_type(UINT64))?;
                 let i2 = g.input(scalar_type(UINT64))?;
                 let n = i1.add(i2)?;
-                let r = g.random(scalar_type(UINT64))?;
+                let r1 = g.random(scalar_type(UINT64))?;
+                let r2 = g.random_permutation(5)?;
+                let r3 = r2.cuckoo_to_permutation()?;
+                let r4 = r2.decompose_switching_map(5)?;
                 let o1 = n.add(g.constant(scalar_type(UINT64), Value::from_scalar(1, UINT64)?)?)?;
-                o1.add(r)
+                g.create_tuple(vec![o1.add(r1)?, r3, r4])
             })?;
+            assert!(contexts_deep_equal(optimize_context(&c)?, c));
+            Ok(())
+        }()
+        .unwrap();
+    }
 
-            let mut evaluator = SimpleEvaluator::new(None)?;
-            evaluator.preprocess(c.clone())?;
-            let new_c = create_context()?;
-            let new_g = new_c.create_graph()?;
-            optimize_graph_constants(c.get_main_graph()?.clone(), new_g.clone(), &mut evaluator)?;
-            new_g.finalize()?;
-            new_g.set_as_main()?;
-            new_c.finalize()?;
+    #[test]
+    fn test_zeros() {
+        || -> Result<()> {
+            let c = simple_context(|g| g.zeros(array_type(vec![1000, 1000], UINT64)))?;
+            assert!(contexts_deep_equal(optimize_context(&c)?, c));
+            Ok(())
+        }()
+        .unwrap();
+    }
 
-            assert!(contexts_deep_equal(new_c, c));
+    #[test]
+    fn test_ones() {
+        || -> Result<()> {
+            let c = simple_context(|g| g.ones(array_type(vec![1000, 1000], UINT64)))?;
+            assert!(contexts_deep_equal(optimize_context(&c)?, c));
             Ok(())
         }()
         .unwrap();
@@ -200,15 +215,7 @@ mod tests {
                 n4.add(g.constant(scalar_type(UINT64), Value::from_scalar(2, UINT64)?)?)
             })?;
 
-            let mut evaluator = SimpleEvaluator::new(None)?;
-            evaluator.preprocess(c.clone())?;
-            let new_c = create_context()?;
-            let new_g = new_c.create_graph()?;
-            optimize_graph_constants(c.get_main_graph()?.clone(), new_g.clone(), &mut evaluator)?;
-            new_g.finalize()?;
-            new_g.set_as_main()?;
-            new_c.finalize()?;
-
+            let new_c = optimize_context(&c)?;
             assert!(!contexts_deep_equal(new_c.clone(), c));
             let new_o = new_c.get_main_graph()?.get_output_node()?;
             let two1 = new_o.get_node_dependencies()[1].clone();
@@ -253,15 +260,7 @@ mod tests {
                 n1.add(const4)
             })?;
 
-            let mut evaluator = SimpleEvaluator::new(None)?;
-            evaluator.preprocess(c.clone())?;
-            let new_c = create_context()?;
-            let new_g = new_c.create_graph()?;
-            optimize_graph_constants(c.get_main_graph()?.clone(), new_g.clone(), &mut evaluator)?;
-            new_g.finalize()?;
-            new_g.set_as_main()?;
-            new_c.finalize()?;
-
+            let new_c = optimize_context(&c)?;
             assert!(!contexts_deep_equal(new_c.clone(), c));
             let new_o = new_c.get_main_graph()?.get_output_node()?;
             let four1 = new_o.get_node_dependencies()[1].clone();
@@ -294,15 +293,7 @@ mod tests {
                 n.add(const4)
             })?;
 
-            let mut evaluator = SimpleEvaluator::new(None)?;
-            evaluator.preprocess(c.clone())?;
-            let new_c = create_context()?;
-            let new_g = new_c.create_graph()?;
-            optimize_graph_constants(c.get_main_graph()?.clone(), new_g.clone(), &mut evaluator)?;
-            new_g.finalize()?;
-            new_g.set_as_main()?;
-            new_c.finalize()?;
-
+            let new_c = optimize_context(&c)?;
             assert!(!contexts_deep_equal(new_c.clone(), c));
             let new_o = new_c.get_main_graph()?.get_output_node()?;
             let four1 = new_o.get_node_dependencies()[1].clone();

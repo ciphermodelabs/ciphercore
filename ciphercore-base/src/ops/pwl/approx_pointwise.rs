@@ -142,7 +142,7 @@ where
     // Let's handle left/right cases. Left is easy - `x - r` should be negative, so we look at MSB.
     // Right is a bit more tricky. We have to check that any bit higher than `log_buckets` is set and MSB is not set.
     let is_left = msb.clone();
-    let one = g.constant(scalar_type(BIT), Value::from_scalar(1, BIT)?)?;
+    let one = g.ones(scalar_type(BIT))?;
     let is_right = any_bit_set(high_bits)?.multiply(msb.add(one.clone())?)?;
     let is_main = is_left.add(one.clone())?.multiply(is_right.add(one)?)?;
 
@@ -190,7 +190,7 @@ fn tree_retrieve(bits: Node, vals: Node) -> Result<Node> {
 /// Utilizes the fact that AND is not only associative but also commutative, making the graph more vectorized.
 fn any_bit_set(bits: Node) -> Result<Node> {
     let g = bits.get_graph();
-    let one = g.constant(scalar_type(BIT), Value::from_scalar(1, BIT)?)?;
+    let one = g.ones(scalar_type(BIT))?;
     let mut unset = bits.add(one.clone())?;
     while unset.get_type()?.get_shape()[0] > 1 {
         let n = unset.get_type()?.get_shape()[0];

@@ -1,7 +1,7 @@
 //! Long division for bitstrings of arbitrary length.
 use crate::broadcast::broadcast_shapes;
 use crate::custom_ops::{CustomOperation, CustomOperationBody, Not};
-use crate::data_types::{array_type, tuple_type, ArrayShape, Type, BIT};
+use crate::data_types::{array_type, scalar_type, tuple_type, ArrayShape, Type, BIT};
 use crate::errors::Result;
 use crate::graphs::{Context, Graph, Node, SliceElement};
 use crate::ops::multiplexer::Mux;
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::adder::{BinaryAdd, BinaryAddTransposed};
 use super::comparisons::Equal;
-use super::utils::{constant_scalar, prepend_dims, pull_out_bits_pair, put_in_bits, zeros};
+use super::utils::{prepend_dims, pull_out_bits_pair, put_in_bits};
 
 /// A structure that defines the custom operation LongDivision that computes the quotient and
 /// remainder of `dividend` / `divisor`, such that:
@@ -108,7 +108,7 @@ impl CustomOperationBody for LongDivision {
 
         // Iterate single bit computation over all dividend bits.
         let state = g.create_tuple(vec![
-            zeros(&g, types.remainder_pulled_bits_type.clone())?,
+            g.zeros(types.remainder_pulled_bits_type.clone())?,
             broadcast(
                 negative_abs_divisor_pulled_bits,
                 types.remainder_pulled_bits_type,
@@ -183,7 +183,7 @@ fn broadcast(node: Node, want_type: Type) -> Result<Node> {
     if node.get_type()? == want_type {
         Ok(node)
     } else {
-        zeros(&g, want_type)?.add(node)
+        g.zeros(want_type)?.add(node)
     }
 }
 
@@ -252,7 +252,7 @@ fn adjust_negative(
             CustomOperation::new(Equal {}),
             vec![
                 remainder.clone(),
-                zeros(&g, array_type(vec![remainder_bits], BIT))?,
+                g.zeros(array_type(vec![remainder_bits], BIT))?,
             ],
         )?,
         -1,
@@ -323,8 +323,8 @@ fn add_one(binary_num: Node) -> Result<Node> {
     let g = binary_num.get_graph();
     let binary_one = g.concatenate(
         vec![
-            unsqueeze(constant_scalar(&g, 1, BIT)?, -1)?,
-            zeros(&g, array_type(vec![bits - 1], BIT))?,
+            g.ones(array_type(vec![1], BIT))?,
+            g.zeros(array_type(vec![bits - 1], BIT))?,
         ],
         0,
     )?;
@@ -369,7 +369,7 @@ fn abs(binary_num: Node, is_signed: bool) -> Result<(Node, Node)> {
         )?;
         Ok((num_is_negative, abs))
     } else {
-        Ok((constant_scalar(&g, 0, BIT)?, binary_num))
+        Ok((g.zeros(scalar_type(BIT))?, binary_num))
     }
 }
 

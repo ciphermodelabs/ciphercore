@@ -3,12 +3,10 @@ use crate::custom_ops::CustomOperationBody;
 use crate::data_types::{Type, INT64, UINT64};
 use crate::errors::Result;
 use crate::graphs::{Context, Graph};
-use crate::ops::utils::constant;
-use crate::typed_value::TypedValue;
 
 use serde::{Deserialize, Serialize};
 
-use super::utils::{constant_scalar, inverse_initial_approximation, multiply_fixed_point, zeros};
+use super::utils::{constant_scalar, inverse_initial_approximation, multiply_fixed_point};
 
 /// A structure that defines the custom operation GoldSchmidtDivision that computes division of two numbers via [the Goldschmidt method](https://en.wikipedia.org/wiki/Division_algorithm#Goldschmidt_division).
 ///
@@ -111,8 +109,7 @@ impl CustomOperationBody for GoldschmidtDivision {
         let approximation = if has_initial_approximation {
             g.input(divisor_type)?
         } else if self.denominator_cap_2k == 0 {
-            let one = constant(&g, TypedValue::from_scalar(1, sc.clone())?)?;
-            zeros(&g, divisor_type)?.add(one)?
+            g.ones(divisor_type)?
         } else {
             g.call(g_initial_approximation, vec![divisor.clone()])?
         };

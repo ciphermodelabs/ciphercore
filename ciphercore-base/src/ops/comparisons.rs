@@ -1,9 +1,9 @@
 //! Various comparison functions for signed and unsigned integers including greater-than, less-than, greater-than-equal-to, less-than-equal-to, equal, not-equal.
 use crate::custom_ops::{CustomOperation, CustomOperationBody, Not};
-use crate::data_types::{ArrayShape, Type, BIT};
+use crate::data_types::{scalar_type, ArrayShape, Type, BIT};
 use crate::errors::Result;
 use crate::graphs::*;
-use crate::ops::utils::{constant_scalar, pull_out_bits};
+use crate::ops::utils::pull_out_bits;
 use crate::ops::utils::{expand_dims, validate_arguments_in_broadcast_bit_ops};
 use crate::typed_value::TypedValue;
 use crate::typed_value_operations::TypedValueArrayOperations;
@@ -118,7 +118,7 @@ struct ShrinkResult {
 impl ComparisonResult {
     fn from_a_b(a: Node, b: Node) -> Result<Self> {
         let graph = a.get_graph();
-        let one = constant_scalar(&graph, 1, BIT)?;
+        let one = graph.ones(scalar_type(BIT))?;
 
         let a_equal_b = a.add(b)?.add(one)?;
         Ok(Self { a_equal_b, a })
@@ -132,7 +132,7 @@ impl ComparisonResult {
     /// reasons.
     fn join(&self, rhs: &Self) -> Result<Self> {
         let graph = &self.a_equal_b.get_graph();
-        let one = constant_scalar(graph, 1, BIT)?;
+        let one = graph.ones(scalar_type(BIT))?;
 
         let a = self
             .a

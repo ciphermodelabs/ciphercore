@@ -425,14 +425,18 @@ fn join_inference(
 fn get_number_of_node_dependencies(operation: Operation) -> Option<u64> {
     match operation {
         Operation::Input(_)
+        | Operation::Zeros(_)
+        | Operation::Ones(_)
         | Operation::Random(_)
         | Operation::Constant(_, _)
         | Operation::RandomPermutation(_) => Some(0),
         Operation::Truncate(_)
         | Operation::Sum(_)
+        | Operation::CumSum(_)
         | Operation::PermuteAxes(_)
         | Operation::InversePermutation
         | Operation::CuckooToPermutation
+        | Operation::Sort(_)
         | Operation::Get(_)
         | Operation::GetSlice(_)
         | Operation::Reshape(_)
@@ -642,6 +646,14 @@ impl TypeInferenceWorker {
                 self.register_result(node, result.clone())?;
                 Ok(result)
             }
+            Operation::Zeros(t) | Operation::Ones(t) => {
+                if !t.is_valid() {
+                    return Err(runtime_error!("Invalid type: {t:?}"));
+                }
+                let result = t;
+                self.register_result(node, result.clone())?;
+                Ok(result)
+            }
             Operation::Add | Operation::Subtract | Operation::Multiply => {
                 let result = broadcast_arrays(vec![
                     node_dependencies_types[0].clone(),
@@ -704,9 +716,9 @@ impl TypeInferenceWorker {
                 let n = t.get_shape()[0];
                 let p = node_dependencies_types[1].clone();
                 if let Type::Array(shape, st) = p.clone() {
-                    if shape.len() != 1 || shape[0] != n || st != UINT64 {
+                    if shape.len() != 1 || shape[0] != n || st == BIT || st.get_signed() {
                         return Err(runtime_error!(
-                            "Permutation should be a 1D UINT64 array of shape [{n}]. Found type: {p:?}"
+                            "Permutation should be a 1D UINT* array of shape [{n}]. Found type: {p:?}"
                         ));
                     }
                 } else {
@@ -714,6 +726,60 @@ impl TypeInferenceWorker {
                         "Permutation should be a 1D array of shape [{n}]. Found type: {p:?}"
                     ));
                 }
+                self.register_result(node, t.clone())?;
+                Ok(t)
+            }
+            Operation::Sort(key) => {
+                let error = |t, n| {
+                    runtime_error!(
+                    "Sort supported only for Arrays with the same first dimension {n:?}. Found type: {t:?}"
+                )
+                };
+                if node_dependencies_types.len() != 1
+                    || !node_dependencies_types[0].is_named_tuple()
+                {
+                    return Err(runtime_error!(
+                        "Sort operation requires 1 argument of type named tuple"
+                    ));
+                }
+                let elements = match node_dependencies_types[0].clone() {
+                    Type::NamedTuple(elements) => elements,
+                    _ => {
+                        return Err(runtime_error!(
+                            "Sort operation requires 1 argument of type named tuple"
+                        ))
+                    }
+                };
+
+                let mut n = None;
+                let mut found_key = false;
+                for (name, t) in elements {
+                    if !t.is_array() {
+                        return Err(error(t, n));
+                    }
+                    if name == key {
+                        found_key = true;
+                        let shape = t.get_shape();
+                        if shape.len() != 2 || t.get_scalar_type() != BIT {
+                            return Err(runtime_error!(
+                                "The key array should be 2-dimensional BIT, found {t:?}"
+                            ));
+                        }
+                    }
+                    if n.is_none() {
+                        let shape = t.get_shape();
+                        n = Some(shape[0]);
+                    }
+                    if n != Some(t.get_shape()[0]) {
+                        return Err(error(t, n));
+                    }
+                }
+                if !found_key {
+                    return Err(runtime_error!(
+                        "Sort operation cannot find a column named {key:?}"
+                    ));
+                }
+                let t = node_dependencies_types[0].clone();
                 self.register_result(node, t.clone())?;
                 Ok(t)
             }
@@ -765,6 +831,18 @@ impl TypeInferenceWorker {
                 self.register_result(node, result.clone())?;
                 Ok(result)
             }
+            Operation::CumSum(axis) => {
+                let t = node_dependencies_types[0].clone();
+                if !t.is_array() {
+                    return Err(runtime_error!("Can't cum_sum this type: {t:?}"));
+                }
+                if axis >= t.get_shape().len() as u64 {
+                    return Err(runtime_error!("Invalid axis: {axis}"));
+                }
+                let result = t;
+                self.register_result(node, result.clone())?;
+                Ok(result)
+            }
             Operation::PermuteAxes(s) => {
                 let t = node_dependencies_types[0].clone();
                 if !t.is_array() {
@@ -799,10 +877,9 @@ impl TypeInferenceWorker {
                 if !t.is_array() {
                     return Err(runtime_error!("Input type should be an array: {t:?}"));
                 }
-                if t.get_scalar_type() != UINT64 {
-                    return Err(runtime_error!(
-                        "Input elements must be unsigned 64-bit integers: {t:?}"
-                    ));
+                let st = t.get_scalar_type();
+                if st == BIT || st.get_signed() {
+                    return Err(runtime_error!("Input elements must be UINT*: {t:?}"));
                 }
                 if t.get_shape().len() > 1 {
                     return Err(runtime_error!(
@@ -1091,6 +1168,14 @@ impl TypeInferenceWorker {
                         .map(|(x, y)| (x.clone(), y.clone()))
                         .collect(),
                 );
+                let mut ordered_fields = fields.clone();
+                ordered_fields.sort();
+                ordered_fields.dedup();
+                if ordered_fields.len() != fields.len() {
+                    return Err(runtime_error!(
+                        "Duplicate fields in named tuple: {fields:?}"
+                    ));
+                }
                 self.register_result(node, result.clone())?;
                 Ok(result)
             }
@@ -1382,11 +1467,19 @@ impl TypeInferenceWorker {
                     ));
                 }
                 let indices_t = node_dependencies_types[1].clone();
-                // TODO: support UINT32
-                if !matches!(indices_t, Type::Array(_, UINT64)) {
-                    return Err(runtime_error!(
-                        "Indices must be an array of UINT64: {indices_t:?}"
-                    ));
+                match indices_t.clone() {
+                    Type::Array(_, st) => {
+                        if st.get_signed() || st == BIT {
+                            return Err(runtime_error!(
+                                "Indices must be an array of UINT*: {indices_t:?}"
+                            ));
+                        }
+                    }
+                    _ => {
+                        return Err(runtime_error!(
+                            "Indices must be an array of UINT*: {indices_t:?}"
+                        ));
+                    }
                 }
                 let input_shape = input_t.get_shape();
                 if axis >= input_shape.len() as u64 {
@@ -1606,7 +1699,7 @@ impl TypeInferenceWorker {
 mod tests {
     use super::*;
     use crate::data_types::{
-        create_scalar_type, ArrayShape, Type, BIT, INT32, INT8, UINT32, UINT8,
+        create_scalar_type, ArrayShape, Type, BIT, INT32, INT8, UINT16, UINT32, UINT8,
     };
     use crate::data_values::Value;
     use crate::graphs::{
@@ -1624,6 +1717,7 @@ mod tests {
         let e = worker.process_node(node);
         assert!(e.is_err());
     }
+
     #[test]
     fn test_input() {
         let context = create_unchecked_context().unwrap();
@@ -1632,6 +1726,29 @@ mod tests {
         let t = scalar_type(BIT);
         let node = graph.input(t.clone()).unwrap();
         assert_eq!(worker.process_node(node).unwrap(), t.clone());
+    }
+
+    #[test]
+    fn test_zeros_and_ones() -> Result<()> {
+        let context = create_unchecked_context()?;
+        let mut worker = create_type_inference_worker(context.clone());
+        let graph = context.create_graph()?;
+        assert_eq!(
+            worker.process_node(graph.zeros(scalar_type(UINT64))?)?,
+            scalar_type(UINT64)
+        );
+        assert_eq!(
+            worker.process_node(graph.zeros(array_type(vec![50, 30], UINT64))?)?,
+            array_type(vec![50, 30], UINT64)
+        );
+        assert_eq!(
+            worker.process_node(graph.ones(array_type(vec![17], BIT))?)?,
+            array_type(vec![17], BIT)
+        );
+        assert!(worker
+            .process_node(graph.ones(array_type(vec![], BIT))?)
+            .is_err());
+        Ok(())
     }
 
     #[test]
@@ -1935,6 +2052,27 @@ mod tests {
         test_sum_worker_fail(array_type(vec![10, 20, 30], INT32), vec![3, 1]);
         test_sum_worker_fail(scalar_type(INT32), vec![]);
         test_sum_worker_fail(tuple_type(vec![]), vec![]);
+    }
+
+    #[test]
+    fn test_cum_sum() -> Result<()> {
+        let context = create_unchecked_context()?;
+        let mut worker = create_type_inference_worker(context.clone());
+        let graph = context.create_graph()?;
+        let mut helper = |shape, scalar_type, axis| {
+            let i = graph.input(array_type(shape, scalar_type))?;
+            worker.process_node(i.cum_sum(axis)?)
+        };
+        assert_eq!(
+            helper(vec![10, 20], UINT64, 0)?,
+            array_type(vec![10, 20], UINT64)
+        );
+        assert_eq!(
+            helper(vec![10, 20], INT32, 1)?,
+            array_type(vec![10, 20], INT32)
+        );
+        assert!(helper(vec![10, 20], UINT8, 2).is_err());
+        Ok(())
     }
 
     fn test_permute_axes_worker(t0: Type, s: ArrayShape, t1: Type) {
@@ -3109,14 +3247,14 @@ mod tests {
 
             gather_helper(
                 array_type(vec![4], BIT),
-                array_type(vec![3], UINT64),
+                array_type(vec![3], UINT8),
                 0,
                 Some(array_type(vec![3], BIT)),
             )?;
 
             gather_helper(
                 array_type(vec![2, 3, 7, 5], BIT),
-                array_type(vec![2, 3], UINT64),
+                array_type(vec![2, 3], UINT32),
                 2,
                 Some(array_type(vec![2, 3, 2, 3, 5], BIT)),
             )?;
@@ -3125,7 +3263,7 @@ mod tests {
             gather_helper(array_type(vec![2, 3, 4], BIT), scalar_type(UINT64), 1, None)?;
             gather_helper(
                 array_type(vec![2, 3, 4], BIT),
-                array_type(vec![2], UINT32),
+                array_type(vec![2], INT32),
                 1,
                 None,
             )?;
@@ -3265,10 +3403,12 @@ mod tests {
         || -> Result<()> {
             let t = array_type(vec![10], UINT64);
             test_inverse_permutation_worker(t.clone(), t)?;
+            let t = array_type(vec![10], UINT16);
+            test_inverse_permutation_worker(t.clone(), t)?;
 
             test_inverse_permutation_fail(scalar_type(UINT64))?;
             test_inverse_permutation_fail(array_type(vec![10, 5], UINT64))?;
-            test_inverse_permutation_fail(array_type(vec![10], UINT32))?;
+            test_inverse_permutation_fail(array_type(vec![10], INT32))?;
 
             Ok(())
         }()
@@ -4392,7 +4532,7 @@ mod tests {
     }
 
     #[test]
-    fn test_random_shuffle() -> Result<()> {
+    fn test_apply_permutation() -> Result<()> {
         let context = create_unchecked_context()?;
         let mut worker = create_type_inference_worker(context.clone());
         let graph = context.create_graph()?;
@@ -4400,30 +4540,86 @@ mod tests {
         let tin = array_type(vec![10, 20], UINT64);
         let i = graph.input(tin.clone())?;
         let p = graph.input(array_type(vec![10], UINT64))?;
-        let o = graph.apply_permutation(i, p.clone())?;
-        let tout = worker.process_node(o.clone())?;
+        let o = graph.apply_permutation(i, p)?;
+        let tout = worker.process_node(o)?;
+        assert_eq!(tout, tin);
+        // UINT8.
+        let tin = array_type(vec![10], UINT64);
+        let i = graph.input(tin.clone())?;
+        let p = graph.input(array_type(vec![10], UINT8))?;
+        let o = graph.apply_permutation(i, p)?;
+        let tout = worker.process_node(o)?;
         assert_eq!(tout, tin);
         // Incompatible shapes
         let i = graph.input(tin.clone())?;
         let p = graph.input(array_type(vec![11], UINT64))?;
         let o = graph.apply_permutation(i, p)?;
-        assert!(worker.process_node(o.clone()).is_err());
+        assert!(worker.process_node(o).is_err());
         // Incorrect permutation type.
         let i = graph.input(tin.clone())?;
         let p = graph.input(vector_type(10, scalar_type(UINT64)))?;
         let o = graph.apply_permutation(i, p)?;
-        assert!(worker.process_node(o.clone()).is_err());
+        assert!(worker.process_node(o).is_err());
         // Incorrect array type.
         let tin = vector_type(10, scalar_type(UINT32));
         let i = graph.input(tin.clone())?;
         let p = graph.input(array_type(vec![10], UINT64))?;
         let o = graph.apply_permutation(i, p)?;
-        assert!(worker.process_node(o.clone()).is_err());
+        assert!(worker.process_node(o).is_err());
         // Incorrect permutation type.
+        let tin = array_type(vec![10], UINT64);
         let i = graph.input(tin.clone())?;
-        let p = graph.input(array_type(vec![10], UINT32))?;
+        let p = graph.input(array_type(vec![10], INT32))?;
         let o = graph.apply_permutation(i, p)?;
-        assert!(worker.process_node(o.clone()).is_err());
+        assert!(worker.process_node(o).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_sort() -> Result<()> {
+        let context = create_unchecked_context()?;
+        let mut worker = create_type_inference_worker(context.clone());
+        let graph = context.create_graph()?;
+        let key = "random_name_of_key_column".to_string();
+        let mut helper = |t: Type| {
+            let i = graph.input(t.clone())?;
+            let o = graph.sort(i, key.clone())?;
+            worker.process_node(o)
+        };
+        // 1 array.
+        let tin = named_tuple_type(vec![(key.clone(), array_type(vec![100, 32], BIT))]);
+        let tout = helper(tin.clone())?;
+        assert_eq!(tout, tin);
+        // multiple arrays.
+        let tin = named_tuple_type(vec![
+            ("v1".to_string(), array_type(vec![100], UINT64)),
+            (key.clone(), array_type(vec![100, 32], BIT)),
+            ("v2".to_string(), array_type(vec![100, 20, 2], INT32)),
+        ]);
+        let tout = helper(tin.clone())?;
+        assert_eq!(tout, tin);
+        // missing key.
+        let tin = named_tuple_type(vec![
+            ("v1".to_string(), array_type(vec![100], UINT64)),
+            ("v2".to_string(), array_type(vec![100, 20, 2], INT32)),
+        ]);
+        assert!(helper(tin.clone()).is_err());
+        // incompatible shapes.
+        let tin = named_tuple_type(vec![
+            ("v1".to_string(), array_type(vec![100], UINT64)),
+            (key.clone(), array_type(vec![100, 32], BIT)),
+            ("v2".to_string(), array_type(vec![101, 20, 2], INT32)),
+        ]);
+        assert!(helper(tin.clone()).is_err());
+        // incorrect key type.
+        let tin = named_tuple_type(vec![(key.clone(), array_type(vec![100], UINT64))]);
+        assert!(helper(tin.clone()).is_err());
+        // incorrect key shape.
+        let tin = named_tuple_type(vec![(key.clone(), array_type(vec![100], BIT))]);
+        assert!(helper(tin.clone()).is_err());
+        // incorrect key type and shape.
+        let tin = named_tuple_type(vec![(key.clone(), array_type(vec![100, 32], UINT64))]);
+        assert!(helper(tin.clone()).is_err());
         Ok(())
     }
 }

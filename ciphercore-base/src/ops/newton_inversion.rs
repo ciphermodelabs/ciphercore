@@ -3,12 +3,10 @@ use crate::custom_ops::CustomOperationBody;
 use crate::data_types::{Type, INT64, UINT64};
 use crate::errors::Result;
 use crate::graphs::{Context, Graph};
-use crate::ops::utils::constant;
-use crate::typed_value::TypedValue;
 
 use serde::{Deserialize, Serialize};
 
-use super::utils::{constant_scalar, inverse_initial_approximation, multiply_fixed_point, zeros};
+use super::utils::{constant_scalar, inverse_initial_approximation, multiply_fixed_point};
 
 /// A structure that defines the custom operation NewtonInversion that computes an inversion of a number via [the Newton-Raphson method](https://en.wikipedia.org/wiki/Newton%27s_method#Multiplicative_inverses_of_numbers_and_power_series).
 ///
@@ -92,8 +90,7 @@ impl CustomOperationBody for NewtonInversion {
         let mut approximation = if has_initial_approximation {
             g.input(t)?
         } else if self.denominator_cap_2k == 0 {
-            let one = constant(&g, TypedValue::from_scalar(1, sc.clone())?)?;
-            zeros(&g, t)?.add(one)?
+            g.ones(t)?
         } else {
             g.call(g_initial_approximation, vec![divisor.clone()])?
         };

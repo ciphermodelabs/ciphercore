@@ -108,6 +108,8 @@ pub struct ShardConfig {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Operation {
     Input(Type),
+    Zeros(Type),
+    Ones(Type),
     Add,
     Subtract,
     Multiply,
@@ -122,6 +124,7 @@ pub enum Operation {
     Gemm(bool, bool),
     Truncate(u64),
     Sum(ArrayShape),
+    CumSum(u64),
     PermuteAxes(ArrayShape),
     Get(ArrayShape),
     GetSlice(Slice),
@@ -159,6 +162,7 @@ pub enum Operation {
     // SQL joins
     Join(JoinType, HashMap<String, String>),
     ApplyPermutation(bool),
+    Sort(String),
     Custom(CustomOperation),
     // Operations used for debugging graphs.
     Print(String),
@@ -197,6 +201,80 @@ impl Operation {
                 Ok(Operation::PermutationFromPRF(prf_id, *size))
             }
             _ => Err(runtime_error!("Operation is not a PRF operation")),
+        }
+    }
+
+    pub fn is_input(&self) -> bool {
+        matches!(self, Operation::Input(_))
+    }
+
+    pub fn is_const_optimizable(&self) -> Result<bool> {
+        match self {
+            // Zeros and Ones exist precisely because we don't want to store them as Constants
+            // to keep the graph size small.
+            Operation::Zeros(_) | Operation::Ones(_) => Ok(false),
+            op => Ok(!op.is_input() && !op.is_randomizing()?),
+        }
+    }
+
+    // If an operation computes a randomized output, return true
+    pub fn is_randomizing(&self) -> Result<bool> {
+        match self {
+            Operation::Random(_)
+            | Operation::RandomPermutation(_)
+            | Operation::CuckooToPermutation
+            | Operation::DecomposeSwitchingMap(_) => Ok(true),
+            Operation::Input(_)
+            | Operation::Zeros(_)
+            | Operation::Ones(_)
+            | Operation::A2B
+            | Operation::Add
+            | Operation::ApplyPermutation(_)
+            | Operation::ArrayToVector
+            | Operation::Assert(_)
+            | Operation::B2A(_)
+            | Operation::Subtract
+            | Operation::Multiply
+            | Operation::MixedMultiply
+            | Operation::Matmul
+            | Operation::Dot
+            | Operation::Gemm(_, _)
+            | Operation::Truncate(_)
+            | Operation::Sum(_)
+            | Operation::CumSum(_)
+            | Operation::Concatenate(_)
+            | Operation::CreateNamedTuple(_)
+            | Operation::CreateTuple
+            | Operation::CreateVector(_)
+            | Operation::CuckooHash
+            | Operation::SegmentCumSum
+            | Operation::PermuteAxes(_)
+            | Operation::Get(_)
+            | Operation::Gather(_)
+            | Operation::GetSlice(_)
+            | Operation::Reshape(_)
+            | Operation::NOP
+            | Operation::InversePermutation
+            | Operation::PRF(_, _)
+            | Operation::PermutationFromPRF(_, _)
+            | Operation::Stack(_)
+            | Operation::NamedTupleGet(_)
+            | Operation::Sort(_)
+            | Operation::TupleGet(_)
+            | Operation::Constant(_, _)
+            | Operation::VectorGet
+            | Operation::Zip
+            | Operation::Repeat(_)
+            | Operation::VectorToArray
+            | Operation::Join(_, _)
+            | Operation::Print(_)
+            | Operation::Shard(_) => Ok(false),
+            Operation::Call | Operation::Iterate => Err(runtime_error!(
+                "The status of operations calling other graphs cannot be defined"
+            )),
+            Operation::Custom(_) => Err(runtime_error!(
+                "The status of custom operations cannot be defined"
+            )),
         }
     }
 }
@@ -660,6 +738,38 @@ impl Node {
         self.get_graph().apply_inverse_permutation(self.clone(), p)
     }
 
+    /// Adds a node that sorts a table given as named tuple according to the column given by the key argument.
+    /// The key column must be a 2-d BIT array of shape [n, b], interpreted as bitstrings of length b.
+    /// Other columns in the named tuple must be arrays of arbitrary type and shape, as long as they
+    /// share the first dimension: [n, ...].
+    /// Bitstrings are sorted lexicographically, and the sorting algorithm is stable: preserving relative
+    /// order of entries in other arrays where the corresponding key entries match.
+    ///
+    /// # Arguments
+    /// * `key` - name of the field to sort on it, this array must be 2-d of type BIT.
+    ///
+    /// # Returns
+    ///
+    /// New sorted node
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{BIT, INT32, UINT64, array_type, named_tuple_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let v1 = g.input(array_type(vec![20], INT32)).unwrap();
+    /// let v2 = g.input(array_type(vec![20, 10, 2], UINT64)).unwrap();
+    /// let k = g.input(array_type(vec![20, 32], BIT)).unwrap();
+    /// let a = g.create_named_tuple(vec![("key".to_string(), k), ("value1".to_string(), v1), ("value2".to_string(), v2)]).unwrap();
+    /// let a = a.sort("key".to_string()).unwrap();
+    /// ```
+    #[doc(hidden)]
+    pub fn sort(&self, key: String) -> Result<Node> {
+        self.get_graph().sort(self.clone(), key)
+    }
+
     /// Adds a node to the parent graph that divides a scalar or each entry of the array associated with the node by a positive constant integer `scale`.
     ///
     /// Applies [Graph::add] to the parent graph, `this` node and `scale`.
@@ -697,6 +807,25 @@ impl Node {
     /// ```
     pub fn sum(&self, axes: ArrayShape) -> Result<Node> {
         self.get_graph().sum(self.clone(), axes)
+    }
+
+    /// Adds a node to the parent graph that computes the cumulative sum of elements along a given axis.
+    ///
+    /// Applies [Graph::cum_sum] to the parent graph, `this` node and `axis`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{INT32, array_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = array_type(vec![3, 2], INT32);
+    /// let n1 = g.input(t).unwrap();
+    /// let n2 = n1.cum_sum(1).unwrap();
+    /// ```
+    pub fn cum_sum(&self, axis: u64) -> Result<Node> {
+        self.get_graph().cum_sum(self.clone(), axis)
     }
 
     /// Adds a node to the parent graph that permutes the array associated with the node along given axes.
@@ -1323,6 +1452,56 @@ impl Graph {
         self.add_node(vec![], vec![], Operation::Input(input_type))
     }
 
+    /// Adds an node with zeros of given type.
+    ///
+    /// Compared to `constant` this node does produce a big value array in serialized graph.
+    ///
+    /// # Arguments
+    ///
+    /// `t` - node type
+    ///
+    /// # Returns
+    ///
+    /// New node with zeros of given type.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{UINT8, array_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let z = g.zeros(array_type(vec![10, 20], UINT8)).unwrap();
+    /// ```
+    pub fn zeros(&self, t: Type) -> Result<Node> {
+        self.add_node(vec![], vec![], Operation::Zeros(t))
+    }
+
+    /// Adds an node with ones of given type.
+    ///
+    /// Compared to `constant` this node does produce a big value array in serialized graph.
+    ///
+    /// # Arguments
+    ///
+    /// `t` - node type
+    ///
+    /// # Returns
+    ///
+    /// New node with ones of given type.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{UINT8, array_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let z = g.ones(array_type(vec![10, 20], UINT8)).unwrap();
+    /// ```
+    pub fn ones(&self, t: Type) -> Result<Node> {
+        self.add_node(vec![], vec![], Operation::Ones(t))
+    }
+
     /// Adds a node that sums two arrays or scalars of the same scalar type elementwise.
     ///
     /// If input shapes are different, the broadcasting rules are applied (see [the NumPy broadcasting rules](https://numpy.org/doc/stable/user/basics.broadcasting.html)). For example, adding two arrays of shapes `[10,1,7]` and `[8,1]` results in an array of shape `[10,8,7]`.
@@ -1685,6 +1864,39 @@ impl Graph {
         self.add_node(vec![a, p], vec![], Operation::ApplyPermutation(true))
     }
 
+    /// Adds a node that sorts a table given as named tuple according to the column given by the key argument.
+    /// The key column must be a 2-d BIT array of shape [n, b], interpreted as bitstrings of length b.
+    /// Other columns in the named tuple must be arrays of arbitrary type and shape, as long as they
+    /// share the first dimension: [n, ...].
+    /// Bitstrings are sorted lexicographically, and the sorting algorithm is stable: preserving relative
+    /// order of entries in other arrays where the corresponding key entries match.
+    ///
+    /// # Arguments
+    /// * `a` - node containing a named tuple -- arrays to sort.
+    /// * `key` - name of the field to sort on it, this array must be 2-d of type BIT.
+    ///
+    /// # Returns
+    ///
+    /// New sorted node
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{BIT, INT32, UINT64, array_type, named_tuple_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let v1 = g.input(array_type(vec![20], INT32)).unwrap();
+    /// let v2 = g.input(array_type(vec![20, 10, 2], UINT64)).unwrap();
+    /// let k = g.input(array_type(vec![20, 32], BIT)).unwrap();
+    /// let a = g.create_named_tuple(vec![("key".to_string(), k), ("value1".to_string(), v1), ("value2".to_string(), v2)]).unwrap();
+    /// let a = g.sort(a, "key".to_string()).unwrap();
+    /// ```
+    #[doc(hidden)]
+    pub fn sort(&self, a: Node, key: String) -> Result<Node> {
+        self.add_node(vec![a], vec![], Operation::Sort(key))
+    }
+
     /// Adds a node that divides a scalar or each entry of an array by a positive constant integer `scale`.
     ///
     /// # Arguments
@@ -1738,6 +1950,34 @@ impl Graph {
     /// ```
     pub fn sum(&self, a: Node, axes: ArrayShape) -> Result<Node> {
         self.add_node(vec![a], vec![], Operation::Sum(axes))
+    }
+
+    /// Adds a node that computes the cumulative sum of elements along a given axis. (see [numpy.cumsum](https://numpy.org/doc/stable/reference/generated/numpy.cumsum.html)).
+    ///
+    /// For example, summing the array `[[1000, 200], [30, 4]]` along the first or the second axes results in the arrays `[[1000, 200], [1030, 204]]` or `[[1000, 1200], [30, 34]]`, respectively.
+    ///
+    /// # Arguments
+    ///
+    /// * `a` - node containing an array
+    /// * `axis` - axis along which the cumulative sum is computed
+    ///
+    /// # Returns
+    ///
+    /// New cumulative sum node
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::create_context;
+    /// # use ciphercore_base::data_types::{INT32, array_type};
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t = array_type(vec![3, 2], INT32);
+    /// let n1 = g.input(t).unwrap();
+    /// let n2 = g.cum_sum(n1, 1).unwrap();
+    /// ```
+    pub fn cum_sum(&self, a: Node, axis: u64) -> Result<Node> {
+        self.add_node(vec![a], vec![], Operation::CumSum(axis))
     }
 
     /// Adds a node that permutes an array along given axes (see [numpy.transpose](https://numpy.org/doc/stable/reference/generated/numpy.transpose.html)). This function generalizes matrix transposition.
@@ -4034,7 +4274,7 @@ impl Context {
         }
         let mut result = vec![];
         for node in graph.get_nodes() {
-            if let Operation::Input(_) = node.get_operation() {
+            if node.get_operation().is_input() {
                 let node_id = node.get_id();
                 let node_name = cell
                     .nodes_names
@@ -4644,17 +4884,11 @@ mod tests {
             .map(|x| x.get_operation())
             .collect();
         assert!(operations.len() == 3);
-        match operations[0] {
-            Operation::Input(_) => {}
-            _ => {
-                panic!("Input expected");
-            }
+        if !operations[0].is_input() {
+            panic!("Input expected");
         }
-        match operations[1] {
-            Operation::Input(_) => {}
-            _ => {
-                panic!("Input expected");
-            }
+        if !operations[1].is_input() {
+            panic!("Input expected");
         }
         match operations[2] {
             Operation::Add => {}
