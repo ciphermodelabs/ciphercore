@@ -167,8 +167,6 @@ impl PRNG {
 /// (see e.g. p.16 of [Kolesnikov et al.](https://eprint.iacr.org/2016/799.pdf)).
 pub(super) struct Prf {
     aes: Crypter,
-    buffer: Vec<u8>,
-    next_byte: usize,
 }
 
 impl Prf {
@@ -184,15 +182,55 @@ impl Prf {
         let mut c =
             Crypter::new(Cipher::aes_128_ecb(), Mode::Encrypt, &key_bytes, None).map_err(err)?;
         c.pad(false);
-        Ok(Prf {
-            aes: c,
+        Ok(Prf { aes: c })
+    }
+
+    #[cfg(test)]
+    fn output_bytes(&mut self, input: u64, n: u64) -> Result<Vec<u8>> {
+        PrfSession::new(&mut self.aes, input)?.generate_random_bytes(n)
+    }
+
+    pub(super) fn output_value(&mut self, input: u64, t: Type) -> Result<Value> {
+        PrfSession::new(&mut self.aes, input)?.recursively_generate_value(t)
+    }
+
+    pub(super) fn output_permutation(&mut self, input: u64, n: u64) -> Result<Value> {
+        if n > 2u64.pow(30) {
+            return Err(runtime_error!("n should be less than 2^30"));
+        }
+        let mut session = PrfSession::new(&mut self.aes, input)?;
+        let mut a: Vec<u64> = (0..n).into_iter().collect();
+        for i in 1..n {
+            let j = session.generate_u32_in_range(i as u32 + 1)?;
+            a.swap(i as usize, j as usize);
+        }
+        Value::from_flattened_array(&a, UINT64)
+    }
+}
+
+// Helper struct for `Prf` that produces random values of various types from random bytes that
+// are generated using the `aes` crypter, and the initial `input` value that is incremented
+// as more bytes are needed.
+struct PrfSession<'a> {
+    aes: &'a mut Crypter,
+    input: u128,
+    buffer: Vec<u8>,
+    next_byte: usize,
+}
+
+impl<'a> PrfSession<'a> {
+    pub fn new(aes: &'a mut Crypter, input: u64) -> Result<Self> {
+        Ok(Self {
+            aes,
+            input: (input as u128) << 64,
             buffer: vec![0u8; SEED_SIZE + Cipher::aes_128_cbc().block_size()],
             next_byte: SEED_SIZE,
         })
     }
 
-    fn generate_one_batch(&mut self, input: u128) -> Result<()> {
-        let i_bytes = input.to_le_bytes();
+    fn generate_one_batch(&mut self) -> Result<()> {
+        let i_bytes = self.input.to_le_bytes();
+        self.input = self.input.wrapping_add(1);
         let count = self
             .aes
             .update(&i_bytes, &mut self.buffer)
@@ -208,30 +246,13 @@ impl Prf {
         Ok(())
     }
 
-    // Gets rid of any remaining random bytes.
-    // Needs to be invoked in each public function to make ensure deterministic results for a given
-    // initialization vector (iv).
-    // TODO: Refactor
-    fn flush(&mut self) {
-        self.buffer.fill(0u8);
-        self.next_byte = SEED_SIZE;
+    fn generate_random_bytes(&mut self, n: u64) -> Result<Vec<u8>> {
+        let mut bytes = vec![0u8; n as usize];
+        self.fill_random_bytes(bytes.as_mut_slice())?;
+        Ok(bytes)
     }
 
-    #[cfg(test)]
-    fn output_bytes(&mut self, input: u64, n: u64) -> Result<Vec<u8>> {
-        let ext_input = (input as u128) << 64;
-        let output = self.generate_random_bytes(ext_input, n)?.0;
-        self.flush();
-        Ok(output)
-    }
-
-    fn generate_random_bytes(&mut self, iv: u128, n: u64) -> Result<(Vec<u8>, u128)> {
-        let mut res = vec![0u8; n as usize];
-        let next_iv = self.fill_random_bytes(iv, res.as_mut_slice())?;
-        Ok((res, next_iv))
-    }
-
-    fn fill_random_bytes(&mut self, mut iv: u128, mut buff: &mut [u8]) -> Result<u128> {
+    fn fill_random_bytes(&mut self, mut buff: &mut [u8]) -> Result<()> {
         while !buff.is_empty() {
             let need_bytes = buff.len();
             let ready_bytes = &self.buffer[self.next_byte..SEED_SIZE];
@@ -243,54 +264,40 @@ impl Prf {
                 buff[..ready_bytes.len()].clone_from_slice(ready_bytes);
                 buff = &mut buff[ready_bytes.len()..];
                 self.next_byte = 0;
-                self.generate_one_batch(iv)?;
-                iv += 1;
+                self.generate_one_batch()?;
             }
         }
-        Ok(iv)
+        Ok(())
     }
 
-    fn recursively_generate_value(&mut self, iv: u128, tp: Type) -> Result<(Value, u128)> {
+    fn recursively_generate_value(&mut self, tp: Type) -> Result<Value> {
         match tp {
             Type::Scalar(_) | Type::Array(_, _) => {
                 let bit_size = get_size_in_bits(tp)?;
                 let byte_size = (bit_size + 7) / 8;
                 // the last random byte should contain bits_to_flush zeros
                 let bits_to_flush = 8 * byte_size - bit_size;
-                let (mut bytes, next_iv) = self.generate_random_bytes(iv, byte_size)?;
+                let mut bytes = self.generate_random_bytes(byte_size)?;
                 // Remove unused random bits
                 if !bytes.is_empty() {
                     *bytes.last_mut().unwrap() >>= bits_to_flush;
                 }
-                Ok((Value::from_bytes(bytes), next_iv))
+                Ok(Value::from_bytes(bytes))
             }
             Type::Tuple(_) | Type::Vector(_, _) | Type::NamedTuple(_) => {
                 let ts = get_types_vector(tp)?;
                 let mut v = vec![];
-                let mut ext_iv = iv;
                 for sub_t in ts {
-                    let (value, next_iv) =
-                        self.recursively_generate_value(ext_iv, (*sub_t).clone())?;
+                    let value = self.recursively_generate_value((*sub_t).clone())?;
                     v.push(value);
-                    ext_iv = next_iv;
                 }
-                Ok((Value::from_vector(v), ext_iv))
+                Ok(Value::from_vector(v))
             }
         }
     }
 
-    pub(super) fn output_value(&mut self, input: u64, t: Type) -> Result<Value> {
-        let ext_input = (input as u128) << 64;
-        let value = self.recursively_generate_value(ext_input, t)?.0;
-        self.flush();
-        Ok(value)
-    }
-
     // Generates a random number from 0..2^(8 * NEED_BYTES).
-    fn generate_random_number_const<const NEED_BYTES: usize>(
-        &mut self,
-        mut iv: u128,
-    ) -> Result<(u64, u128)> {
+    fn generate_random_number_const<const NEED_BYTES: usize>(&mut self) -> Result<u64> {
         let mut res = [0u8; 8];
         // Note: sometimes we copy garbage bytes, but they are discarded later.
         res.copy_from_slice(&self.buffer[self.next_byte..self.next_byte + 8]);
@@ -299,8 +306,7 @@ impl Prf {
         if use_bytes == NEED_BYTES {
             self.next_byte += use_bytes;
         } else {
-            self.generate_one_batch(iv)?;
-            iv += 1;
+            self.generate_one_batch()?;
             self.next_byte = NEED_BYTES - use_bytes;
             res[use_bytes..NEED_BYTES].copy_from_slice(&self.buffer[..self.next_byte]);
         }
@@ -309,25 +315,25 @@ impl Prf {
         } else {
             (1 << (NEED_BYTES * 8)) - 1
         };
-        Ok((u64::from_le_bytes(res) & mask, iv))
+        Ok(u64::from_le_bytes(res) & mask)
     }
 
     // Generates a random number from 0..2^(8 * need_bytes).
-    fn generate_random_number(&mut self, iv: u128, need_bytes: usize) -> Result<(u64, u128)> {
+    fn generate_random_number(&mut self, need_bytes: usize) -> Result<u64> {
         match need_bytes {
-            1 => self.generate_random_number_const::<1>(iv),
-            2 => self.generate_random_number_const::<2>(iv),
-            3 => self.generate_random_number_const::<3>(iv),
-            4 => self.generate_random_number_const::<4>(iv),
-            5 => self.generate_random_number_const::<5>(iv),
-            6 => self.generate_random_number_const::<6>(iv),
-            7 => self.generate_random_number_const::<7>(iv),
-            8 => self.generate_random_number_const::<8>(iv),
+            1 => self.generate_random_number_const::<1>(),
+            2 => self.generate_random_number_const::<2>(),
+            3 => self.generate_random_number_const::<3>(),
+            4 => self.generate_random_number_const::<4>(),
+            5 => self.generate_random_number_const::<5>(),
+            6 => self.generate_random_number_const::<6>(),
+            7 => self.generate_random_number_const::<7>(),
+            8 => self.generate_random_number_const::<8>(),
             _ => Err(runtime_error!("Unsupported need bytes")),
         }
     }
 
-    fn generate_u32_in_range(&mut self, mut iv: u128, modulus: u32) -> Result<(u32, u128)> {
+    fn generate_u32_in_range(&mut self, modulus: u32) -> Result<u32> {
         let modulus = modulus as u64;
         // Generate one extra byte of randomness to have reasonably low resampling probability.
         let need_bytes = (modulus.next_power_of_two().trailing_zeros() + 7) / 8 + 1;
@@ -337,27 +343,11 @@ impl Prf {
         let num_biased = (max_rand_value + 1) % modulus;
         let rejection_bound = max_rand_value - num_biased;
         loop {
-            let (rand_value, next_iv) = self.generate_random_number(iv, need_bytes as usize)?;
-            iv = next_iv;
+            let rand_value = self.generate_random_number(need_bytes as usize)?;
             if rand_value <= rejection_bound {
-                return Ok(((rand_value % modulus) as u32, iv));
+                return Ok((rand_value % modulus) as u32);
             }
         }
-    }
-
-    pub(super) fn output_permutation(&mut self, input: u64, n: u64) -> Result<Value> {
-        if n > 2u64.pow(30) {
-            return Err(runtime_error!("n should be less than 2^30"));
-        }
-        let mut iv = (input as u128) << 64;
-        let mut a: Vec<u64> = (0..n).into_iter().collect();
-        for i in 1..n {
-            let (j, next_iv) = self.generate_u32_in_range(iv, i as u32 + 1)?;
-            iv = next_iv;
-            a.swap(i as usize, j as usize);
-        }
-        self.flush();
-        Value::from_flattened_array(&a, UINT64)
     }
 }
 
@@ -645,11 +635,12 @@ mod tests {
         // i degrees of freedom and significance level 10^(-6).
         let critical_value = [0f64, 23.9281, 27.6310, 30.6648, 33.3768, 35.8882];
         for n in 2..6 {
+            let mut session = PrfSession::new(&mut prf.aes, 0)?;
             let expected_count = 1000000;
             let runs = n * expected_count;
             let mut stats: HashMap<u32, u64> = HashMap::new();
-            for input in 0..runs {
-                let (x, _) = prf.generate_u32_in_range(input as u128, n)?;
+            for _ in 0..runs {
+                let x = session.generate_u32_in_range(n)?;
                 assert!(x < n);
                 *stats.entry(x).or_default() += 1;
             }
