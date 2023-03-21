@@ -167,41 +167,35 @@ impl PRNG {
 /// (see e.g. p.16 of [Kolesnikov et al.](https://eprint.iacr.org/2016/799.pdf)).
 pub(super) struct Prf {
     aes: Crypter,
-    out_vec: Vec<u8>,
+    buffer: Vec<u8>,
+    next_byte: usize,
 }
 
 impl Prf {
     pub fn new(key: Option<[u8; SEED_SIZE]>) -> Result<Prf> {
         let err = |_| runtime_error!("Crypter didn't initialize");
-        match key {
-            Some(bytes) => {
-                let mut c = Crypter::new(Cipher::aes_128_ecb(), Mode::Encrypt, &bytes, None)
-                    .map_err(err)?;
-                c.pad(false);
-                Ok(Prf {
-                    aes: c,
-                    out_vec: vec![0u8; 2 * SEED_SIZE],
-                })
-            }
+        let key_bytes = match key {
+            Some(bytes) => bytes,
             None => {
                 let mut gen = PRNG::new(None)?;
-                let key_bytes = gen.get_random_key()?;
-                let mut c = Crypter::new(Cipher::aes_128_ecb(), Mode::Encrypt, &key_bytes, None)
-                    .map_err(err)?;
-                c.pad(false);
-                Ok(Prf {
-                    aes: c,
-                    out_vec: vec![0u8; 2 * SEED_SIZE],
-                })
+                gen.get_random_key()?
             }
-        }
+        };
+        let mut c =
+            Crypter::new(Cipher::aes_128_ecb(), Mode::Encrypt, &key_bytes, None).map_err(err)?;
+        c.pad(false);
+        Ok(Prf {
+            aes: c,
+            buffer: vec![0u8; SEED_SIZE + Cipher::aes_128_cbc().block_size()],
+            next_byte: SEED_SIZE,
+        })
     }
 
     fn generate_one_batch(&mut self, input: u128) -> Result<()> {
         let i_bytes = input.to_le_bytes();
         let count = self
             .aes
-            .update(&i_bytes, &mut self.out_vec)
+            .update(&i_bytes, &mut self.buffer)
             .map_err(|_| runtime_error!("Crypter didn't manage to update"))?;
         // finalization of Crypter is unnecessary since padding is turned off
         // check here https://www.openssl.org/docs/manmaster/man3/EVP_CipherUpdate.html
@@ -210,29 +204,50 @@ impl Prf {
                 "AES encryption returned a wrong number of bytes"
             ));
         }
+        self.next_byte = 0;
         Ok(())
+    }
+
+    // Gets rid of any remaining random bytes.
+    // Needs to be invoked in each public function to make ensure deterministic results for a given
+    // initialization vector (iv).
+    // TODO: Refactor
+    fn flush(&mut self) {
+        self.buffer.fill(0u8);
+        self.next_byte = SEED_SIZE;
     }
 
     #[cfg(test)]
     fn output_bytes(&mut self, input: u64, n: u64) -> Result<Vec<u8>> {
         let ext_input = (input as u128) << 64;
-        Ok(self.generate_random_bytes(ext_input, n)?.0)
+        let output = self.generate_random_bytes(ext_input, n)?.0;
+        self.flush();
+        Ok(output)
     }
 
     fn generate_random_bytes(&mut self, iv: u128, n: u64) -> Result<(Vec<u8>, u128)> {
-        let mut res = vec![];
-        let calls = (n - 1) / SEED_SIZE as u64 + 1;
-        let rem = n - (calls - 1) * SEED_SIZE as u64;
-        for i in 0..calls as u128 {
-            let ext_i = iv + i;
-            self.generate_one_batch(ext_i)?;
-            if i == calls as u128 - 1 {
-                res.extend(&self.out_vec[0..rem as usize]);
+        let mut res = vec![0u8; n as usize];
+        let next_iv = self.fill_random_bytes(iv, res.as_mut_slice())?;
+        Ok((res, next_iv))
+    }
+
+    fn fill_random_bytes(&mut self, mut iv: u128, mut buff: &mut [u8]) -> Result<u128> {
+        while !buff.is_empty() {
+            let need_bytes = buff.len();
+            let ready_bytes = &self.buffer[self.next_byte..SEED_SIZE];
+            if ready_bytes.len() >= need_bytes {
+                buff.clone_from_slice(&ready_bytes[..need_bytes]);
+                self.next_byte += need_bytes;
+                break;
             } else {
-                res.extend(&self.out_vec[0..SEED_SIZE]);
+                buff[..ready_bytes.len()].clone_from_slice(ready_bytes);
+                buff = &mut buff[ready_bytes.len()..];
+                self.next_byte = 0;
+                self.generate_one_batch(iv)?;
+                iv += 1;
             }
         }
-        Ok((res, iv + calls as u128))
+        Ok(iv)
     }
 
     fn recursively_generate_value(&mut self, iv: u128, tp: Type) -> Result<(Value, u128)> {
@@ -267,45 +282,82 @@ impl Prf {
     pub(super) fn output_value(&mut self, input: u64, t: Type) -> Result<Value> {
         let ext_input = (input as u128) << 64;
         let value = self.recursively_generate_value(ext_input, t)?.0;
+        self.flush();
         Ok(value)
     }
 
-    // Generates a random 64-bit integer modulo a given modulus.
-    // To avoid modulo bias, rejection sampling is performed.
-    // Rejection sampling bound is 2^64 - (2^64 mod modulus).
-    // Each sampling attempt can succeed with probability 1 - (2^64 mod modulus)/2^64.
-    // Thus, the expected number of sampling rounds is  2^64/(2^64 - (2^64 mod modulus)) < 2 according to the geometric distribution.
-    //
-    // **WARNING**: this function might leak modulus bits. Don't use it if you want to hide the modulus.
-    fn get_random_in_range(&mut self, mut iv: u128, modulus: Option<u64>) -> Result<(u64, u128)> {
-        if let Some(m) = modulus {
-            let rem = ((u64::MAX % m) + 1) % m;
-            let rejection_bound = u64::MAX - rem;
-            let mut r;
-            loop {
-                let (bytes, next_iv) = self.generate_random_bytes(iv, 8)?;
-                iv = next_iv;
-                r = vec_from_bytes(&bytes, UINT64)?[0];
-                if r <= rejection_bound {
-                    break;
-                }
-            }
-            Ok((r % m, iv))
+    // Generates a random number from 0..2^(8 * NEED_BYTES).
+    fn generate_random_number_const<const NEED_BYTES: usize>(
+        &mut self,
+        mut iv: u128,
+    ) -> Result<(u64, u128)> {
+        let mut res = [0u8; 8];
+        // Note: sometimes we copy garbage bytes, but they are discarded later.
+        res.copy_from_slice(&self.buffer[self.next_byte..self.next_byte + 8]);
+
+        let use_bytes = std::cmp::min(SEED_SIZE - self.next_byte, NEED_BYTES);
+        if use_bytes == NEED_BYTES {
+            self.next_byte += use_bytes;
         } else {
-            let (bytes, next_iv) = self.generate_random_bytes(iv, 8)?;
-            Ok((vec_from_bytes(&bytes, UINT64)?[0], next_iv))
+            self.generate_one_batch(iv)?;
+            iv += 1;
+            self.next_byte = NEED_BYTES - use_bytes;
+            res[use_bytes..NEED_BYTES].copy_from_slice(&self.buffer[..self.next_byte]);
+        }
+        let mask = if NEED_BYTES == 8 {
+            u64::MAX
+        } else {
+            (1 << (NEED_BYTES * 8)) - 1
+        };
+        Ok((u64::from_le_bytes(res) & mask, iv))
+    }
+
+    // Generates a random number from 0..2^(8 * need_bytes).
+    fn generate_random_number(&mut self, iv: u128, need_bytes: usize) -> Result<(u64, u128)> {
+        match need_bytes {
+            1 => self.generate_random_number_const::<1>(iv),
+            2 => self.generate_random_number_const::<2>(iv),
+            3 => self.generate_random_number_const::<3>(iv),
+            4 => self.generate_random_number_const::<4>(iv),
+            5 => self.generate_random_number_const::<5>(iv),
+            6 => self.generate_random_number_const::<6>(iv),
+            7 => self.generate_random_number_const::<7>(iv),
+            8 => self.generate_random_number_const::<8>(iv),
+            _ => Err(runtime_error!("Unsupported need bytes")),
+        }
+    }
+
+    fn generate_u32_in_range(&mut self, mut iv: u128, modulus: u32) -> Result<(u32, u128)> {
+        let modulus = modulus as u64;
+        // Generate one extra byte of randomness to have reasonably low resampling probability.
+        let need_bytes = (modulus.next_power_of_two().trailing_zeros() + 7) / 8 + 1;
+        // The maximum possible value we could generate with `need_bytes` random bytes.
+        // need_bytes <= 5 because modulus is below 2^32.
+        let max_rand_value = (1u64 << (need_bytes as u64 * 8)) - 1;
+        let num_biased = (max_rand_value + 1) % modulus;
+        let rejection_bound = max_rand_value - num_biased;
+        loop {
+            let (rand_value, next_iv) = self.generate_random_number(iv, need_bytes as usize)?;
+            iv = next_iv;
+            if rand_value <= rejection_bound {
+                return Ok(((rand_value % modulus) as u32, iv));
+            }
         }
     }
 
     pub(super) fn output_permutation(&mut self, input: u64, n: u64) -> Result<Value> {
-        let mut ext_input = (input as u128) << 64;
-        let mut array = (0..n).collect::<Vec<u64>>();
-        for i in (1..n).rev() {
-            let (j, next_iv) = self.get_random_in_range(ext_input, Some(i + 1))?;
-            array.swap(j as usize, i as usize);
-            ext_input = next_iv;
+        if n > 2u64.pow(30) {
+            return Err(runtime_error!("n should be less than 2^30"));
         }
-        Value::from_flattened_array(&array, UINT64)
+        let mut iv = (input as u128) << 64;
+        let mut a: Vec<u64> = (0..n).into_iter().collect();
+        for i in 1..n {
+            let (j, next_iv) = self.generate_u32_in_range(iv, i as u32 + 1)?;
+            iv = next_iv;
+            a.swap(i as usize, j as usize);
+        }
+        self.flush();
+        Value::from_flattened_array(&a, UINT64)
     }
 }
 
@@ -587,6 +639,28 @@ mod tests {
     }
 
     #[test]
+    fn test_generate_u32_in_range() -> Result<()> {
+        let mut prf = Prf::new(None)?;
+        // critical_value[i] is a precomputed critical value for the Chi-square test with
+        // i degrees of freedom and significance level 10^(-6).
+        let critical_value = [0f64, 23.9281, 27.6310, 30.6648, 33.3768, 35.8882];
+        for n in 2..6 {
+            let expected_count = 1000000;
+            let runs = n * expected_count;
+            let mut stats: HashMap<u32, u64> = HashMap::new();
+            for input in 0..runs {
+                let (x, _) = prf.generate_u32_in_range(input as u128, n)?;
+                assert!(x < n);
+                *stats.entry(x).or_default() += 1;
+            }
+            let counters: Vec<u64> = stats.values().cloned().collect();
+            let chi2 = chi_statistics(&counters, expected_count as u64);
+            assert!(chi2 < critical_value[(n - 1) as usize]);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn test_prf_output_permutation() -> Result<()> {
         let mut prf = Prf::new(None)?;
         let mut helper = |n: u64| -> Result<()> {
@@ -631,5 +705,29 @@ mod tests {
         helper(1)?;
         helper(4)?;
         helper(5)
+    }
+
+    #[test]
+    fn test_prf_output_permutation_correctness() -> Result<()> {
+        let mut prf = Prf::new(None)?;
+        let mut helper = |n: u64| -> Result<()> {
+            let result_type = array_type(vec![n], UINT64);
+            let result_value = prf.output_permutation(0, n)?;
+            let perm = result_value.to_flattened_array_u64(result_type.clone())?;
+
+            let mut perm_sorted = perm.clone();
+            perm_sorted.sort();
+            let range_vec: Vec<u64> = (0..n).collect();
+            assert_eq!(perm_sorted, range_vec);
+            Ok(())
+        };
+        helper(1)?;
+        helper(10)?;
+        helper(100)?;
+        helper(1000)?;
+        helper(10000)?;
+        helper(100000)?;
+        helper(1000000)?;
+        Ok(())
     }
 }

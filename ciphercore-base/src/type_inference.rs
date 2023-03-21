@@ -1032,6 +1032,9 @@ impl TypeInferenceWorker {
                 if s.len() != 1 || s[0] != 128 || st != BIT {
                     return Err(runtime_error!("PRF key must consist of 128 bits: {s:?}"));
                 }
+                if n < 1 {
+                    return Err(runtime_error!("Permutation length should be positive"));
+                }
                 if n > 2u64.pow(30) {
                     return Err(runtime_error!(
                         "Permutation length should be less than 2^30"
@@ -2430,8 +2433,15 @@ mod tests {
     #[test]
     fn test_permutation_from_prf() {
         test_permutation_from_prf_worker(array_type(vec![128], BIT), 31337, 100);
+        // n is zero
+        test_permutation_from_prf_worker_fail(array_type(vec![128], BIT), 31337, 0);
+        // n is too large
+        test_permutation_from_prf_worker_fail(array_type(vec![128], BIT), 31337, 1_500_000_000);
+        // Incorrect key shape
         test_permutation_from_prf_worker_fail(array_type(vec![127], BIT), 31337, 100);
+        // Incorrect key type
         test_permutation_from_prf_worker_fail(array_type(vec![128], INT32), 31337, 100);
+        // Missing key
         test_permutation_from_prf_worker_fail(tuple_type(vec![]), 31337, 100);
     }
 
