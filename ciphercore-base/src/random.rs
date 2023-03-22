@@ -199,7 +199,7 @@ impl Prf {
             return Err(runtime_error!("n should be less than 2^30"));
         }
         let mut session = PrfSession::new(&mut self.aes, input)?;
-        let mut a: Vec<u64> = (0..n).into_iter().collect();
+        let mut a: Vec<u64> = (0..n).collect();
         for i in 1..n {
             let j = session.generate_u32_in_range(i as u32 + 1)?;
             a.swap(i as usize, j as usize);
