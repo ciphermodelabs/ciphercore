@@ -78,7 +78,7 @@ mod rust {
     use numpy::PyReadonlyArrayDyn;
 
     pub(crate) fn serialize_to_str<
-        T: numpy::Element + TryInto<u64> + Not<Output = T> + TryInto<u8> + Copy,
+        T: numpy::Element + TryInto<u128> + Not<Output = T> + TryInto<u8> + Copy,
     >(
         x: PyReadonlyArrayDyn<T>,
         st: ScalarType,

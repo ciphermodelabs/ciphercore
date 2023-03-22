@@ -86,7 +86,7 @@ mod tests {
 
     use super::*;
 
-    fn test_minimum_helper<T: TryInto<u64> + Not<Output = T> + TryInto<u8> + Copy>(
+    fn test_minimum_helper<T: TryInto<u128> + Not<Output = T> + TryInto<u8> + Copy>(
         input_value: &[T],
         n: u64,
         st: ScalarType,

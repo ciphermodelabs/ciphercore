@@ -330,8 +330,6 @@ fn calculate_carry_bits(
 
 #[cfg(test)]
 mod tests {
-    use std::ops::Not;
-
     use super::*;
 
     use crate::custom_ops::{run_instantiation_pass, CustomOperation};
@@ -345,18 +343,10 @@ mod tests {
     use crate::graphs::util::simple_context;
 
     fn test_helper(first: u64, second: u64, bits: u64) -> Result<()> {
-        let modulus = if bits == 64 {
-            None
-        } else {
-            Some(2u64.pow(bits as u32))
-        };
-        let mask = if let Some(modulus) = modulus {
-            modulus - 1
-        } else {
-            0u64.not()
-        };
-        let first = first & mask;
-        let second = second & mask;
+        let modulus = 2u128.pow(bits as u32);
+        let mask = modulus - 1;
+        let first = (first as u128) & mask;
+        let second = (second as u128) & mask;
 
         let c = simple_context(|g| {
             let i1 = g.input(array_type(vec![bits], BIT))?;
@@ -375,14 +365,14 @@ mod tests {
             Ok(o)
         })?;
         let mapped_c = run_instantiation_pass(c)?;
-        let scalar = create_scalar_type(false, modulus);
+        let scalar = create_scalar_type(false, Some(modulus));
         let input0 = Value::from_scalar(first, scalar.clone())?;
         let input1 = Value::from_scalar(second, scalar.clone())?;
         let result_v = random_evaluate(
             mapped_c.get_context().get_main_graph()?,
             vec![input0, input1],
         )?
-        .to_u64(scalar.clone())?;
+        .to_u128(scalar.clone())?;
 
         let expected_result = first.wrapping_add(second) & mask;
         assert_eq!(

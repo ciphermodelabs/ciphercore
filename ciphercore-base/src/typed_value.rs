@@ -1,4 +1,4 @@
-use crate::bytes::{add_vectors_u64, subtract_vectors_u64, vec_from_bytes, vec_to_bytes};
+use crate::bytes::{add_vectors_u128, subtract_vectors_u128, vec_to_bytes, vec_u128_from_bytes};
 use crate::data_types::{
     array_type, get_size_in_bits, get_types_vector, is_valid_shape, named_tuple_type, scalar_type,
     tuple_type, vector_type, ArrayShape, ScalarType, Type, BIT, INT16, INT32, INT64, INT8, UINT16,
@@ -567,7 +567,7 @@ impl TypedValueArrayOperations<TypedValue> for TypedValue {
     ///     Ok(())
     /// }).unwrap();
     /// ```
-    fn from_ndarray<T: TryInto<u64> + Not<Output = T> + TryInto<u8> + Copy>(
+    fn from_ndarray<T: TryInto<u128> + Not<Output = T> + TryInto<u8> + Copy>(
         a: ndarray::ArrayD<T>,
         st: ScalarType,
     ) -> Result<Self> {
@@ -727,7 +727,7 @@ impl TypedValue {
     ///     Ok(())
     /// }).unwrap();
     /// ```
-    pub fn from_scalar<T: TryInto<u64> + Not<Output = T> + TryInto<u8> + Copy>(
+    pub fn from_scalar<T: TryInto<u128> + Not<Output = T> + TryInto<u8> + Copy>(
         x: T,
         st: ScalarType,
     ) -> Result<Self> {
@@ -1158,9 +1158,9 @@ fn scalar_type_from_json(o: &Object) -> Result<ScalarType> {
 pub fn generalized_subtract(v: Value, v0: Value, t: Type) -> Result<Value> {
     match t {
         Type::Scalar(st) | Type::Array(_, st) => {
-            let v_raw = v.access_bytes(|bytes| vec_from_bytes(bytes, st.clone()))?;
-            let v0_raw = v0.access_bytes(|bytes| vec_from_bytes(bytes, st.clone()))?;
-            let result = subtract_vectors_u64(&v_raw, &v0_raw, st.get_modulus())?;
+            let v_raw = v.access_bytes(|bytes| vec_u128_from_bytes(bytes, st.clone()))?;
+            let v0_raw = v0.access_bytes(|bytes| vec_u128_from_bytes(bytes, st.clone()))?;
+            let result = subtract_vectors_u128(&v_raw, &v0_raw, st.get_modulus())?;
             Ok(Value::from_bytes(vec_to_bytes(&result, st)?))
         }
         Type::Tuple(tv) => {
@@ -1208,9 +1208,9 @@ pub fn generalized_subtract(v: Value, v0: Value, t: Type) -> Result<Value> {
 pub fn generalized_add(v: Value, v0: Value, t: Type) -> Result<Value> {
     match t {
         Type::Scalar(st) | Type::Array(_, st) => {
-            let v_raw = v.access_bytes(|bytes| vec_from_bytes(bytes, st.clone()))?;
-            let v0_raw = v0.access_bytes(|bytes| vec_from_bytes(bytes, st.clone()))?;
-            let result = add_vectors_u64(&v_raw, &v0_raw, st.get_modulus())?;
+            let v_raw = v.access_bytes(|bytes| vec_u128_from_bytes(bytes, st.clone()))?;
+            let v0_raw = v0.access_bytes(|bytes| vec_u128_from_bytes(bytes, st.clone()))?;
+            let result = add_vectors_u128(&v_raw, &v0_raw, st.get_modulus())?;
             Ok(Value::from_bytes(vec_to_bytes(&result, st)?))
         }
         Type::Tuple(tv) => {
@@ -1529,9 +1529,9 @@ mod tests {
             assert_eq!(shares0[1], shares1[1]);
             assert_eq!(shares1[2], shares2[2]);
             let m = UINT32.get_modulus().unwrap();
-            let v0 = ToNdarray::<u64>::to_ndarray(&shares0[0])? % m;
-            let v1 = ToNdarray::<u64>::to_ndarray(&shares1[1])? % m;
-            let v2 = ToNdarray::<u64>::to_ndarray(&shares2[2])? % m;
+            let v0 = ToNdarray::<u128>::to_ndarray(&shares0[0])? % m;
+            let v1 = ToNdarray::<u128>::to_ndarray(&shares1[1])? % m;
+            let v2 = ToNdarray::<u128>::to_ndarray(&shares2[2])? % m;
             let new_data = v0.add(v1).add(v2) % m;
             assert_eq!(new_data, ndarray::Array::from_vec(data).into_dyn());
             Ok(())

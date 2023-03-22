@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::bytes::{vec_from_bytes, vec_to_bytes};
+use crate::bytes::{vec_from_bytes, vec_to_bytes, vec_u128_from_bytes, vec_u64_to_bytes};
 use crate::data_types::{array_type, get_size_in_bits, get_types_vector, ScalarType, Type, BIT};
 use crate::errors::Result;
 
@@ -304,7 +304,7 @@ impl Value {
     ///     Ok(())
     /// }).unwrap();
     /// ```
-    pub fn from_scalar<T: TryInto<u64> + Not<Output = T> + TryInto<u8> + Copy>(
+    pub fn from_scalar<T: TryInto<u128> + Not<Output = T> + TryInto<u8> + Copy>(
         x: T,
         st: ScalarType,
     ) -> Result<Self> {
@@ -334,11 +334,40 @@ impl Value {
     ///     Ok(())
     /// }).unwrap();
     /// ```
-    pub fn from_flattened_array<T: TryInto<u64> + Not<Output = T> + TryInto<u8> + Copy>(
+    pub fn from_flattened_array<T: TryInto<u128> + Not<Output = T> + TryInto<u8> + Copy>(
         x: &[T],
         st: ScalarType,
     ) -> Result<Value> {
         Ok(Value::from_bytes(vec_to_bytes(x, st)?))
+    }
+
+    /// Constructs a value from a flattened bit or integer array.
+    ///
+    /// # Arguments
+    ///
+    /// * `x` - array to be converted to a value, can have entries of any standard integer type
+    /// * `st` - scalar type corresponding to the entries of `x`
+    ///
+    /// # Returns
+    ///
+    /// New value constructed from `x`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::data_values::Value;
+    /// # use ciphercore_base::data_types::BIT;
+    /// let v = Value::from_flattened_array_u64(&[0, 1, 1, 0, 1, 0, 0, 1], BIT).unwrap();
+    /// v.access_bytes(|bytes| {
+    ///     assert_eq!(*bytes, vec![150]);
+    ///     Ok(())
+    /// }).unwrap();
+    /// ```
+    pub fn from_flattened_array_u64<T: TryInto<u64> + Not<Output = T> + TryInto<u8> + Copy>(
+        x: &[T],
+        st: ScalarType,
+    ) -> Result<Value> {
+        Ok(Value::from_bytes(vec_u64_to_bytes(x, st)?))
     }
 
     /// Constructs a value from a multi-dimensional bit or integer array.
@@ -365,7 +394,7 @@ impl Value {
     ///     Ok(())
     /// }).unwrap();
     /// ```
-    pub fn from_ndarray<T: TryInto<u64> + Not<Output = T> + TryInto<u8> + Copy>(
+    pub fn from_ndarray<T: TryInto<u128> + Not<Output = T> + TryInto<u8> + Copy>(
         a: ndarray::ArrayD<T>,
         st: ScalarType,
     ) -> Result<Value> {
@@ -545,6 +574,32 @@ impl Value {
     /// ```
     pub fn to_u64(&self, st: ScalarType) -> Result<u64> {
         let v = self.access_bytes(|bytes| vec_from_bytes(bytes, st.clone()))?;
+        if v.len() != 1 && (v.len() != 8 || st != BIT) {
+            return Err(runtime_error!("Not a scalar"));
+        }
+        Ok(v[0])
+    }
+
+    /// Converts `self` to a scalar if it is a byte vector, then casts the result to `u128`.
+    ///
+    /// # Arguments
+    ///
+    /// `st` - scalar type used to interpret `self`
+    ///
+    /// # Result
+    ///
+    /// Resulting scalar cast to `u128`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::data_values::Value;
+    /// # use ciphercore_base::data_types::INT32;
+    /// let v = Value::from_scalar(-123456, INT32).unwrap();
+    /// assert_eq!(v.to_u128(INT32).unwrap(), -123456i32 as u128);
+    /// ```
+    pub fn to_u128(&self, st: ScalarType) -> Result<u128> {
+        let v = self.access_bytes(|bytes| vec_u128_from_bytes(bytes, st.clone()))?;
         if v.len() != 1 && (v.len() != 8 || st != BIT) {
             return Err(runtime_error!("Not a scalar"));
         }
@@ -799,6 +854,47 @@ impl Value {
         let st = t.get_scalar_type();
         if let ValueBody::Bytes(bytes) = self.body.as_ref() {
             let mut result = vec_from_bytes(bytes, st.clone())?;
+            if st == BIT {
+                let num_values: u64 = t.get_dimensions().iter().product();
+                result.truncate(num_values as usize);
+            }
+            Ok(result)
+        } else {
+            Err(runtime_error!("Invalid Value"))
+        }
+    }
+
+    /// Converts `self` to a flattened array if it is a byte vector, then cast the array entries to `u128`.
+    ///
+    /// # Arguments
+    ///
+    /// `t` - array type used to interpret `self`
+    ///
+    /// # Result
+    ///
+    /// Resulting flattened array with entries cast to `u128`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::data_values::Value;
+    /// # use ciphercore_base::data_types::{array_type, INT32};
+    /// let v = Value::from_flattened_array(&[-123, 123], INT32).unwrap();
+    /// let a = v.to_flattened_array_u128(array_type(vec![2], INT32)).unwrap();
+    /// assert_eq!(a, vec![-123i32 as u128, 123i32 as u128]);
+    /// ```
+    pub fn to_flattened_array_u128(&self, t: Type) -> Result<Vec<u128>> {
+        if !t.is_array() {
+            return Err(runtime_error!(
+                "Trying to extract array from a value of a wrong type"
+            ));
+        }
+        if !self.check_type(t.clone())? {
+            return Err(runtime_error!("Type and value mismatch"));
+        }
+        let st = t.get_scalar_type();
+        if let ValueBody::Bytes(bytes) = self.body.as_ref() {
+            let mut result = vec_u128_from_bytes(bytes, st.clone())?;
             if st == BIT {
                 let num_values: u64 = t.get_dimensions().iter().product();
                 result.truncate(num_values as usize);
@@ -1334,6 +1430,43 @@ impl ToNdarray<u64> for Value {
     }
 }
 
+/// Converts `self` to a multi-dimensional array if it is a byte vector, then cast the array entries to `u128`.
+///
+/// # Arguments
+///
+/// `t` - array type used to interpret `self`
+///
+/// # Result
+///
+/// Resulting multi-dimensional array with entries cast to `u64`
+///
+/// # Examples
+///
+/// ```
+/// # use ciphercore_base::data_values::Value;
+/// # use ciphercore_base::data_values::ToNdarray;
+/// # use ciphercore_base::data_types::{INT32, array_type};
+/// # use ndarray::array;
+/// let a = array![[-123, 123], [-456, 456]].into_dyn();
+/// let v = Value::from_ndarray(a, INT32).unwrap();
+/// let a = ToNdarray::<u128>::to_ndarray(&v,array_type(vec![2, 2], INT32)).unwrap();
+/// assert_eq!(a, array![[-123i32 as u128, 123i32 as u128], [-456i32 as u128, 456i32 as u128]].into_dyn());
+/// ```
+impl ToNdarray<u128> for Value {
+    fn to_ndarray(&self, t: Type) -> Result<ndarray::ArrayD<u128>> {
+        match t.clone() {
+            Type::Array(shape, _) => {
+                let arr = self.to_flattened_array_u128(t)?;
+                // TODO: for performance reasons, we should use the actual type, not u128.
+                let ndarr = ndarray::Array::from_vec(arr);
+                let shape: Vec<usize> = shape.iter().map(|x| *x as usize).collect();
+                Ok(ndarr.into_shape(shape)?)
+            }
+            _ => Err(runtime_error!("Not an array type")),
+        }
+    }
+}
+
 /// Converts `self` to a multi-dimensional array if it is a byte vector, then cast the array entries to `u64`.
 ///
 /// # Arguments
@@ -1400,6 +1533,35 @@ impl ToNdarray<i64> for Value {
     fn to_ndarray(&self, t: Type) -> Result<ndarray::ArrayD<i64>> {
         let arr = ToNdarray::<u64>::to_ndarray(self, t)?;
         Ok(arr.map(|x| *x as i64))
+    }
+}
+
+/// Converts `self` to a multi-dimensional array if it is a byte vector, then cast the array entries to `i128`.
+///
+/// # Arguments
+///
+/// `t` - array type used to interpret `self`
+///
+/// # Result
+///
+/// Resulting multi-dimensional array with entries cast to `i128`
+///
+/// # Examples
+///
+/// ```
+/// # use ciphercore_base::data_values::Value;
+/// # use ciphercore_base::data_types::{INT32, array_type};
+/// # use ciphercore_base::data_values::ToNdarray;
+/// # use ndarray::array;
+/// let a = array![[-123, 123], [-456, 456]].into_dyn();
+/// let v = Value::from_ndarray(a, INT32).unwrap();
+/// let a = ToNdarray::<i128>::to_ndarray(&v,array_type(vec![2, 2], INT32)).unwrap();
+/// assert_eq!(a, array![[-123i32 as i128, 123i32 as i128], [-456i32 as i128, 456i32 as i128]].into_dyn());
+/// ```
+impl ToNdarray<i128> for Value {
+    fn to_ndarray(&self, t: Type) -> Result<ndarray::ArrayD<i128>> {
+        let arr = ToNdarray::<u128>::to_ndarray(self, t)?;
+        Ok(arr.map(|x| *x as i128))
     }
 }
 

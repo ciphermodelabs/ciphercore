@@ -204,7 +204,7 @@ impl Prf {
             let j = session.generate_u32_in_range(i as u32 + 1)?;
             a.swap(i as usize, j as usize);
         }
-        Value::from_flattened_array(&a, UINT64)
+        Value::from_flattened_array_u64(&a, UINT64)
     }
 }
 

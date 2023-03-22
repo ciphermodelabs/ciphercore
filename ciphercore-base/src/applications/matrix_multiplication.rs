@@ -61,8 +61,8 @@ mod tests {
     use super::*;
 
     fn test_matmul_helper<
-        T1: TryInto<u64> + Not<Output = T1> + TryInto<u8> + Copy,
-        T2: TryInto<u64> + Not<Output = T2> + TryInto<u8> + Copy,
+        T1: TryInto<u128> + Not<Output = T1> + TryInto<u8> + Copy,
+        T2: TryInto<u128> + Not<Output = T2> + TryInto<u8> + Copy,
     >(
         input1_value: &[T1],
         input2_value: &[T2],

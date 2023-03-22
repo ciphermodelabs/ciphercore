@@ -538,7 +538,7 @@ impl CustomOperationBody for MixedMultiplyMPC {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bytes::subtract_vectors_u64;
+    use crate::bytes::subtract_vectors_u128;
     use crate::custom_ops::run_instantiation_pass;
     use crate::data_types::{
         array_type, scalar_type, tuple_type, ArrayShape, ScalarType, BIT, INT32, UINT32,
@@ -614,7 +614,7 @@ mod tests {
     }
 
     fn prepare_arithmetic_input(
-        input: Vec<Vec<u64>>,
+        input: Vec<Vec<u128>>,
         input_status: Vec<IOStatus>,
         st: Vec<ScalarType>,
     ) -> Result<Vec<Value>> {
@@ -628,7 +628,7 @@ mod tests {
                     panic!("Use non-empty input");
                 }
                 let threes = vec![3; n];
-                let first_share = subtract_vectors_u64(&input[i], &threes, st[i].get_modulus())?;
+                let first_share = subtract_vectors_u128(&input[i], &threes, st[i].get_modulus())?;
                 v.push(Value::from_flattened_array(&first_share, st[i].clone())?);
                 for j in 1..PARTIES {
                     let share = vec![j; n];
@@ -645,7 +645,7 @@ mod tests {
     fn check_arithmetic_output(
         mpc_graph: Graph,
         inputs: Vec<Value>,
-        expected: Vec<u64>,
+        expected: Vec<u128>,
         st: ScalarType,
         dims: ArrayShape,
         output_parties: Vec<IOStatus>,
@@ -659,23 +659,23 @@ mod tests {
             // add up shared values.
             output.access_vector(|v| {
                 let flat_dims: u64 = dims.iter().product();
-                let mut res: Vec<u64> = vec![0; flat_dims as usize];
+                let mut res = vec![0; flat_dims as usize];
                 for val in v {
-                    let arr = val.to_flattened_array_u64(output_type.clone())?;
+                    let arr = val.to_flattened_array_u128(output_type.clone())?;
                     for i in 0..flat_dims {
-                        res[i as usize] = res[i as usize].wrapping_add(arr[i as usize]);
+                        res[i as usize] = u128::wrapping_add(res[i as usize], arr[i as usize]);
                     }
                 }
                 Ok(res)
             })?
         } else {
             assert!(output.check_type(output_type.clone())?);
-            output.to_flattened_array_u64(output_type)?
+            output.to_flattened_array_u128(output_type)?
         };
         let out = if let Some(m) = st.get_modulus() {
-            out.iter().map(|x| x % m).collect()
+            out.iter().map(|x| x % m).collect::<Vec<_>>()
         } else {
-            out
+            out.iter().map(|x| x % 2_u128.pow(64)).collect::<Vec<_>>()
         };
         assert_eq!(out, expected);
         Ok(())
@@ -684,15 +684,15 @@ mod tests {
     fn helper_add_subtract(
         op: Operation,
         st: ScalarType,
-        input: Vec<Vec<u64>>,
-        expected: Vec<u64>,
+        input: Vec<Vec<u128>>,
+        expected: Vec<u128>,
         dims_in: Vec<ArrayShape>,
         dims_out: ArrayShape,
     ) -> Result<()> {
         let helper = |op: Operation,
                       st: ScalarType,
-                      input: Vec<Vec<u64>>,
-                      expected: Vec<u64>,
+                      input: Vec<Vec<u128>>,
+                      expected: Vec<u128>,
                       input_status: Vec<IOStatus>,
                       output_parties: Vec<IOStatus>|
          -> Result<()> {
@@ -880,7 +880,7 @@ mod tests {
             )?;
             let mpc_graph = mpc_context.get_main_graph()?;
 
-            let flat_dims: u64 = dims.iter().product();
+            let flat_dims = dims.iter().product::<u64>() as u128;
             let inputs = prepare_arithmetic_input(
                 vec![
                     (2..2 + flat_dims).collect(),

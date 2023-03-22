@@ -31,12 +31,14 @@ pub trait TypedValueArrayOperations<T>:
     + ToNdarray<u16>
     + ToNdarray<u32>
     + ToNdarray<u64>
+    + ToNdarray<u128>
     + ToNdarray<i8>
     + ToNdarray<i16>
     + ToNdarray<i32>
     + ToNdarray<i64>
+    + ToNdarray<i128>
 {
-    fn from_ndarray<ST: TryInto<u64> + Not<Output = ST> + TryInto<u8> + Copy>(
+    fn from_ndarray<ST: TryInto<u128> + Not<Output = ST> + TryInto<u8> + Copy>(
         a: ndarray::ArrayD<ST>,
         st: ScalarType,
     ) -> Result<T>;

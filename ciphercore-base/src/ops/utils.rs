@@ -145,7 +145,7 @@ pub fn constant(g: &Graph, v: TypedValue) -> Result<Node> {
     g.constant(v.t, v.value)
 }
 
-pub fn constant_scalar<T: TryInto<u64> + Not<Output = T> + TryInto<u8> + Copy>(
+pub fn constant_scalar<T: TryInto<u128> + Not<Output = T> + TryInto<u8> + Copy>(
     g: &Graph,
     value: T,
     st: ScalarType,

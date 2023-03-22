@@ -291,13 +291,13 @@ mod tests {
     use crate::evaluators::random_evaluate;
     use std::ops::Not;
 
-    fn intersection_helper<T: TryInto<u64> + Not<Output = T> + TryInto<u8> + Copy>(
+    fn intersection_helper<T: TryInto<u128> + Not<Output = T> + TryInto<u8> + Copy>(
         k: u32,
         st: ScalarType,
         data1: Vec<T>,
         data2: Vec<T>,
-        expected_values: Vec<u64>,
-        expected_bits: Vec<u64>,
+        expected_values: Vec<u128>,
+        expected_bits: Vec<u128>,
     ) -> Result<()> {
         let context = create_context()?;
         let graph: Graph = create_set_intersection_graph(context.clone(), k, st.clone())?;
@@ -311,9 +311,9 @@ mod tests {
         let result_tuple =
             random_evaluate(mapped_c.mappings.get_graph(graph), vec![v_1, v_2])?.to_vector()?;
         let result_values =
-            result_tuple[0].to_flattened_array_u64(array_type(vec![data1.len() as u64], st))?;
+            result_tuple[0].to_flattened_array_u128(array_type(vec![data1.len() as u64], st))?;
         let result_bits =
-            result_tuple[1].to_flattened_array_u64(array_type(vec![data1.len() as u64], BIT))?;
+            result_tuple[1].to_flattened_array_u128(array_type(vec![data1.len() as u64], BIT))?;
         assert_eq!(expected_values, result_values);
         assert_eq!(expected_bits, result_bits);
         Ok(())
@@ -355,19 +355,19 @@ mod tests {
             UINT64,
             vec![u64::MAX, 3, 4, u64::MAX - 1],
             vec![4, u64::MAX, 8, 9],
-            vec![0, 0, 4, u64::MAX],
+            vec![0, 0, 4, u64::MAX as u128],
             vec![0, 0, 1, 1],
         )
         .unwrap();
 
         intersection_helper(0, INT64, vec![0], vec![-5], vec![0], vec![0]).unwrap();
-        intersection_helper(0, INT64, vec![-5], vec![-5], vec![u64::MAX - 4], vec![1]).unwrap();
+        intersection_helper(0, INT64, vec![-5], vec![-5], vec![-5i64 as u128], vec![1]).unwrap();
         intersection_helper(
             2,
             INT64,
             vec![0, 2, -3, -4],
             vec![0, 2, -3, -5],
-            vec![0, 0, 2, u64::MAX - 2],
+            vec![0, 0, 2, -3_i64 as u128],
             vec![0, 1, 1, 1],
         )
         .unwrap();
@@ -376,7 +376,7 @@ mod tests {
             INT64,
             vec![0, 2, -3, -4],
             vec![0, 2, -3, -4],
-            vec![0, 2, u64::MAX - 3, u64::MAX - 2],
+            vec![0, 2, -4i64 as u128, -3i64 as u128],
             vec![1, 1, 1, 1],
         )
         .unwrap();
@@ -394,7 +394,7 @@ mod tests {
             INT64,
             vec![1, 2, -3, -4],
             vec![5, 6, -3, -8],
-            vec![0, 0, 0, u64::MAX - 2],
+            vec![0, 0, 0, -3i64 as u128],
             vec![0, 0, 0, 1],
         )
         .unwrap();
