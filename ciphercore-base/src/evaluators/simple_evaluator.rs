@@ -2037,7 +2037,7 @@ mod tests {
             }
             {
                 let input_value = Value::from_flattened_array(&[0, x, 2, 1, x, 3, 4, x], UINT64)?;
-                let expected = vec![0, 6, 2, 1, 5, 3, 4, 7];
+                let expected = vec![0, 7, 2, 1, 6, 3, 4, 5];
                 assert_eq!(
                     cuckoo_to_permutation_helper(vec![8], input_value, seed)?,
                     expected
@@ -2045,7 +2045,7 @@ mod tests {
             }
             {
                 let input_value = Value::from_flattened_array(&[0, x, 2, 1, x, 0, 1, x], UINT64)?;
-                let expected = vec![0, 3, 2, 1, 2, 0, 1, 3];
+                let expected = vec![0, 3, 2, 1, 3, 0, 1, 2];
                 assert_eq!(
                     cuckoo_to_permutation_helper(vec![2, 4], input_value, seed)?,
                     expected
@@ -2216,7 +2216,7 @@ mod tests {
             {
                 let input_map = vec![2, 0, 1, 3, 2, 4, 3, 8];
 
-                let expected_perm1 = vec![2, 6, 0, 1, 3, 5, 4, 8];
+                let expected_perm1 = vec![2, 7, 0, 1, 3, 6, 4, 8];
                 let expected_dup_map = vec![0, 1, 0, 0, 0, 1, 0, 0];
                 let expected_perm2 = vec![0, 2, 3, 4, 1, 6, 5, 7];
 
@@ -2244,7 +2244,7 @@ mod tests {
             }
             {
                 let input_map = vec![6, 6, 6, 6, 6, 6, 6];
-                let expected_perm1 = vec![6, 0, 1, 3, 4, 2, 5];
+                let expected_perm1 = vec![6, 4, 1, 2, 3, 5, 0];
                 let expected_dup_map = vec![0, 1, 1, 1, 1, 1, 1];
                 let expected_perm2 = vec![0, 1, 2, 3, 4, 5, 6];
 

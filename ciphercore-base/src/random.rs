@@ -21,6 +21,9 @@ pub fn get_bytes_from_os(bytes: &mut [u8]) -> Result<()> {
 /// Byte size of PRNG seed.
 pub const SEED_SIZE: usize = 16;
 
+/// Buffer size for random bytes. Benchmarks show that lowering it decreases performance, while making it higher - doesn't affect it.
+const BUFFER_SIZE: usize = 512;
+
 /// Cryptographic pseudo-random generator based on AES-128 in the counter mode.
 /// If the seed is private, the security is based on the key-recovery hardness assumption of AES
 /// and [the PRP/PRF(Prf) switching lemma](https://eprint.iacr.org/2004/331.pdf).
@@ -28,77 +31,34 @@ pub const SEED_SIZE: usize = 16;
 /// The empirical randomness properties of AES output is shown in "Empirical Evidence Concerning AES"
 /// by Peter Hellekalek and Stefan Wegenkittl.
 pub struct PRNG {
-    counter: u128,
-    random_bytes: Vec<u8>,
     aes: Crypter,
+    random_source: PrfSession,
 }
 /// The following implementation is not thread-safe as several copies of PRNG
 /// can concurrently access the system random generator
 impl PRNG {
     pub fn new(seed: Option<[u8; SEED_SIZE]>) -> Result<PRNG> {
         let err = |_| runtime_error!("Crypter didn't initialize");
-        match seed {
-            Some(bytes) => {
-                let mut c = Crypter::new(Cipher::aes_128_ecb(), Mode::Encrypt, &bytes, None)
-                    .map_err(err)?;
-                c.pad(false);
-                Ok(PRNG {
-                    counter: 0u128,
-                    random_bytes: vec![],
-                    aes: c,
-                })
-            }
+        let bytes = match seed {
+            Some(bytes) => bytes,
             None => {
                 let mut bytes = [0u8; SEED_SIZE];
                 get_bytes_from_os(&mut bytes)?;
-                let mut c = Crypter::new(Cipher::aes_128_ecb(), Mode::Encrypt, &bytes, None)
-                    .map_err(err)?;
-                c.pad(false);
-                Ok(PRNG {
-                    counter: 0u128,
-                    random_bytes: vec![],
-                    aes: c,
-                })
+                bytes
             }
-        }
-    }
-
-    fn refill_random(&mut self) -> Result<()> {
-        let counter_bytes = self.counter.to_le_bytes();
-        // additional block is needed to perform encryption,
-        // check here https://www.openssl.org/docs/manmaster/man3/EVP_CipherUpdate.html
-        let mut res = vec![0; 2 * SEED_SIZE];
-        let count = self
-            .aes
-            .update(&counter_bytes, &mut res)
-            .map_err(|_| runtime_error!("Crypter didn't manage to update"))?;
-        // finalization of Crypter is unnecessary since padding is turned off
-        // check here https://www.openssl.org/docs/manmaster/man3/EVP_CipherUpdate.html
-        if count != SEED_SIZE {
-            return Err(runtime_error!(
-                "AES encryption returned a wrong number of bytes"
-            ));
-        }
-        res.truncate(count);
-        self.random_bytes = res;
-        self.counter += 1;
-        Ok(())
+        };
+        let mut c =
+            Crypter::new(Cipher::aes_128_ecb(), Mode::Encrypt, &bytes, None).map_err(err)?;
+        c.pad(false);
+        Ok(PRNG {
+            aes: c,
+            random_source: PrfSession::new(0)?,
+        })
     }
 
     pub fn get_random_bytes(&mut self, n: usize) -> Result<Vec<u8>> {
-        let mut res = vec![];
-        while res.len() < n {
-            let num_to_fill = n - res.len();
-            if num_to_fill >= self.random_bytes.len() {
-                res.append(&mut self.random_bytes);
-                self.refill_random()?;
-            } else {
-                let l = self.random_bytes.len();
-                let mut tmp_vec: Vec<u8> = self.random_bytes.drain(l - num_to_fill..l).collect();
-                res.append(&mut tmp_vec)
-            }
-        }
-        Ok(res)
+        self.random_source
+            .generate_random_bytes(&mut self.aes, n as u64)
     }
 
     fn get_random_key(&mut self) -> Result<[u8; SEED_SIZE]> {
@@ -187,21 +147,21 @@ impl Prf {
 
     #[cfg(test)]
     fn output_bytes(&mut self, input: u64, n: u64) -> Result<Vec<u8>> {
-        PrfSession::new(&mut self.aes, input)?.generate_random_bytes(n)
+        PrfSession::new(input)?.generate_random_bytes(&mut self.aes, n)
     }
 
     pub(super) fn output_value(&mut self, input: u64, t: Type) -> Result<Value> {
-        PrfSession::new(&mut self.aes, input)?.recursively_generate_value(t)
+        PrfSession::new(input)?.recursively_generate_value(&mut self.aes, t)
     }
 
     pub(super) fn output_permutation(&mut self, input: u64, n: u64) -> Result<Value> {
         if n > 2u64.pow(30) {
             return Err(runtime_error!("n should be less than 2^30"));
         }
-        let mut session = PrfSession::new(&mut self.aes, input)?;
+        let mut session = PrfSession::new(input)?;
         let mut a: Vec<u64> = (0..n).collect();
         for i in 1..n {
-            let j = session.generate_u32_in_range(i as u32 + 1)?;
+            let j = session.generate_u32_in_range(&mut self.aes, i as u32 + 1)?;
             a.swap(i as usize, j as usize);
         }
         Value::from_flattened_array_u64(&a, UINT64)
@@ -211,33 +171,37 @@ impl Prf {
 // Helper struct for `Prf` that produces random values of various types from random bytes that
 // are generated using the `aes` crypter, and the initial `input` value that is incremented
 // as more bytes are needed.
-struct PrfSession<'a> {
-    aes: &'a mut Crypter,
+struct PrfSession {
     input: u128,
     buffer: Vec<u8>,
     next_byte: usize,
 }
 
-impl<'a> PrfSession<'a> {
-    pub fn new(aes: &'a mut Crypter, input: u64) -> Result<Self> {
+impl PrfSession {
+    pub fn new(input: u64) -> Result<Self> {
         Ok(Self {
-            aes,
             input: (input as u128) << 64,
-            buffer: vec![0u8; SEED_SIZE + Cipher::aes_128_cbc().block_size()],
-            next_byte: SEED_SIZE,
+            // Note: we'll drop the "leftover" bytes when PrfSession is destroyed. They are not useful, but if there
+            // are many small PRFs, this can be wasteful.
+            // TODO: consider doing exponential backoff (start with a small buffer size, and gradually increase it to BUFFER_SIZE).
+            // This would save us from wasting bytes for small PRFs, and will work well for large ones.
+            buffer: vec![0u8; BUFFER_SIZE + Cipher::aes_128_cbc().block_size()],
+            next_byte: BUFFER_SIZE,
         })
     }
 
-    fn generate_one_batch(&mut self) -> Result<()> {
-        let i_bytes = self.input.to_le_bytes();
-        self.input = self.input.wrapping_add(1);
-        let count = self
-            .aes
+    fn generate_one_batch(&mut self, aes: &mut Crypter) -> Result<()> {
+        let mut i_bytes = vec![0u8; BUFFER_SIZE];
+        for i in (0..i_bytes.len()).step_by(16) {
+            i_bytes[i..i + 16].copy_from_slice(&self.input.to_le_bytes());
+            self.input = self.input.wrapping_add(1);
+        }
+        let count = aes
             .update(&i_bytes, &mut self.buffer)
             .map_err(|_| runtime_error!("Crypter didn't manage to update"))?;
         // finalization of Crypter is unnecessary since padding is turned off
         // check here https://www.openssl.org/docs/manmaster/man3/EVP_CipherUpdate.html
-        if count != SEED_SIZE {
+        if count != BUFFER_SIZE {
             return Err(runtime_error!(
                 "AES encryption returned a wrong number of bytes"
             ));
@@ -246,16 +210,16 @@ impl<'a> PrfSession<'a> {
         Ok(())
     }
 
-    fn generate_random_bytes(&mut self, n: u64) -> Result<Vec<u8>> {
+    fn generate_random_bytes(&mut self, aes: &mut Crypter, n: u64) -> Result<Vec<u8>> {
         let mut bytes = vec![0u8; n as usize];
-        self.fill_random_bytes(bytes.as_mut_slice())?;
+        self.fill_random_bytes(aes, bytes.as_mut_slice())?;
         Ok(bytes)
     }
 
-    fn fill_random_bytes(&mut self, mut buff: &mut [u8]) -> Result<()> {
+    fn fill_random_bytes(&mut self, aes: &mut Crypter, mut buff: &mut [u8]) -> Result<()> {
         while !buff.is_empty() {
             let need_bytes = buff.len();
-            let ready_bytes = &self.buffer[self.next_byte..SEED_SIZE];
+            let ready_bytes = &self.buffer[self.next_byte..BUFFER_SIZE];
             if ready_bytes.len() >= need_bytes {
                 buff.clone_from_slice(&ready_bytes[..need_bytes]);
                 self.next_byte += need_bytes;
@@ -264,20 +228,20 @@ impl<'a> PrfSession<'a> {
                 buff[..ready_bytes.len()].clone_from_slice(ready_bytes);
                 buff = &mut buff[ready_bytes.len()..];
                 self.next_byte = 0;
-                self.generate_one_batch()?;
+                self.generate_one_batch(aes)?;
             }
         }
         Ok(())
     }
 
-    fn recursively_generate_value(&mut self, tp: Type) -> Result<Value> {
+    fn recursively_generate_value(&mut self, aes: &mut Crypter, tp: Type) -> Result<Value> {
         match tp {
             Type::Scalar(_) | Type::Array(_, _) => {
                 let bit_size = get_size_in_bits(tp)?;
                 let byte_size = (bit_size + 7) / 8;
                 // the last random byte should contain bits_to_flush zeros
                 let bits_to_flush = 8 * byte_size - bit_size;
-                let mut bytes = self.generate_random_bytes(byte_size)?;
+                let mut bytes = self.generate_random_bytes(aes, byte_size)?;
                 // Remove unused random bits
                 if !bytes.is_empty() {
                     *bytes.last_mut().unwrap() >>= bits_to_flush;
@@ -288,7 +252,7 @@ impl<'a> PrfSession<'a> {
                 let ts = get_types_vector(tp)?;
                 let mut v = vec![];
                 for sub_t in ts {
-                    let value = self.recursively_generate_value((*sub_t).clone())?;
+                    let value = self.recursively_generate_value(aes, (*sub_t).clone())?;
                     v.push(value);
                 }
                 Ok(Value::from_vector(v))
@@ -297,16 +261,19 @@ impl<'a> PrfSession<'a> {
     }
 
     // Generates a random number from 0..2^(8 * NEED_BYTES).
-    fn generate_random_number_const<const NEED_BYTES: usize>(&mut self) -> Result<u64> {
+    fn generate_random_number_const<const NEED_BYTES: usize>(
+        &mut self,
+        aes: &mut Crypter,
+    ) -> Result<u64> {
         let mut res = [0u8; 8];
         // Note: sometimes we copy garbage bytes, but they are discarded later.
         res.copy_from_slice(&self.buffer[self.next_byte..self.next_byte + 8]);
 
-        let use_bytes = std::cmp::min(SEED_SIZE - self.next_byte, NEED_BYTES);
+        let use_bytes = std::cmp::min(BUFFER_SIZE - self.next_byte, NEED_BYTES);
         if use_bytes == NEED_BYTES {
             self.next_byte += use_bytes;
         } else {
-            self.generate_one_batch()?;
+            self.generate_one_batch(aes)?;
             self.next_byte = NEED_BYTES - use_bytes;
             res[use_bytes..NEED_BYTES].copy_from_slice(&self.buffer[..self.next_byte]);
         }
@@ -319,21 +286,21 @@ impl<'a> PrfSession<'a> {
     }
 
     // Generates a random number from 0..2^(8 * need_bytes).
-    fn generate_random_number(&mut self, need_bytes: usize) -> Result<u64> {
+    fn generate_random_number(&mut self, aes: &mut Crypter, need_bytes: usize) -> Result<u64> {
         match need_bytes {
-            1 => self.generate_random_number_const::<1>(),
-            2 => self.generate_random_number_const::<2>(),
-            3 => self.generate_random_number_const::<3>(),
-            4 => self.generate_random_number_const::<4>(),
-            5 => self.generate_random_number_const::<5>(),
-            6 => self.generate_random_number_const::<6>(),
-            7 => self.generate_random_number_const::<7>(),
-            8 => self.generate_random_number_const::<8>(),
+            1 => self.generate_random_number_const::<1>(aes),
+            2 => self.generate_random_number_const::<2>(aes),
+            3 => self.generate_random_number_const::<3>(aes),
+            4 => self.generate_random_number_const::<4>(aes),
+            5 => self.generate_random_number_const::<5>(aes),
+            6 => self.generate_random_number_const::<6>(aes),
+            7 => self.generate_random_number_const::<7>(aes),
+            8 => self.generate_random_number_const::<8>(aes),
             _ => Err(runtime_error!("Unsupported need bytes")),
         }
     }
 
-    fn generate_u32_in_range(&mut self, modulus: u32) -> Result<u32> {
+    fn generate_u32_in_range(&mut self, aes: &mut Crypter, modulus: u32) -> Result<u32> {
         let modulus = modulus as u64;
         // Generate one extra byte of randomness to have reasonably low resampling probability.
         let need_bytes = (modulus.next_power_of_two().trailing_zeros() + 7) / 8 + 1;
@@ -343,7 +310,7 @@ impl<'a> PrfSession<'a> {
         let num_biased = (max_rand_value + 1) % modulus;
         let rejection_bound = max_rand_value - num_biased;
         loop {
-            let rand_value = self.generate_random_number(need_bytes as usize)?;
+            let rand_value = self.generate_random_number(aes, need_bytes as usize)?;
             if rand_value <= rejection_bound {
                 return Ok((rand_value % modulus) as u32);
             }
@@ -635,12 +602,12 @@ mod tests {
         // i degrees of freedom and significance level 10^(-6).
         let critical_value = [0f64, 23.9281, 27.6310, 30.6648, 33.3768, 35.8882];
         for n in 2..6 {
-            let mut session = PrfSession::new(&mut prf.aes, 0)?;
+            let mut session = PrfSession::new(0)?;
             let expected_count = 1000000;
             let runs = n * expected_count;
             let mut stats: HashMap<u32, u64> = HashMap::new();
             for _ in 0..runs {
-                let x = session.generate_u32_in_range(n)?;
+                let x = session.generate_u32_in_range(&mut prf.aes, n)?;
                 assert!(x < n);
                 *stats.entry(x).or_default() += 1;
             }
