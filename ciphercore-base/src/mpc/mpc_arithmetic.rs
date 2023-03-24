@@ -1,6 +1,5 @@
 use crate::custom_ops::{CustomOperation, CustomOperationBody};
 use crate::data_types::Type;
-use crate::data_values::Value;
 use crate::errors::Result;
 use crate::graphs::{Context, Graph, Node, NodeAnnotation, Operation};
 use crate::mpc::mpc_compiler::{check_private_tuple, get_zero_shares, PARTIES};
@@ -38,9 +37,7 @@ impl CustomOperationBody for AddMPC {
                 } else if i == 0 {
                     g.add(a0i, r_node.clone())?
                 } else {
-                    let r_type = r_node.get_type()?;
-                    let zero = g.constant(r_type.clone(), Value::zero_of_type(r_type))?;
-                    g.add(a0i, zero)?
+                    g.add(a0i, g.zeros(r_node.get_type()?)?)?
                 };
                 outputs.push(a);
             }

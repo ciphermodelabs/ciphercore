@@ -2,7 +2,6 @@ use crate::custom_ops::{
     run_instantiation_pass, ContextMappings, CustomOperation, CustomOperationBody,
 };
 use crate::data_types::{array_type, scalar_type, tuple_type, ScalarType, Type, BIT};
-use crate::data_values::Value;
 use crate::errors::Result;
 use crate::graphs::util::simple_context;
 use crate::graphs::SliceElement::SubArray;
@@ -288,10 +287,7 @@ impl CustomOperationBody for B2AMPC {
         // [-x_0, x_1, -x_2]
         bit_shares.insert(1, x1_revealed);
 
-        let zero = g.constant(
-            scalar_type(self.st.clone()),
-            Value::zero_of_type(scalar_type(self.st.clone())),
-        )?;
+        let zero = g.zeros(scalar_type(self.st.clone()))?;
 
         // Convert -x_0, x_1 and -x_2 from binary to arithmetic
         let mut arith_shares = vec![];

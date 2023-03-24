@@ -339,7 +339,7 @@ fn gen_multi_bit_sort_graph(context: Context, n: u64, l: u64) -> Result<Graph> {
         // f is one_hot encoding of x[i] in the sense that:
         // f[v][i] = 1 if (x[i] == v) else 0
         let f = custom_reduce(d, |first, second| first.multiply(second))?; // [num_values, n]
-        let one = g.constant(scalar_type(UINT32), Value::from_scalar(1, UINT32)?)?;
+        let one = g.ones(scalar_type(UINT32))?;
         let f = one.mixed_multiply(f.permute_axes(vec![1, 0])?)?; // [n, num_values]
 
         // Here we are going to compute s:

@@ -438,10 +438,7 @@ pub(super) fn compile_to_mpc_graph(
                             if i == 0 {
                                 share_vec.push(node_dependencies[j].clone())
                             } else {
-                                let t = node_dependencies[j].get_type()?;
-                                let new_node =
-                                    out_graph.constant(t.clone(), Value::zero_of_type(t))?;
-                                share_vec.push(new_node);
+                                share_vec.push(out_graph.zeros(node_dependencies[j].get_type()?)?);
                             }
                         }
                     }
