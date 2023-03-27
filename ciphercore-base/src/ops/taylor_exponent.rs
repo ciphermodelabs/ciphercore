@@ -8,7 +8,7 @@ use crate::ops::utils::{pull_out_bits, put_in_bits};
 use serde::{Deserialize, Serialize};
 
 use super::comparisons::GreaterThanEqualTo;
-use super::utils::{constant_scalar, multiply_fixed_point, zeros, zeros_like};
+use super::utils::{constant_scalar, multiply_fixed_point, zeros_like};
 
 /// A structure that defines the custom operation TaylorExponent that computes an approximate exp(x / (2 ** fixed_precision)) * (2 ** fixed_precision) using Taylor expansion.
 ///
@@ -120,7 +120,7 @@ impl CustomOperationBody for TaylorExponent {
             ])?;
             let mut bits_before_point_shape = x_bits.get_type()?.get_shape();
             bits_before_point_shape[0] = 64 - self.fixed_precision_points;
-            let zero_bits_before_point = zeros(&g, array_type(bits_before_point_shape, BIT))?;
+            let zero_bits_before_point = g.zeros(array_type(bits_before_point_shape, BIT))?;
             let stacked_frac_bits = g.create_tuple(vec![
                 bits_after_point.array_to_vector()?,
                 zero_bits_before_point.array_to_vector()?,

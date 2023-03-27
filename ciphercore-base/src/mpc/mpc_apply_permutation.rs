@@ -3,7 +3,6 @@ use crate::data_types::Type;
 use crate::errors::Result;
 use crate::graphs::{Context, Graph, Node, NodeAnnotation};
 use crate::mpc::mpc_compiler::{check_private_tuple, PARTIES};
-use crate::ops::utils::zeros;
 
 use serde::{Deserialize, Serialize};
 
@@ -59,8 +58,8 @@ impl CustomOperationBody for ApplyPermutationMPC {
             // If an array is public and permutation is private, let's make an array of 'shares'.
             vec![
                 input.clone(),
-                zeros(&g, input.get_type()?)?,
-                zeros(&g, input.get_type()?)?,
+                g.zeros(input.get_type()?)?,
+                g.zeros(input.get_type()?)?,
             ]
         } else {
             if let Type::Tuple(shape) = input.get_type()? {

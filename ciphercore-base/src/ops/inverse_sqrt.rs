@@ -9,9 +9,7 @@ use crate::typed_value::TypedValue;
 
 use serde::{Deserialize, Serialize};
 
-use super::utils::{
-    constant, constant_scalar, multiply_fixed_point, single_bit_to_arithmetic, zeros,
-};
+use super::utils::{constant, constant_scalar, multiply_fixed_point, single_bit_to_arithmetic};
 
 /// A structure that defines the custom operation InverseSqrt that computes an approximate inverse square root using Newton iterations.
 ///
@@ -130,7 +128,7 @@ impl CustomOperationBody for InverseSqrt {
             g.input(t)?
         } else if self.denominator_cap_2k == 0 {
             let two = constant(&g, TypedValue::from_scalar(2, sc.clone())?)?;
-            zeros(&g, t)?.add(two)?
+            g.zeros(t)?.add(two)?
         } else {
             let divisor_bits = pull_out_bits(divisor.a2b()?)?.array_to_vector()?;
             let mut divisor_bits_reversed = vec![];
@@ -146,7 +144,7 @@ impl CustomOperationBody for InverseSqrt {
                 let bit = g.custom_op(CustomOperation::new(Or {}), vec![bit1, bit2])?;
                 divisor_bits_reversed.push(bit);
             }
-            let zero = zeros(&g, bit_type.clone())?;
+            let zero = g.zeros(bit_type.clone())?;
             let highest_one_bit_binary = g
                 .iterate(
                     g_highest_one_bit,

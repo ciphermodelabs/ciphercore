@@ -12,7 +12,7 @@ use crate::inline::inline_ops::{
 use crate::mpc::mpc_arithmetic::{AddMPC, MultiplyMPC};
 use crate::mpc::mpc_compiler::{check_private_tuple, compile_to_mpc_graph, PARTIES};
 use crate::ops::adder::BinaryAddTransposed;
-use crate::ops::utils::{pull_out_bits, pull_out_bits_for_type, put_in_bits, zeros};
+use crate::ops::utils::{pull_out_bits, pull_out_bits_for_type, put_in_bits};
 use crate::type_inference::a2b_type_inference;
 
 use serde::{Deserialize, Serialize};
@@ -318,8 +318,7 @@ fn get_left_shift_graph(context: Context, bits_t: Type) -> Result<Graph> {
         let shape = bits_t.get_shape();
         let mut new_shape = shape;
         new_shape[0] = 1;
-        let t = array_type(new_shape, BIT);
-        let zero = zeros(&shift_g, t)?;
+        let zero = shift_g.zeros(array_type(new_shape, BIT))?;
 
         let mut result_shares = vec![];
         for i in 0..PARTIES {

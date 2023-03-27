@@ -5,7 +5,7 @@ use crate::errors::Result;
 use crate::graphs::util::simple_context;
 use crate::graphs::{Context, Graph, Node, Operation, SliceElement};
 use crate::mpc::mpc_compiler::{check_private_tuple, PARTIES};
-use crate::ops::utils::{custom_reduce, unsqueeze, zeros};
+use crate::ops::utils::{custom_reduce, unsqueeze};
 
 use serde::{Deserialize, Serialize};
 
@@ -373,7 +373,7 @@ fn pad_left(data: Node, pad_size: u64) -> Result<Node> {
     let mut pad_shape = shape;
     pad_shape[0] = pad_size;
     let g = data.get_graph();
-    let pad = zeros(&g, array_type(pad_shape, sc))?;
+    let pad = g.zeros(array_type(pad_shape, sc))?;
     g.concatenate(vec![pad, data], 0)
 }
 

@@ -113,13 +113,8 @@ pub fn put_in_bits(x: Node) -> Result<Node> {
     }
 }
 
-/// Deprecated: Use `g.zeros(t)` directly.
-pub fn zeros(g: &Graph, t: Type) -> Result<Node> {
-    g.zeros(t)
-}
-
 pub fn zeros_like(x: Node) -> Result<Node> {
-    zeros(&x.get_graph(), x.get_type()?)
+    x.get_graph().zeros(x.get_type()?)
 }
 
 pub fn ones_like(x: Node) -> Result<Node> {
@@ -134,7 +129,7 @@ pub fn extend_with_zeros(g: &Graph, x: Node, num_zero_rows: u64, in_front: bool)
     let last_axis = shape.len() - 1;
     let mut zeros_shape = shape[0..last_axis].to_vec();
     zeros_shape.push(num_zero_rows);
-    let zero_rows = zeros(g, array_type(zeros_shape, st))?;
+    let zero_rows = g.zeros(array_type(zeros_shape, st))?;
     if in_front {
         return g.concatenate(vec![zero_rows, x], last_axis as u64);
     }
@@ -217,7 +212,7 @@ fn cumulative_or(data: Node, n: u64) -> Result<Node> {
         }
     }
     let data = if pad_shape[0] != 0 {
-        let pad = zeros(&g, array_type(pad_shape, sc))?;
+        let pad = g.zeros(array_type(pad_shape, sc))?;
         g.concatenate(vec![data, pad], 0)?
     } else {
         data

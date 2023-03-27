@@ -8,7 +8,7 @@ use crate::errors::Result;
 use crate::graphs::util::simple_context;
 use crate::graphs::{Context, Graph, JoinType, Node, NodeAnnotation, SliceElement};
 use crate::ops::comparisons::Equal;
-use crate::ops::utils::{extend_with_zeros, zeros, zeros_like};
+use crate::ops::utils::{extend_with_zeros, zeros_like};
 use crate::type_inference::NULL_HEADER;
 
 use serde::{Deserialize, Serialize};
@@ -245,7 +245,7 @@ fn zero_pad_column(
         let mut extra_rows_shape = t.get_shape();
         extra_rows_shape[0] = num_extra_rows;
         let st = t.get_scalar_type();
-        let zero_rows = zeros(&g, array_type(extra_rows_shape, st))?;
+        let zero_rows = g.zeros(array_type(extra_rows_shape, st))?;
         if in_front {
             g.concatenate(vec![zero_rows, column], 0)
         } else {
