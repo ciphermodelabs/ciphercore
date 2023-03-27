@@ -309,6 +309,40 @@ pub fn reduce_mul(node: Node) -> Result<Node> {
     custom_reduce(pull_out_bits(node)?, |first, second| first.multiply(second))
 }
 
+// One-hot encoding
+// Inputs:
+//   val: val is the value to be encoded. It has shape [arbitrary_shape, N] Where N is the number of bits after A2B.
+//   max_val: max_val is the maximum value that can be encoded. max_val indicates the number of bits in the output.
+//          The output will have shape [arbitrary_shape, max_val]. Obviously, max_val must be less than 2^N.
+//   ids: ids is the precomputed array of values in the range (0..k) where k>=max_val. ids should be in binary format and have shape [k, N].
+// Note that we assume that `val` is already A2B'ed.
+// Output:
+//  The output is a BIT array which is onehot encoding of val.
+//  The output has shape [arbitrary_shape, max_val].
+//
+//  an efficient way to generate ids is to use the following code:
+//  ```
+//  let g = val.get_graph();
+//  let ones = g.ones(array_type(vec![k],INT64))?;
+//  let ids = ones.cum_sum(0)?.subtract(ones)?.a2b()?;
+//  ```
+pub fn onehot(val: Node, max_val: usize, ids: Node) -> Result<Node> {
+    let ids = ids.get_slice(vec![SliceElement::SubArray(
+        Some(0),
+        Some(max_val as i64),
+        None,
+    )])?;
+    let g = val.get_graph();
+    // We need to calculate val == ids , but we need to compare bitwise
+    // XOR(val_bits, Not(ids_bits)) is equivalent to val_bits == ids_bits
+    // XOR is equivalent to addition modulo 2, and Not is equivalent to adding 1 modulo 2
+    let bitwise_comparision = unsqueeze(val, -2)?.add(ids.add(constant_scalar(&g, 1, BIT)?)?)?;
+    // val == ids only if bitwise_comparision is all ones
+    // So we can reduce over the last dimension to get the result
+    let res = reduce_mul(bitwise_comparision)?;
+    Ok(res)
+}
+
 /// Reduces an array over the first dimension, using log number of `combine` calls.
 /// `combine` receives two arrays (first, second) of same shape, and needs to return one array of
 /// same shape. `combine` is assumed to be associative and commutative.
