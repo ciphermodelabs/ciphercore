@@ -313,14 +313,6 @@ pub fn vec_as_u64<T: TryInto<u64> + Not<Output = T> + Copy>(x: &[T]) -> Result<V
     x.iter().map(|x| as_u64(*x)).collect::<Result<_>>()
 }
 
-/// Deprecated: Use vec_as_u64
-pub fn vec_to_u64<T: TryInto<u64> + Not<Output = T> + Copy>(
-    x: &[T],
-    _st: ScalarType,
-) -> Result<Vec<u64>> {
-    vec_as_u64(x)
-}
-
 pub fn vec_as_u128<T: TryInto<u128> + Not<Output = T> + Copy>(x: &[T]) -> Result<Vec<u128>> {
     x.iter().map(|x| as_u128(*x)).collect::<Result<_>>()
 }
