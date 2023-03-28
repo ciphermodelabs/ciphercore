@@ -34,7 +34,7 @@ impl CustomOperationBody for TruncateMPC {
     fn instantiate(&self, context: Context, argument_types: Vec<Type>) -> Result<Graph> {
         if argument_types.len() == 1 {
             if let Type::Array(_, st) | Type::Scalar(st) = argument_types[0].clone() {
-                if !st.get_signed() {
+                if !st.is_signed() {
                     return Err(runtime_error!(
                         "Only signed types are supported by TruncateMPC"
                     ));
@@ -81,7 +81,7 @@ impl CustomOperationBody for TruncateMPC {
         } else {
             panic!("Shouldn't be here");
         };
-        if !input_t.get_scalar_type().get_signed() {
+        if !input_t.get_scalar_type().is_signed() {
             return Err(runtime_error!(
                 "Only signed types are supported by TruncateMPC"
             ));
@@ -291,7 +291,7 @@ impl CustomOperationBody for TruncateMPC2K {
             //    For signed inputs, we add modulus/4 to input resulting in input + modulus/4 in [0, modulus/2)
             //    For correctness, we should remove modulus/2^(k+2) after truncation since
             //    Truncate(input + modulus/4, 2^k) = Truncate(input, 2^k) + modulus/2^(k+2)
-            if st.get_signed() {
+            if st.is_signed() {
                 // modulus/4
                 let mod_fraction = constant_scalar(&g, 1u64 << (st_size - 2), st)?;
                 share.add(mod_fraction)?
@@ -428,7 +428,7 @@ impl CustomOperationBody for TruncateMPC2K {
         //     Together with y0 and y2 this value constitute the sharing of the truncation output.
         let y1 = {
             let sum01 = y_tilde0_sent.add(y_tilde1_sent)?;
-            if st.get_signed() {
+            if st.is_signed() {
                 // 14!. If input is signed, we should remove modulus/2^(k+2) after truncation since
                 //      Truncate(input + modulus/4, 2^k) = Truncate(input, 2^k) + modulus/2^(k+2)
                 let mod_fraction = constant_scalar(&g, 1u64 << (st_size - 2 - self.k), st)?;
@@ -527,7 +527,7 @@ mod tests {
         equal: bool,
         st: ScalarType,
     ) -> Result<()> {
-        if st.get_signed() {
+        if st.is_signed() {
             for (i, out_value) in output.iter().enumerate() {
                 let mut dif = (*out_value) as i64 - expected[i] as i64;
                 dif = dif.abs();
@@ -617,7 +617,7 @@ mod tests {
 
             let mpc_input = prepare_input(input.clone(), input_status.clone(), t.clone())?;
 
-            let expected = if t.get_scalar_type().get_signed() {
+            let expected = if t.get_scalar_type().is_signed() {
                 input
                     .iter()
                     .map(|x| {
@@ -702,12 +702,12 @@ mod tests {
         helper_runs(vec![0, 0], array_type(vec![2], st))?;
         helper_runs(vec![2000, 255], array_type(vec![2], st))?;
         // TODO: add tests for uint128.
-        if scale.is_power_of_two() && !st.get_signed() {
+        if scale.is_power_of_two() && !st.is_signed() {
             // 2^63 - 1, this is a maximal UINT64 value that can be truncated without errors by TruncateMPC2K
             helper_runs(vec![(1u128 << 63) - 1], scalar_type(st))?;
         }
 
-        if st.get_signed() {
+        if st.is_signed() {
             // -1
             helper_runs(vec![u64::MAX as u128], scalar_type(st))?;
             // -1000

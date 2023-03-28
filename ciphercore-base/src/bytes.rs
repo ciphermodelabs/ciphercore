@@ -333,7 +333,7 @@ pub fn vec_from_bytes(x: &[u8], st: ScalarType) -> Result<Vec<u64>> {
         _ => {
             let byte_length = scalar_size_in_bytes(st) as usize;
             // Whether to look at the leading bit when padding to 8 bytes.
-            let pad_with_sign_bit = st.get_signed() && byte_length < 8;
+            let pad_with_sign_bit = st.is_signed() && byte_length < 8;
             // E.g. 0xFFFFFFFFFFFF0000 if byte_length == 2.
             let sign_mask = match pad_with_sign_bit {
                 false => 0,
@@ -374,7 +374,7 @@ pub fn vec_u128_from_bytes(x: &[u8], st: ScalarType) -> Result<Vec<u128>> {
         _ => {
             let byte_length = scalar_size_in_bytes(st) as usize;
             // Whether to look at the leading bit when padding to 8 bytes.
-            let pad_with_sign_bit = st.get_signed() && byte_length < 16;
+            let pad_with_sign_bit = st.is_signed() && byte_length < 16;
             // E.g. 0xFFFFFFFFFFFF0000 if byte_length == 2.
             let sign_mask = match pad_with_sign_bit {
                 false => 0,

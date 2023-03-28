@@ -543,7 +543,7 @@ mod tests {
             } else {
                 i.a2b()?
             };
-            let signed_comparison = st.get_signed();
+            let signed_comparison = st.is_signed();
             let sorted = g.custom_op(
                 CustomOperation::new(Sort {
                     k,
@@ -562,7 +562,7 @@ mod tests {
         let mut prng = PRNG::new(Some(seed.clone()))?;
         let array_t: Type = array_type(vec![n], st);
         let data = prng.get_random_value(array_t.clone())?;
-        if st.get_signed() {
+        if st.is_signed() {
             let data_v_i64 = data.to_flattened_array_i64(array_t.clone())?;
             let result = random_evaluate(mapped_c.mappings.get_graph(graph), vec![data])?
                 .to_flattened_array_i64(array_t)?;
@@ -592,7 +592,7 @@ mod tests {
         let context = simple_context(|g| {
             let n = 2u64.pow(k);
             let b = scalar_size_in_bits(st);
-            let signed_comparison = st.get_signed();
+            let signed_comparison = st.is_signed();
             let i = g.input(array_type(vec![n], st))?;
             let i_binary = if st == BIT {
                 i.reshape(array_type(vec![n, 1], BIT))?

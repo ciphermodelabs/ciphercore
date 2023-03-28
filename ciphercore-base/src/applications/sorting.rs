@@ -64,7 +64,7 @@ pub fn create_batchers_sorting_graph(context: Context, k: u32, st: ScalarType) -
     // To create inputs nodes, compute the bitsize of the input scalar type
     let b = scalar_size_in_bits(st);
     // Boolean value indicating whether input bitstrings represent signed or unsigned integers
-    let signed_comparison = st.get_signed();
+    let signed_comparison = st.is_signed();
     // Number of bit strings equal to 2<sup>k</sup>
     let n = 2_u64.pow(k);
     // Define the input node with an array of n integers
@@ -130,7 +130,7 @@ mod tests {
         let mut prng = PRNG::new(Some(seed.clone()))?;
         let array_t: Type = array_type(vec![2_u64.pow(k)], st);
         let data = prng.get_random_value(array_t.clone())?;
-        if st.get_signed() {
+        if st.is_signed() {
             let data_v_i64 = data.to_flattened_array_i64(array_t.clone())?;
             let result = random_evaluate(mapped_c.mappings.get_graph(graph), vec![data])?
                 .to_flattened_array_i64(array_t)?;

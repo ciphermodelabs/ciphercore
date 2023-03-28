@@ -60,7 +60,7 @@ pub enum ScalarType {
 
 #[cfg_attr(feature = "py-binding", impl_wrapper)]
 impl ScalarType {
-    /// [DEPRECATED] Use is_signed() instead.
+    /// Deprecated. Use is_signed() instead.
     /// Tests whether this scalar type is signed.
     ///
     /// # Returns
@@ -1063,7 +1063,7 @@ impl fmt::Display for ScalarType {
         if bit_size == 1 {
             write!(scalar_type_string, "bit").unwrap();
         } else {
-            if scalar_type.get_signed() {
+            if scalar_type.is_signed() {
                 scalar_type_string.push('i');
             } else {
                 scalar_type_string.push('u');

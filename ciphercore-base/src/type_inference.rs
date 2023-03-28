@@ -716,7 +716,7 @@ impl TypeInferenceWorker {
                 let n = t.get_shape()[0];
                 let p = node_dependencies_types[1].clone();
                 if let Type::Array(shape, st) = p.clone() {
-                    if shape.len() != 1 || shape[0] != n || st == BIT || st.get_signed() {
+                    if shape.len() != 1 || shape[0] != n || st == BIT || st.is_signed() {
                         return Err(runtime_error!(
                             "Permutation should be a 1D UINT* array of shape [{n}]. Found type: {p:?}"
                         ));
@@ -791,7 +791,7 @@ impl TypeInferenceWorker {
                 if !t.is_array() && !t.is_scalar() {
                     return Err(runtime_error!("Can't truncate this type: {t:?}"));
                 }
-                if t.get_scalar_type().get_signed() && d > i64::MAX as u64 {
+                if t.get_scalar_type().is_signed() && d > i64::MAX as u64 {
                     return Err(runtime_error!("Scale for truncation is too large: {d}"));
                 }
                 self.register_result(node, t.clone())?;
@@ -878,7 +878,7 @@ impl TypeInferenceWorker {
                     return Err(runtime_error!("Input type should be an array: {t:?}"));
                 }
                 let st = t.get_scalar_type();
-                if st == BIT || st.get_signed() {
+                if st == BIT || st.is_signed() {
                     return Err(runtime_error!("Input elements must be UINT*: {t:?}"));
                 }
                 if t.get_shape().len() > 1 {
@@ -1472,7 +1472,7 @@ impl TypeInferenceWorker {
                 let indices_t = node_dependencies_types[1].clone();
                 match indices_t {
                     Type::Array(_, st) => {
-                        if st.get_signed() || st == BIT {
+                        if st.is_signed() || st == BIT {
                             return Err(runtime_error!(
                                 "Indices must be an array of UINT*: {indices_t:?}"
                             ));

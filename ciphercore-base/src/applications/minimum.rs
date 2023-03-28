@@ -18,7 +18,7 @@ use crate::ops::min_max::Min;
 /// Graph that finds the minimum of an array
 pub fn create_minimum_graph(context: Context, n: u64, st: ScalarType) -> Result<Graph> {
     // Get sign of the input scalar type that indicates whether signed comparisons should be computed
-    let signed_comparison = st.get_signed();
+    let signed_comparison = st.is_signed();
 
     // Create a graph in a given context that will be used for finding the minimum
     let g = context.create_graph()?;

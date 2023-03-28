@@ -59,7 +59,7 @@ where
 
 #[no_mangle]
 pub extern "C" fn scalar_type_get_signed(st_ptr: *const ScalarType) -> CResultVal<bool> {
-    scalar_type_method_helper(st_ptr, |st| Ok(st.get_signed()))
+    scalar_type_method_helper(st_ptr, |st| Ok(st.is_signed()))
 }
 
 #[no_mangle]

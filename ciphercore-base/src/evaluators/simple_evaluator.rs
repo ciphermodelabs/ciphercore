@@ -954,7 +954,7 @@ impl Evaluator for SimpleEvaluator {
                     dependency_value.to_flattened_array_u64(dependency_type.clone())?
                 };
                 for entry in &mut entries {
-                    if scalar_type.get_signed() {
+                    if scalar_type.is_signed() {
                         match scalar_type.get_modulus() {
                             Some(modulus) => {
                                 let mut val = *entry as i64;

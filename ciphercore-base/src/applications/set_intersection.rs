@@ -236,7 +236,7 @@ pub fn create_binary_set_intersection_graph(context: Context, k: u32, b: u64) ->
 pub fn create_set_intersection_graph(context: Context, k: u32, st: ScalarType) -> Result<Graph> {
     let b = scalar_size_in_bits(st);
     let sorting_2n_g =
-        create_binary_batchers_sorting_graph(context.clone(), k + 1, b, st.get_signed())?;
+        create_binary_batchers_sorting_graph(context.clone(), k + 1, b, st.is_signed())?;
     let sorting_n_g = create_binary_batchers_sorting_graph(context.clone(), k, b + 1, false)?;
 
     let binary_graph = context.create_graph()?;

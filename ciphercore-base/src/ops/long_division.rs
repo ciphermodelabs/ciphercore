@@ -533,7 +533,7 @@ mod tests {
         if n != divisors.len() {
             return Err(runtime_error!("dividends and divisors length mismatch"));
         }
-        if dividend_t.get_signed() != divisor_t.get_signed() {
+        if dividend_t.is_signed() != divisor_t.is_signed() {
             return Err(runtime_error!("dividends and divisors signed mismatch"));
         }
         let dividends_t = array_type(vec![n as u64], dividend_t.clone());
@@ -545,7 +545,7 @@ mod tests {
             let binary_divisors = input_divisors.a2b()?;
             let result = g.custom_op(
                 CustomOperation::new(LongDivision {
-                    signed: dividend_t.get_signed(),
+                    signed: dividend_t.is_signed(),
                 }),
                 vec![binary_dividends, binary_divisors],
             )?;

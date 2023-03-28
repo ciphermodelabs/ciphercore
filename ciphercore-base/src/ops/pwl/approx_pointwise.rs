@@ -30,7 +30,7 @@ where
     F: Fn(f32) -> f32,
 {
     let st = x.get_type()?.get_scalar_type();
-    if !st.get_signed() {
+    if !st.is_signed() {
         return Err(runtime_error!("Only signed types are supported"));
     }
     if right <= left {
