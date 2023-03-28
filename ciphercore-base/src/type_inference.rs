@@ -265,7 +265,7 @@ fn b2a_type_inference(t: Type, st: ScalarType) -> Result<Type> {
     if st == BIT {
         return Err(runtime_error!("Trying to B2A into bits: {t:?}"));
     }
-    if shape[shape.len() - 1] != scalar_size_in_bits(st.clone()) {
+    if shape[shape.len() - 1] != scalar_size_in_bits(st) {
         return Err(runtime_error!("Invalid scalar type for B2A: {t:?}"));
     }
     if shape.len() == 1 {
@@ -1470,7 +1470,7 @@ impl TypeInferenceWorker {
                     ));
                 }
                 let indices_t = node_dependencies_types[1].clone();
-                match indices_t.clone() {
+                match indices_t {
                     Type::Array(_, st) => {
                         if st.get_signed() || st == BIT {
                             return Err(runtime_error!(
@@ -1701,9 +1701,7 @@ impl TypeInferenceWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data_types::{
-        create_scalar_type, ArrayShape, Type, BIT, INT32, INT8, UINT16, UINT32, UINT8,
-    };
+    use crate::data_types::{ArrayShape, Type, BIT, INT32, INT8, UINT16, UINT32, UINT8};
     use crate::data_values::Value;
     use crate::graphs::{
         create_unchecked_context, Graph, JoinType, ShardConfig, Slice, SliceElement,
@@ -2602,7 +2600,6 @@ mod tests {
         assert!(e.is_err());
     }
 
-    use crate::constants::type_size_limit_constants;
     #[test]
     fn test_b2a() {
         test_b2a_worker(
@@ -2615,15 +2612,6 @@ mod tests {
         test_b2a_worker_fail(array_type(vec![10, 20, 1], BIT), BIT);
         test_b2a_worker_fail(array_type(vec![10, 20, 1], INT32), INT32);
         test_b2a_worker_fail(array_type(vec![10, 40], BIT), INT32);
-        if type_size_limit_constants::NON_STANDARD_SCALAR_LEN_SUPPORT {
-            let t = create_scalar_type(false, Some(126));
-            test_b2a_worker(array_type(vec![7], BIT), t.clone(), scalar_type(t.clone()));
-            test_b2a_worker(
-                array_type(vec![123, 45, 7], BIT),
-                t.clone(),
-                array_type(vec![123, 45], t.clone()),
-            );
-        }
     }
 
     fn test_create_tuple_worker(elements: Vec<Type>, expected_result: Type) {
@@ -3511,13 +3499,13 @@ mod tests {
         let context = create_unchecked_context()?;
         let graph = context.create_graph()?;
         let mut worker = create_type_inference_worker(context.clone());
-        let t = array_type(shape.clone(), st.clone());
+        let t = array_type(shape.clone(), st);
         let i = graph.input(t.clone())?;
         let b = graph.input(array_type(vec![shape[0]], BIT))?;
         let v = if shape.len() > 1 {
-            graph.input(array_type(shape[1..].to_vec(), st.clone()))?
+            graph.input(array_type(shape[1..].to_vec(), st))?
         } else {
-            graph.input(scalar_type(st.clone()))?
+            graph.input(scalar_type(st))?
         };
         let o = i.segment_cumsum(b, v)?;
         let res_t = worker.process_node(o)?;

@@ -5,11 +5,10 @@ use crate::data_values::Value;
 use crate::errors::Result;
 use crate::graphs::{Context, Graph, GraphAnnotation};
 use crate::ops::utils::{pull_out_bits, put_in_bits};
-use crate::typed_value::TypedValue;
 
 use serde::{Deserialize, Serialize};
 
-use super::utils::{constant, constant_scalar, multiply_fixed_point, single_bit_to_arithmetic};
+use super::utils::{constant_scalar, multiply_fixed_point, single_bit_to_arithmetic};
 
 /// A structure that defines the custom operation InverseSqrt that computes an approximate inverse square root using Newton iterations.
 ///
@@ -127,7 +126,7 @@ impl CustomOperationBody for InverseSqrt {
         let mut approximation = if has_initial_approximation {
             g.input(t)?
         } else if self.denominator_cap_2k == 0 {
-            let two = constant(&g, TypedValue::from_scalar(2, sc.clone())?)?;
+            let two = constant_scalar(&g, 2, sc)?;
             g.zeros(t)?.add(two)?
         } else {
             let divisor_bits = pull_out_bits(divisor.a2b()?)?.array_to_vector()?;
@@ -153,15 +152,15 @@ impl CustomOperationBody for InverseSqrt {
                 )?
                 .tuple_get(1)?
                 .vector_to_array()?;
-            let highest_one_bit = single_bit_to_arithmetic(highest_one_bit_binary, sc.clone())?;
+            let highest_one_bit = single_bit_to_arithmetic(highest_one_bit_binary, sc)?;
             let first_approximation_bits = put_in_bits(highest_one_bit)?;
             let mut powers_of_two = vec![];
             for i in 0..self.denominator_cap_2k {
                 powers_of_two.push(1u64 << i);
             }
             let powers_of_two_node = g.constant(
-                array_type(vec![self.denominator_cap_2k], sc.clone()),
-                Value::from_flattened_array(&powers_of_two, sc.clone())?,
+                array_type(vec![self.denominator_cap_2k], sc),
+                Value::from_flattened_array(&powers_of_two, sc)?,
             )?;
             first_approximation_bits.dot(powers_of_two_node)?
         };

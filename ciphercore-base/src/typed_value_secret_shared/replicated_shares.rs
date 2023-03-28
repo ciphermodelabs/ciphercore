@@ -28,7 +28,7 @@ impl TypedValueArrayOperations<ReplicatedShares> for ReplicatedShares {
             .axis_iter(Axis(0))
             .map(|x| -> Result<Value> {
                 shapes.push(x.shape().to_vec());
-                Value::from_ndarray(x.to_owned(), st.clone())
+                Value::from_ndarray(x.to_owned(), st)
             })
             .collect();
         let shares = shares_result?;

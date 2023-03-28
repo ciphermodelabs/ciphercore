@@ -311,7 +311,7 @@ impl CustomOperationBody for Sort {
                         single_first_element,
                         array_type(
                             chunks_a_shape[1..chunks_a_shape.len()].to_vec(),
-                            chunks_a_scalar_t.clone(),
+                            chunks_a_scalar_t,
                         ),
                     )?;
                     // For it==2, i==0,
@@ -379,7 +379,7 @@ impl CustomOperationBody for Sort {
                         single_last_elem,
                         array_type(
                             chunks_a_shape[1..chunks_a_shape.len()].to_vec(),
-                            chunks_a_scalar_t.clone(),
+                            chunks_a_scalar_t,
                         ),
                     )?;
                     // For it==2, i==0,
@@ -536,8 +536,8 @@ mod tests {
     fn test_large_vec_batchers_sorting(k: u32, st: ScalarType) -> Result<()> {
         let n = 2u64.pow(k);
         let context = simple_context(|g| {
-            let b = scalar_size_in_bits(st.clone());
-            let i = g.input(array_type(vec![n], st.clone()))?;
+            let b = scalar_size_in_bits(st);
+            let i = g.input(array_type(vec![n], st))?;
             let i_binary = if st == BIT {
                 i.reshape(array_type(vec![n, 1], BIT))?
             } else {
@@ -552,11 +552,7 @@ mod tests {
                 }),
                 vec![i_binary],
             )?;
-            let o = if st == BIT {
-                sorted
-            } else {
-                sorted.b2a(st.clone())?
-            };
+            let o = if st == BIT { sorted } else { sorted.b2a(st)? };
             Ok(o)
         })?;
         let graph = context.get_main_graph()?;
@@ -564,7 +560,7 @@ mod tests {
 
         let seed = b"\xB6\xD7\x1A\x2F\x88\xC1\x12\xBA\x3F\x2E\x17\xAB\xB7\x46\x15\x9A";
         let mut prng = PRNG::new(Some(seed.clone()))?;
-        let array_t: Type = array_type(vec![n], st.clone());
+        let array_t: Type = array_type(vec![n], st);
         let data = prng.get_random_value(array_t.clone())?;
         if st.get_signed() {
             let data_v_i64 = data.to_flattened_array_i64(array_t.clone())?;
@@ -595,9 +591,9 @@ mod tests {
     fn test_batchers_sorting_graph_helper(k: u32, st: ScalarType, data: Vec<u64>) -> Result<()> {
         let context = simple_context(|g| {
             let n = 2u64.pow(k);
-            let b = scalar_size_in_bits(st.clone());
+            let b = scalar_size_in_bits(st);
             let signed_comparison = st.get_signed();
-            let i = g.input(array_type(vec![n], st.clone()))?;
+            let i = g.input(array_type(vec![n], st))?;
             let i_binary = if st == BIT {
                 i.reshape(array_type(vec![n, 1], BIT))?
             } else {
@@ -611,17 +607,13 @@ mod tests {
                 }),
                 vec![i_binary],
             )?;
-            let o = if st == BIT {
-                sorted
-            } else {
-                sorted.b2a(st.clone())?
-            };
+            let o = if st == BIT { sorted } else { sorted.b2a(st)? };
             Ok(o)
         })?;
         let graph = context.get_main_graph()?;
         let mapped_c = run_instantiation_pass(graph.get_context())?;
 
-        let v_a = Value::from_flattened_array(&data, st.clone())?;
+        let v_a = Value::from_flattened_array(&data, st)?;
         let result = random_evaluate(mapped_c.mappings.get_graph(graph), vec![v_a])?
             .to_flattened_array_u64(array_type(vec![data.len() as u64], st))?;
         let mut sorted_data = data;

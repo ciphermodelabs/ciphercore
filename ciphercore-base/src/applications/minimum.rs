@@ -24,7 +24,7 @@ pub fn create_minimum_graph(context: Context, n: u64, st: ScalarType) -> Result<
     let g = context.create_graph()?;
 
     // Create the type of the input array with `2^n` elements.
-    let input_type = array_type(vec![1 << n], st.clone());
+    let input_type = array_type(vec![1 << n], st);
 
     // Add an input node to the empty graph g created above.
     // This input node requires the input array type generated previously.
@@ -93,13 +93,13 @@ mod tests {
     ) -> Value {
         || -> Result<Value> {
             let c = create_context()?;
-            let g = create_minimum_graph(c.clone(), n, st.clone())?;
+            let g = create_minimum_graph(c.clone(), n, st)?;
             g.set_as_main()?;
             c.finalize()?;
             let mapped_c = run_instantiation_pass(c)?.get_context();
             let mapped_g = mapped_c.get_main_graph()?;
 
-            let input_type = array_type(vec![n], st.clone());
+            let input_type = array_type(vec![n], st);
             let val = Value::from_flattened_array(input_value, input_type.get_scalar_type())?;
             random_evaluate(mapped_g, vec![val])
         }()

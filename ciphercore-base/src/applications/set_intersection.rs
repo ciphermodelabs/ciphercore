@@ -234,7 +234,7 @@ pub fn create_binary_set_intersection_graph(context: Context, k: u32, b: u64) ->
 ///
 /// Graph that intersects sets
 pub fn create_set_intersection_graph(context: Context, k: u32, st: ScalarType) -> Result<Graph> {
-    let b = scalar_size_in_bits(st.clone());
+    let b = scalar_size_in_bits(st);
     let sorting_2n_g =
         create_binary_batchers_sorting_graph(context.clone(), k + 1, b, st.get_signed())?;
     let sorting_n_g = create_binary_batchers_sorting_graph(context.clone(), k, b + 1, false)?;
@@ -250,8 +250,8 @@ pub fn create_set_intersection_graph(context: Context, k: u32, st: ScalarType) -
 
     let g = context.create_graph()?;
 
-    let input1 = g.input(array_type(vec![1 << k], st.clone()))?;
-    let input2 = g.input(array_type(vec![1 << k], st.clone()))?;
+    let input1 = g.input(array_type(vec![1 << k], st))?;
+    let input2 = g.input(array_type(vec![1 << k], st))?;
 
     let binary_input1 = if st == BIT { input1 } else { input1.a2b()? };
 
@@ -300,14 +300,14 @@ mod tests {
         expected_bits: Vec<u128>,
     ) -> Result<()> {
         let context = create_context()?;
-        let graph: Graph = create_set_intersection_graph(context.clone(), k, st.clone())?;
+        let graph: Graph = create_set_intersection_graph(context.clone(), k, st)?;
         context.set_main_graph(graph.clone())?;
         context.finalize()?;
 
         let mapped_c = run_instantiation_pass(graph.get_context())?;
 
-        let v_1 = Value::from_flattened_array(&data1, st.clone())?;
-        let v_2 = Value::from_flattened_array(&data2, st.clone())?;
+        let v_1 = Value::from_flattened_array(&data1, st)?;
+        let v_2 = Value::from_flattened_array(&data2, st)?;
         let result_tuple =
             random_evaluate(mapped_c.mappings.get_graph(graph), vec![v_1, v_2])?.to_vector()?;
         let result_values =

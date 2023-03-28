@@ -331,7 +331,7 @@ pub fn vec_from_bytes(x: &[u8], st: ScalarType) -> Result<Vec<u64>> {
             }
         }
         _ => {
-            let byte_length = scalar_size_in_bytes(st.clone()) as usize;
+            let byte_length = scalar_size_in_bytes(st) as usize;
             // Whether to look at the leading bit when padding to 8 bytes.
             let pad_with_sign_bit = st.get_signed() && byte_length < 8;
             // E.g. 0xFFFFFFFFFFFF0000 if byte_length == 2.
@@ -372,7 +372,7 @@ pub fn vec_u128_from_bytes(x: &[u8], st: ScalarType) -> Result<Vec<u128>> {
             }
         }
         _ => {
-            let byte_length = scalar_size_in_bytes(st.clone()) as usize;
+            let byte_length = scalar_size_in_bytes(st) as usize;
             // Whether to look at the leading bit when padding to 8 bytes.
             let pad_with_sign_bit = st.get_signed() && byte_length < 16;
             // E.g. 0xFFFFFFFFFFFF0000 if byte_length == 2.
@@ -456,7 +456,7 @@ mod tests {
         bytes: &Vec<u8>,
         st: ScalarType,
     ) -> bool {
-        let ints_bytes = vec_to_bytes(&ints, st.clone()).unwrap();
+        let ints_bytes = vec_to_bytes(&ints, st).unwrap();
         let from_u64_bytes = vec_u64_to_bytes(&ints, st).unwrap();
         assert_eq!(ints_bytes, from_u64_bytes);
         ints_bytes == *bytes
@@ -579,7 +579,7 @@ mod tests {
         assert!(e.is_err());
     }
     fn vec_from_bytes_helper(bytes: &Vec<u8>, ints: &Vec<u64>, st: ScalarType) -> bool {
-        let bytes_ints = vec_from_bytes(&bytes, st.clone()).unwrap();
+        let bytes_ints = vec_from_bytes(&bytes, st).unwrap();
         bytes_ints == *ints
     }
     #[test]
@@ -689,7 +689,7 @@ mod tests {
         assert!(e.is_err());
     }
     fn vec_u128_from_bytes_helper(bytes: &Vec<u8>, ints: &Vec<u128>, st: ScalarType) -> bool {
-        let bytes_ints = vec_u128_from_bytes(&bytes, st.clone()).unwrap();
+        let bytes_ints = vec_u128_from_bytes(&bytes, st).unwrap();
         bytes_ints == *ints
     }
     #[test]

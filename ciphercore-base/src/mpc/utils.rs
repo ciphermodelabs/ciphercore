@@ -153,25 +153,25 @@ pub fn share_vector<T: TryInto<u128> + Not<Output = T> + TryInto<u8> + Copy>(
     scalar_type: ScalarType,
 ) -> Result<Vec<Value>> {
     let n = data.len();
-    let n_bytes = n * scalar_size_in_bytes(scalar_type.clone()) as usize;
+    let n_bytes = n * scalar_size_in_bytes(scalar_type) as usize;
 
     // first share (r0) is pseudo-random
     let r0_bytes = prng.get_random_bytes(n_bytes)?;
     let r0 = Value::from_bytes(r0_bytes)
-        .to_flattened_array_u128(array_type(vec![n as u64], scalar_type.clone()))?;
+        .to_flattened_array_u128(array_type(vec![n as u64], scalar_type))?;
     // second share (r1) is pseudo-random
     let r1_bytes = prng.get_random_bytes(n_bytes)?;
     let r1 = Value::from_bytes(r1_bytes)
-        .to_flattened_array_u128(array_type(vec![n as u64], scalar_type.clone()))?;
+        .to_flattened_array_u128(array_type(vec![n as u64], scalar_type))?;
     // third share (r2) is r2 = data - (r0 + r1)
     let r0r1 = add_vectors_u128(&r0, &r1, scalar_type.get_modulus())?;
-    let data_u128 = Value::from_flattened_array(data, scalar_type.clone())?
-        .to_flattened_array_u128(array_type(vec![n as u64], scalar_type.clone()))?;
+    let data_u128 = Value::from_flattened_array(data, scalar_type)?
+        .to_flattened_array_u128(array_type(vec![n as u64], scalar_type))?;
     let r2 = subtract_vectors_u128(&data_u128, &r0r1, scalar_type.get_modulus())?;
 
     let shares = vec![
-        Value::from_flattened_array(&r0, scalar_type.clone())?,
-        Value::from_flattened_array(&r1, scalar_type.clone())?,
+        Value::from_flattened_array(&r0, scalar_type)?,
+        Value::from_flattened_array(&r1, scalar_type)?,
         Value::from_flattened_array(&r2, scalar_type)?,
     ];
 

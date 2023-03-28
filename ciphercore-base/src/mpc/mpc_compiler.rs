@@ -1452,8 +1452,8 @@ mod tests {
         if let Type::Scalar(st) | Type::Array(_, st) = t.clone() {
             let mut res = vec![];
             let zero = Value::zero_of_type(t.clone());
-            let one = Value::from_scalar(1, st.clone())?;
-            let two = Value::from_scalar(2, st.clone())?;
+            let one = Value::from_scalar(1, st)?;
+            let two = Value::from_scalar(2, st)?;
             for i in 0..PARTIES {
                 let (add_sub, l_value, r_value) = match i {
                     0 => (Operation::Add, value.clone(), two.clone()),
@@ -1464,7 +1464,7 @@ mod tests {
                 let share = evaluate_add_subtract_multiply(
                     t.clone(),
                     l_value,
-                    scalar_type(st.clone()),
+                    scalar_type(st),
                     r_value,
                     add_sub,
                     t.clone(),

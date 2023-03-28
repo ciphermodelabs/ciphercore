@@ -42,7 +42,7 @@ where
     if log_buckets == 0 {
         return Err(runtime_error!("log_buckets should be positive"));
     }
-    let bit_len = scalar_size_in_bits(st.clone());
+    let bit_len = scalar_size_in_bits(st);
     if log_buckets >= bit_len - 2 {
         return Err(runtime_error!("Too many approximation buckets"));
     }
@@ -81,17 +81,17 @@ where
     }
 
     let alphas_arr = g.constant(
-        array_type(vec![alphas.len() as u64], st.clone()),
-        Value::from_flattened_array(&alphas, st.clone())?,
+        array_type(vec![alphas.len() as u64], st),
+        Value::from_flattened_array(&alphas, st)?,
     )?;
     let betas_arr = g.constant(
-        array_type(vec![betas.len() as u64], st.clone()),
-        Value::from_flattened_array(&betas, st.clone())?,
+        array_type(vec![betas.len() as u64], st),
+        Value::from_flattened_array(&betas, st)?,
     )?;
     // We compute potential values for all segments with broadcasting.
     let mut x_shape = x.get_type()?.get_dimensions();
     x_shape.push(1);
-    let expanded_x = x.reshape(array_type(x_shape, st.clone()))?;
+    let expanded_x = x.reshape(array_type(x_shape, st))?;
     let all_vals = expanded_x
         .multiply(alphas_arr)?
         .truncate(1 << precision)?
@@ -104,7 +104,7 @@ where
     let potential_vals = all_vals.permute_axes(perm)?;
 
     let left_fp = (left * ((1 << precision) as f32)) as i64;
-    let left_node = g.constant(scalar_type(st.clone()), Value::from_scalar(left_fp, st)?)?;
+    let left_node = g.constant(scalar_type(st), Value::from_scalar(left_fp, st)?)?;
     // We want to linearly transform `x` so that `left` becomes 0, and `right` becomes `scale` (as integer).
     let shifted_x = x.subtract(left_node)?;
     // We need to find `divisor` so that `(right - left) / divisor` = scale.

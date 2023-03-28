@@ -93,12 +93,10 @@ pub(crate) fn evaluate_add_subtract_multiply(
         | (Type::Scalar(_), Type::Array(_, st))
         | (Type::Array(_, st), Type::Array(_, _)) => {
             //pack bytes into vectors of u128
-            let bytes1_u128 = value1.access_bytes(|ref_bytes| {
-                Ok(vec_u128_from_bytes(ref_bytes, st.clone())?.to_vec())
-            })?;
-            let bytes2_u128 = value2.access_bytes(|ref_bytes| {
-                Ok(vec_u128_from_bytes(ref_bytes, st.clone())?.to_vec())
-            })?;
+            let bytes1_u128 = value1
+                .access_bytes(|ref_bytes| Ok(vec_u128_from_bytes(ref_bytes, st)?.to_vec()))?;
+            let bytes2_u128 = value2
+                .access_bytes(|ref_bytes| Ok(vec_u128_from_bytes(ref_bytes, st)?.to_vec()))?;
             let shape1 = type1.get_dimensions();
             let shape2 = type2.get_dimensions();
             let shape_res = result_type.get_dimensions();
@@ -145,9 +143,8 @@ pub(crate) fn evaluate_mixed_multiply(
         | (Type::Scalar(st), Type::Array(_, _))
         | (Type::Array(_, st), Type::Array(_, _)) => {
             //pack bytes into vectors of u64
-            let bytes1_u128 = value1.access_bytes(|ref_bytes| {
-                Ok(vec_u128_from_bytes(ref_bytes, st.clone())?.to_vec())
-            })?;
+            let bytes1_u128 = value1
+                .access_bytes(|ref_bytes| Ok(vec_u128_from_bytes(ref_bytes, st)?.to_vec()))?;
             let bytes2_u128 = value2
                 .access_bytes(|ref_bytes| Ok(vec_u128_from_bytes(ref_bytes, BIT)?.to_vec()))?;
             let shape1 = type1.get_dimensions();
@@ -434,7 +431,7 @@ fn evaluate_gemm(
     let shape1 = transpose_shape(type1.get_shape(), !transpose1);
 
     // Transposed types
-    let trans_t0 = array_type(shape0, st.clone());
+    let trans_t0 = array_type(shape0, st);
     let trans_t1 = array_type(shape1, st);
 
     general_gemm(trans_value0, trans_value1, trans_t0, trans_t1, result_type)
@@ -806,13 +803,12 @@ impl Evaluator for SimpleEvaluator {
                 let st = t.get_scalar_type();
                 if !shape.is_empty() {
                     for value in values {
-                        let arr =
-                            value.to_flattened_array_u64(array_type(shape.clone(), st.clone()))?;
+                        let arr = value.to_flattened_array_u64(array_type(shape.clone(), st))?;
                         result.extend_from_slice(&arr);
                     }
                 } else {
                     for value in values {
-                        let arr = value.to_u64(st.clone())?;
+                        let arr = value.to_u64(st)?;
                         result.push(arr);
                     }
                 }
@@ -953,7 +949,7 @@ impl Evaluator for SimpleEvaluator {
                 let scalar_type = dependency_type.get_scalar_type();
                 let dependency_value = dependencies_values[0].clone();
                 let mut entries = if dependency_type.is_scalar() {
-                    vec![dependency_value.to_u64(scalar_type.clone())?]
+                    vec![dependency_value.to_u64(scalar_type)?]
                 } else {
                     dependency_value.to_flattened_array_u64(dependency_type.clone())?
                 };
@@ -1282,7 +1278,7 @@ impl Evaluator for SimpleEvaluator {
                 let binary_array = binary_array_value.to_flattened_array_u128(binary_t)?;
                 let input_st = input_t.get_scalar_type();
                 let first_row = if first_row_t.is_scalar() {
-                    vec![first_row_value.to_u128(input_st.clone())?]
+                    vec![first_row_value.to_u128(input_st)?]
                 } else {
                     first_row_value.to_flattened_array_u128(first_row_t.clone())?
                 };
@@ -1600,7 +1596,7 @@ mod tests {
         inputs: Vec<Value>,
     ) -> Result<Vec<u64>> {
         let c = simple_context(|g| {
-            let i = g.input(array_type(input_shape.clone(), st.clone()))?;
+            let i = g.input(array_type(input_shape.clone(), st))?;
             let b = g.input(array_type(vec![input_shape[0]], BIT))?;
             let first_row = if input_shape.len() > 1 {
                 g.input(array_type(input_shape[1..].to_vec(), st))?
@@ -2363,17 +2359,14 @@ mod tests {
         fn get_type(&self) -> Type {
             let mut v = vec![];
             for col in self.iter() {
-                v.push((
-                    col.header.clone(),
-                    array_type(col.shape.clone(), col.st.clone()),
-                ));
+                v.push((col.header.clone(), array_type(col.shape.clone(), col.st)));
             }
             named_tuple_type(v)
         }
         fn get_value(&self) -> Result<Value> {
             let mut v = vec![];
             for col in self.iter() {
-                v.push(Value::from_flattened_array(&col.data, col.st.clone())?);
+                v.push(Value::from_flattened_array(&col.data, col.st)?);
             }
             Ok(Value::from_vector(v))
         }

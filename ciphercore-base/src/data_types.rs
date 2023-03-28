@@ -2,45 +2,28 @@
 use crate::constants::type_size_limit_constants;
 use crate::errors::CiphercoreBaseError;
 use crate::errors::Result;
-use serde::Deserializer;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::fmt::Display;
 use std::fmt::Write;
 use std::str::FromStr;
 use std::sync::Arc;
 
 #[cfg(feature = "py-binding")]
-use pywrapper_macro::{enum_to_struct_wrapper, fn_wrapper, impl_wrapper, struct_wrapper};
+use pywrapper_macro::{enum_to_struct_wrapper, fn_wrapper, impl_wrapper};
 
 /// A structure that represents a scalar type.
 ///
-/// Each scalar value corresponds to a signed or an unsigned integer modulo `modulus`.
-/// `None` value is deprecated and should not be used.
-///
-/// Unsigned scalars correspond to integers between `0` and `modulus` - 1.
-///
-/// Signed scalars correspond to integers between -⌊`modulus`/2⌋ and ⌈`modulus`/2⌉ - 1.
-///
-/// Supported signed scalar types include [INT8], [INT16], [INT32], and [INT64].
-///
-/// Supported unsigned scalar types include [UINT8], [UINT16], [UINT32], and [UINT64].
-///
-/// Bit-level scalar type, namely [BIT], is also supported.
-///
-/// Following table provides the details regarding the `modulus` values and the signed
-/// information for the supported types:
-///
-/// |                 `modulus` | `signed` |     Type |
-/// |---------------------------|----------|----------|
-/// |               `Some`\(2\) |  `false` |    [BIT] |
-/// |   `Some`\(2<sup>8</sup>\) |  `false` |  [UINT8] |
-/// |   `Some`\(2<sup>8</sup>\) |   `true` |   [INT8] |
-/// |  `Some`\(2<sup>16</sup>\) |  `false` | [UINT16] |
-/// |  `Some`\(2<sup>16</sup>\) |   `true` |  [INT16] |
-/// |  `Some`\(2<sup>32</sup>\) |  `false` | [UINT32] |
-/// |  `Some`\(2<sup>32</sup>\) |   `true` |  [INT32] |
-/// |  `Some`\(2<sup>64</sup>\) |  `false` | [UINT64] |
-/// |  `Some`\(2<sup>64</sup>\) |   `true` |  [INT64] |
+/// The supported scalar types is the standard set of scalar types:
+/// - `BIT`: a single bit
+/// - `U8`: an integer in the range [0, 2<sup>8</sup>]
+/// - `I8`: an integer in the range [-2<sup>7</sup>, 2<sup>7</sup> - 1]
+/// - `U16`: an integer in the range [0, 2<sup>16</sup>]
+/// - `I16`: an integer in the range [-2<sup>15</sup>, 2<sup>15</sup> - 1]
+/// - `U32`: an integer in the range [0, 2<sup>32</sup>]
+/// - `I32`: an integer in the range [-2<sup>31</sup>, 2<sup>31</sup> - 1]
+/// - `U64`: an integer in the range [0, 2<sup>64</sup>]
+/// - `I64`: an integer in the range [-2<sup>63</sup>, 2<sup>63</sup> - 1]
 ///
 /// # Examples
 ///
@@ -59,129 +42,25 @@ use pywrapper_macro::{enum_to_struct_wrapper, fn_wrapper, impl_wrapper, struct_w
 /// assert_eq!("(\\\"Name\\\": u8[100], \\\"Zip\\\": u64[2])", t6.to_string());
 /// ```
 ///
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, Hash)]
+#[derive(PartialEq, Eq, Clone, Copy, Serialize, Deserialize, Hash)]
+#[serde(rename_all = "lowercase")]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
-#[cfg_attr(feature = "py-binding", struct_wrapper)]
-pub struct ScalarType {
-    /// Indicates if the scalar is signed.
-    pub signed: bool,
-
-    /// Provides an upper-bound on the scalar values.
-    /// Deserializer processes `None` and converts it to `2^64`.
-    #[serde(deserialize_with = "deserialize_modulus")]
-    pub modulus: Option<u128>,
-}
-struct DeserializeModulusVisitor;
-
-impl<'de> serde::de::Visitor<'de> for DeserializeModulusVisitor {
-    type Value = Option<u128>;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("unsigned integer or none")
-    }
-
-    fn visit_some<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        deserializer.deserialize_u128(self)
-    }
-
-    fn visit_u128<E>(self, v: u128) -> std::result::Result<Self::Value, E>
-    where
-        E: serde::de::Error,
-    {
-        Ok(Some(v))
-    }
-    fn visit_none<E>(self) -> std::result::Result<Self::Value, E>
-    where
-        E: serde::de::Error,
-    {
-        Ok(Some(2_u128.pow(64)))
-    }
-}
-
-fn deserialize_modulus<'de, D>(deserializer: D) -> std::result::Result<Option<u128>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    deserializer.deserialize_option(DeserializeModulusVisitor)
-}
-
-/// Returns a new, bounded signed or unsigned scalar.
-///
-/// Input `signed` equals `true` indicates a signed scalar, or an unsigned one otherwise.
-///
-/// Input `modulus` governs the range of values that the new scalar can correspond to.
-///
-/// Unsigned scalars correspond to integers between `0` and `modulus` - 1.
-///
-/// Signed scalars correspond to integers between -⌊`modulus`/2⌋ and ⌈`modulus`/2⌉ - 1.
-///
-/// For obtaining a new bit scalar, the given `modulus` input value should be 2, and `signed` value should be `false`. Alternatively, use [BIT].
-///
-/// Supported scalars are [BIT], [UINT8], [INT8], [UINT16], [INT16], [UINT32], [INT32], [UINT64], and [INT64]
-///
-/// # Arguments
-///
-/// * `signed` - Boolean value; set `true` for obtaining signed scalar type or `false` for unsigned scalar type
-/// * `modulus` - unsigned 64-bit integer value defining the upper-bound for the values associated with the newly returned scalar type
-///
-/// # Returns
-///
-/// A new initialized scalar type
-///
-/// # Example
-///
-/// ```
-/// # use ciphercore_base::data_types::ScalarType;
-/// let two: u128 = 2;
-/// let c1 = two.pow(32);
-/// let uint32 = ScalarType{signed: false, modulus: Some(c1)};
-/// assert_eq!(uint32.get_modulus(), Some(c1));
-/// assert_eq!(uint32.get_signed(), false);
-///
-/// let c2 = two.pow(32);
-/// let int32 = ScalarType{signed: true, modulus: Some(c2)};
-/// assert_eq!(int32.get_modulus(), Some(c2));
-/// assert!(int32.get_signed());
-/// ```
-pub(super) const fn create_scalar_type(signed: bool, modulus: Option<u128>) -> ScalarType {
-    ScalarType { signed, modulus }
+#[cfg_attr(feature = "py-binding", enum_to_struct_wrapper)]
+pub enum ScalarType {
+    Bit,
+    U8,
+    I8,
+    U16,
+    I16,
+    U32,
+    I32,
+    U64,
+    I64,
 }
 
 #[cfg_attr(feature = "py-binding", impl_wrapper)]
 impl ScalarType {
-    /// Tests whether a scalar type is supported.
-    ///
-    /// Supported scalar types: [BIT], [UINT8], [INT8], [UINT16], [INT16], [UINT32], [INT32], [UINT64], and [INT64]
-    ///
-    /// # Returns
-    ///
-    /// `true`, if this is a supported scalar type, else `false`
-    ///
-    /// # Example
-    /// ```
-    /// # use std::option::Option;
-    /// # use ciphercore_base::data_types::{ScalarType, BIT, UINT8, INT64};
-    /// assert!(BIT.is_valid());
-    /// assert!(UINT8.is_valid());
-    /// assert!(INT64.is_valid());
-    /// assert!(!ScalarType{modulus: Some(3), signed: true}.is_valid());
-    /// ```
-    pub fn is_valid(&self) -> bool {
-        if let Some(m) = self.modulus {
-            //Currently our evaluator only supports bit_size = 1,8,16,32,64
-            let supported_modulus = vec![TWO, TWO.pow(8), TWO.pow(16), TWO.pow(32), TWO.pow(64)];
-            let supported = type_size_limit_constants::NON_STANDARD_SCALAR_LEN_SUPPORT
-                || supported_modulus.contains(&m);
-            supported && (m > 2 || (m == 2 && !self.signed))
-        } else {
-            // There is no UINT128 or INT128, in the moment.
-            false
-        }
-    }
-
+    /// [DEPRECATED] Use is_signed() instead.
     /// Tests whether this scalar type is signed.
     ///
     /// # Returns
@@ -198,7 +77,38 @@ impl ScalarType {
     /// assert!(t1.get_signed());
     /// ```
     pub fn get_signed(&self) -> bool {
-        self.signed
+        self.is_signed()
+    }
+
+    /// Tests whether this scalar type is signed.
+    ///
+    /// # Returns
+    ///
+    /// `true`, if this is a signed scalar, else `false`
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::data_types::{ScalarType, INT16, UINT64};
+    /// let t0 = UINT64;
+    /// assert!(!t0.is_signed());
+    /// let t1 = INT16;
+    /// assert!(t1.is_signed());
+    /// ```
+    pub fn is_signed(&self) -> bool {
+        match self {
+            // Unsigned types.
+            ScalarType::Bit => false,
+            ScalarType::U8 => false,
+            ScalarType::U16 => false,
+            ScalarType::U32 => false,
+            ScalarType::U64 => false,
+            // Signed types.
+            ScalarType::I8 => true,
+            ScalarType::I16 => true,
+            ScalarType::I32 => true,
+            ScalarType::I64 => true,
+        }
     }
 
     /// Returns scalar's modulus value, which defines the range of integers.
@@ -210,17 +120,26 @@ impl ScalarType {
     /// # Example
     ///
     /// ```
-    /// # use ciphercore_base::data_types::ScalarType;
+    /// # use ciphercore_base::data_types::{ScalarType, BIT, UINT64};
     /// let two: u128 = 2;
-    /// let mod0 = Some(two.pow(5));
-    /// let t0 = ScalarType{signed: false, modulus: mod0};
-    /// assert_eq!(mod0, t0.get_modulus());
-    /// let mod1 = Some(two.pow(4));
-    /// let t1 = ScalarType{signed: false, modulus: mod1};
-    /// assert_eq!(mod1, t1.get_modulus());
+    /// let t0 = ScalarType::Bit;
+    /// assert_eq!(Some(two), t0.get_modulus());
+    /// let modulus: u128 = two.pow(64);
+    /// let t1 = UINT64;
+    /// assert_eq!(Some(modulus), t1.get_modulus());
     /// ```
     pub fn get_modulus(&self) -> Option<u128> {
-        self.modulus
+        match self {
+            ScalarType::Bit => Some(1u128 << 1),
+            ScalarType::U8 => Some(1u128 << 8),
+            ScalarType::I8 => Some(1u128 << 8),
+            ScalarType::U16 => Some(1u128 << 16),
+            ScalarType::I16 => Some(1u128 << 16),
+            ScalarType::U32 => Some(1u128 << 32),
+            ScalarType::I32 => Some(1u128 << 32),
+            ScalarType::U64 => Some(1u128 << 64),
+            ScalarType::I64 => Some(1u128 << 64),
+        }
     }
 
     /// Returns the size of a scalar type in bits.
@@ -229,11 +148,33 @@ impl ScalarType {
     ///
     /// Size of a scalar type
     pub fn size_in_bits(&self) -> u64 {
-        scalar_size_in_bits(self.clone())
+        match self {
+            ScalarType::Bit => 1,
+            ScalarType::U8 => 8,
+            ScalarType::I8 => 8,
+            ScalarType::U16 => 16,
+            ScalarType::I16 => 16,
+            ScalarType::U32 => 32,
+            ScalarType::I32 => 32,
+            ScalarType::U64 => 64,
+            ScalarType::I64 => 64,
+        }
+    }
+
+    pub(super) fn get_unsigned_counterpart(&self) -> ScalarType {
+        match self {
+            ScalarType::Bit => ScalarType::Bit,
+            ScalarType::U8 => ScalarType::U8,
+            ScalarType::I8 => ScalarType::U8,
+            ScalarType::U16 => ScalarType::U16,
+            ScalarType::I16 => ScalarType::U16,
+            ScalarType::U32 => ScalarType::U32,
+            ScalarType::I32 => ScalarType::U32,
+            ScalarType::U64 => ScalarType::U64,
+            ScalarType::I64 => ScalarType::U64,
+        }
     }
 }
-
-const TWO: u128 = 2;
 
 /// Scalar type corresponding to bits 0 or 1.
 ///
@@ -247,9 +188,9 @@ const TWO: u128 = 2;
 ///
 /// ```
 /// # use ciphercore_base::data_types::{BIT, ScalarType};
-/// assert_eq!(BIT, ScalarType{ signed: false, modulus: Some(2 as u128)});
+/// assert_eq!(BIT, ScalarType::Bit);
 /// ```
-pub const BIT: ScalarType = create_scalar_type(false, Some(TWO));
+pub const BIT: ScalarType = ScalarType::Bit;
 
 /// Scalar type corresponding to unsigned 8-bit integers.
 ///
@@ -264,9 +205,9 @@ pub const BIT: ScalarType = create_scalar_type(false, Some(TWO));
 /// ```
 /// # use ciphercore_base::data_types::{UINT8, ScalarType};
 /// let two: u128 = 2;
-/// assert_eq!(UINT8, ScalarType{ signed: false, modulus: Some(two.pow(8))});
+/// assert_eq!(UINT8, ScalarType::U8);
 /// ```
-pub const UINT8: ScalarType = create_scalar_type(false, Some(TWO.pow(8)));
+pub const UINT8: ScalarType = ScalarType::U8;
 
 /// Scalar type corresponding to signed 8-bit integers.
 ///
@@ -281,9 +222,9 @@ pub const UINT8: ScalarType = create_scalar_type(false, Some(TWO.pow(8)));
 /// ```
 /// # use ciphercore_base::data_types::{INT8, ScalarType};
 /// let two: u128 = 2;
-/// assert_eq!(INT8, ScalarType{ signed: true, modulus: Some(two.pow(8))});
+/// assert_eq!(INT8, ScalarType::I8);
 /// ```
-pub const INT8: ScalarType = create_scalar_type(true, Some(TWO.pow(8)));
+pub const INT8: ScalarType = ScalarType::I8;
 
 /// Scalar type corresponding to unsigned 16-bit integers.
 ///
@@ -298,9 +239,9 @@ pub const INT8: ScalarType = create_scalar_type(true, Some(TWO.pow(8)));
 /// ```
 /// # use ciphercore_base::data_types::{UINT16, ScalarType};
 /// let two: u128 = 2;
-/// assert_eq!(UINT16, ScalarType{ signed: false, modulus: Some(two.pow(16))});
+/// assert_eq!(UINT16, ScalarType::U16);
 /// ```
-pub const UINT16: ScalarType = create_scalar_type(false, Some(TWO.pow(16)));
+pub const UINT16: ScalarType = ScalarType::U16;
 
 /// Scalar type corresponding to signed 16-bit integers.
 ///
@@ -315,8 +256,9 @@ pub const UINT16: ScalarType = create_scalar_type(false, Some(TWO.pow(16)));
 /// ```
 /// # use ciphercore_base::data_types::{INT16, ScalarType};
 /// let two: u128 = 2;
-/// assert_eq!(INT16, ScalarType{ signed: true, modulus: Some(two.pow(16))});
-pub const INT16: ScalarType = create_scalar_type(true, Some(TWO.pow(16)));
+/// assert_eq!(INT16, ScalarType::I16);
+/// ```
+pub const INT16: ScalarType = ScalarType::I16;
 
 /// Scalar type corresponding to unsigned 32-bit integers.
 ///
@@ -331,9 +273,9 @@ pub const INT16: ScalarType = create_scalar_type(true, Some(TWO.pow(16)));
 /// ```
 /// # use ciphercore_base::data_types::{UINT32, ScalarType};
 /// let two: u128 = 2;
-/// assert_eq!(UINT32, ScalarType{ signed: false, modulus: Some(two.pow(32))});
+/// assert_eq!(UINT32, ScalarType::U32);
 /// ```
-pub const UINT32: ScalarType = create_scalar_type(false, Some(TWO.pow(32)));
+pub const UINT32: ScalarType = ScalarType::U32;
 
 /// Scalar type corresponding to signed 32-bit integers.
 ///
@@ -348,8 +290,9 @@ pub const UINT32: ScalarType = create_scalar_type(false, Some(TWO.pow(32)));
 /// ```
 /// # use ciphercore_base::data_types::{INT32, ScalarType};
 /// let two: u128 = 2;
-/// assert_eq!(INT32, ScalarType{ signed: true, modulus: Some(two.pow(32))});
-pub const INT32: ScalarType = create_scalar_type(true, Some(TWO.pow(32)));
+/// assert_eq!(INT32, ScalarType::I32);
+/// ```
+pub const INT32: ScalarType = ScalarType::I32;
 
 /// Scalar type corresponding to unsigned 64-bit integers.
 ///
@@ -364,9 +307,9 @@ pub const INT32: ScalarType = create_scalar_type(true, Some(TWO.pow(32)));
 /// ```
 /// # use ciphercore_base::data_types::{UINT64, ScalarType};
 /// let two: u128 = 2;
-/// assert_eq!(UINT64, ScalarType{ signed: false, modulus: Some(two.pow(64))});
+/// assert_eq!(UINT64, ScalarType::U64);
 /// ```
-pub const UINT64: ScalarType = create_scalar_type(false, Some(TWO.pow(64)));
+pub const UINT64: ScalarType = ScalarType::U64;
 
 /// Scalar type corresponding to signed 64-bit integers.
 ///
@@ -381,9 +324,9 @@ pub const UINT64: ScalarType = create_scalar_type(false, Some(TWO.pow(64)));
 /// ```
 /// # use ciphercore_base::data_types::{INT64, ScalarType};
 /// let two: u128 = 2;
-/// assert_eq!(INT64, ScalarType{ signed: true, modulus: Some(two.pow(64))});
+/// assert_eq!(INT64, ScalarType::I64);
 /// ```
-pub const INT64: ScalarType = create_scalar_type(true, Some(TWO.pow(64)));
+pub const INT64: ScalarType = ScalarType::I64;
 
 /// Vector of dimension lengths for each axis of an array.
 ///
@@ -433,7 +376,7 @@ pub enum Type {
     /// let c = create_context().unwrap();
     /// let g = c.create_graph().unwrap();
     /// let st = scalar_type(BIT);
-    /// let i0 = g.input(st.clone()).unwrap();
+    /// let i0 = g.input(st).unwrap();
     /// assert_eq!(i0.get_type().unwrap(), st);
     /// ```
     Scalar(ScalarType),
@@ -601,10 +544,8 @@ impl Type {
     /// ```
     pub fn is_valid(&self) -> bool {
         match self {
-            Type::Scalar(scalar_type) => scalar_type.is_valid(),
-            Type::Array(shape, scalar_type) => {
-                is_valid_shape(shape.clone()) && scalar_type.is_valid()
-            }
+            Type::Scalar(_) => true,
+            Type::Array(shape, _) => is_valid_shape(shape.clone()),
             Type::Vector(_, element_type) => element_type.is_valid(),
             Type::Tuple(element_types) => element_types.iter().all(|t| t.is_valid()),
             Type::NamedTuple(elements) => {
@@ -745,7 +686,7 @@ impl Type {
     /// ```
     pub fn get_scalar_type(&self) -> ScalarType {
         if let Type::Scalar(st) | Type::Array(_, st) = self {
-            st.clone()
+            *st
         } else {
             panic!("Can't get scalar type");
         }
@@ -1013,9 +954,9 @@ pub fn vector_type(n: u64, t: Type) -> Type {
 /// ```
 /// # use ciphercore_base::data_types::{INT32, Type, array_type, vector_type, tuple_type};
 /// let st = INT32;
-/// let s = Type::Scalar(st.clone());
+/// let s = Type::Scalar(st);
 /// let a_shape = vec![2, 1, 2];
-/// let a = array_type(a_shape.clone(), st.clone());
+/// let a = array_type(a_shape.clone(), st);
 /// let n = 5;
 /// let v = vector_type(n, a.clone());
 /// let vec_types = vec![s.clone(), a.clone(), v.clone()];
@@ -1118,9 +1059,9 @@ impl fmt::Display for ScalarType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let scalar_type = self;
         let mut scalar_type_string = String::from("");
-        let bit_size = scalar_size_in_bits(scalar_type.clone());
+        let bit_size = scalar_size_in_bits(*scalar_type);
         if bit_size == 1 {
-            scalar_type_string.push('b');
+            write!(scalar_type_string, "bit").unwrap();
         } else {
             if scalar_type.get_signed() {
                 scalar_type_string.push('i');
@@ -1132,12 +1073,17 @@ impl fmt::Display for ScalarType {
         write!(f, "{scalar_type_string}")
     }
 }
+impl fmt::Debug for ScalarType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        Display::fmt(self, f)
+    }
+}
 
 impl FromStr for ScalarType {
     type Err = CiphercoreBaseError;
     fn from_str(s: &str) -> Result<Self> {
         match s {
-            "b" => Ok(BIT),
+            "bit" => Ok(BIT),
             "u8" => Ok(UINT8),
             "i8" => Ok(INT8),
             "u16" => Ok(UINT16),
@@ -1159,9 +1105,7 @@ impl fmt::Display for Type {
             Type::Scalar(scalar_type) => {
                 format!("{scalar_type}")
             }
-            Type::Array(shape, scalar_type) => {
-                form_array_type_str(shape.clone(), scalar_type.clone())
-            }
+            Type::Array(shape, scalar_type) => form_array_type_str(shape.clone(), *scalar_type),
             Type::Vector(number_of_components, element_type) => {
                 form_vector_type_str(*number_of_components, element_type.clone())
             }
@@ -1196,23 +1140,7 @@ impl fmt::Display for Type {
 /// assert_eq!(scalar_size_in_bits(UINT64), 64);
 /// ```
 pub fn scalar_size_in_bits(t: ScalarType) -> u64 {
-    let modulus = t.get_modulus();
-    match modulus {
-        Some(m) => {
-            let mut sz = 0;
-            let mut tmp = 1;
-            while sz < 127 && tmp < m {
-                sz += 1;
-                tmp *= 2;
-            }
-            if tmp >= m {
-                sz
-            } else {
-                128
-            }
-        }
-        None => 64,
-    }
+    t.size_in_bits()
 }
 
 pub(crate) fn scalar_size_in_bytes(t: ScalarType) -> u64 {
@@ -1462,14 +1390,11 @@ mod tests {
     #[test]
     fn test_debug() {
         let t = array_type(vec![10, 10], UINT32);
-        assert_eq!(
-            format!("{:?}", t),
-            "Array([10, 10], ScalarType { signed: false, modulus: Some(4294967296) })"
-        );
+        assert_eq!(format!("{:?}", t), "Array([10, 10], u32)");
         let t2 = named_tuple_type(vec![("Name".to_owned(), array_type(vec![100], BIT))]);
         assert_eq!(
             format!("{:?}", t2),
-            "NamedTuple([(\"Name\", Array([100], ScalarType { signed: false, modulus: Some(2) }))])"
+            "NamedTuple([(\"Name\", Array([100], bit))])"
         );
     }
 
@@ -1477,19 +1402,13 @@ mod tests {
     fn test_clone() {
         let t = array_type(vec![10, 10], UINT32);
         let t1 = t.clone();
-        assert_eq!(
-            format!("{:?}", t),
-            "Array([10, 10], ScalarType { signed: false, modulus: Some(4294967296) })"
-        );
-        assert_eq!(
-            format!("{:?}", t1),
-            "Array([10, 10], ScalarType { signed: false, modulus: Some(4294967296) })"
-        );
+        assert_eq!(format!("{:?}", t), "Array([10, 10], u32)");
+        assert_eq!(format!("{:?}", t1), "Array([10, 10], u32)");
         let t2 = named_tuple_type(vec![("Name".to_owned(), array_type(vec![100], BIT))]);
         let t3 = t2.clone();
         assert_eq!(
             format!("{:?}", t3),
-            "NamedTuple([(\"Name\", Array([100], ScalarType { signed: false, modulus: Some(2) }))])"
+            "NamedTuple([(\"Name\", Array([100], bit))])"
         );
     }
 
@@ -1497,34 +1416,21 @@ mod tests {
     fn test_serialization() {
         let t = INT64;
         let se = serde_json::to_string(&t).unwrap();
-        assert_eq!(se, "{\"signed\":true,\"modulus\":18446744073709551616}");
+        assert_eq!(se, "\"i64\"");
         let de: ScalarType = serde_json::from_str(&se).unwrap();
         assert_eq!(t, de);
-        let de: ScalarType = serde_json::from_str("{\"signed\":true,\"modulus\":null}").unwrap();
-        assert_eq!(t, de);
         assert!(serde_json::from_str::<ScalarType>("{{{{{{{{{{{{{").is_err());
-        assert!(
-            serde_json::from_str::<ScalarType>("{\"signed\":randomstring,\"modulus\":null}")
-                .is_err()
-        );
+        assert!(serde_json::from_str::<ScalarType>("\"randomstring\"").is_err());
         let t = array_type(vec![10, 10], UINT32);
         let se = serde_json::to_string(&t).unwrap();
-        assert_eq!(
-            se,
-            "{\"Array\":[[10,10],{\"signed\":false,\"modulus\":4294967296}]}"
-        );
+        assert_eq!(se, "{\"Array\":[[10,10],\"u32\"]}");
         let de: Type = serde_json::from_str(&se).unwrap();
         assert_eq!(t, de);
-        assert!(serde_json::from_str::<Type>("{{{{{{{{{{{{{").is_err());
-        assert!(serde_json::from_str::<Type>(
-            "{\"Array\":[[10,10],{\"signed\":false,\"modulus\":-1}]}"
-        )
-        .is_err());
         let t = tuple_type(vec![scalar_type(BIT), tuple_type(vec![scalar_type(BIT)])]);
         let se = serde_json::to_string(&t).unwrap();
         assert_eq!(
             se,
-            "{\"Tuple\":[{\"Scalar\":{\"signed\":false,\"modulus\":2}},{\"Tuple\":[{\"Scalar\":{\"signed\":false,\"modulus\":2}}]}]}"
+            "{\"Tuple\":[{\"Scalar\":\"bit\"},{\"Tuple\":[{\"Scalar\":\"bit\"}]}]}"
         );
         let de: Type = serde_json::from_str(&se).unwrap();
         assert_eq!(t, de);
@@ -1536,7 +1442,7 @@ mod tests {
         let b: ScalarType = BIT;
         let c: ScalarType = INT32;
         assert_eq!(format!("{}", a), "u64");
-        assert_eq!(format!("{}", b), "b");
+        assert_eq!(format!("{}", b), "bit");
         assert_eq!(format!("{}", c), "i32");
     }
 
@@ -1546,7 +1452,7 @@ mod tests {
         let a = scalar_type(UINT16);
         let b = scalar_type(BIT);
         assert_eq!(format!("{}", a), "u16");
-        assert_eq!(format!("{}", b), "b");
+        assert_eq!(format!("{}", b), "bit");
         // Array(ArrayShape, ScalarType),
         let array1 = array_type(vec![5, 10, 15], INT8);
         assert_eq!(format!("{}", array1), "i8[5, 10, 15]");
@@ -1568,7 +1474,7 @@ mod tests {
         ]);
         assert_eq!(
             format!("{}", t2),
-            "(<i8[5, 10, 15]{10}>, i8[5, 10, 15], b, (<i32{10}>, <i8[5, 10, 15]{10}>))"
+            "(<i8[5, 10, 15]{10}>, i8[5, 10, 15], bit, (<i32{10}>, <i8[5, 10, 15]{10}>))"
         );
         let t3 = tuple_type(vec![
             t1,
@@ -1596,55 +1502,15 @@ mod tests {
 
     #[test]
     fn test_scalar_size_in_bits() {
-        let st = ScalarType {
-            signed: false,
-            modulus: Some(2),
-        };
+        let st = ScalarType::Bit;
         assert_eq!(st.size_in_bits(), 1);
-        let st = ScalarType {
-            signed: false,
-            modulus: Some(55),
-        };
-        assert_eq!(st.size_in_bits(), 6);
-        let st = ScalarType {
-            signed: false,
-            modulus: Some(256),
-        };
+        let st = ScalarType::I8;
         assert_eq!(st.size_in_bits(), 8);
-        let st = ScalarType {
-            signed: false,
-            modulus: Some(65536),
-        };
+        let st = ScalarType::U16;
         assert_eq!(st.size_in_bits(), 16);
-        let st = ScalarType {
-            signed: false,
-            modulus: Some(4294967296),
-        };
+        let st = ScalarType::I32;
         assert_eq!(st.size_in_bits(), 32);
-        let st = ScalarType {
-            signed: false,
-            modulus: Some(18446744073709551616),
-        };
+        let st = ScalarType::U64;
         assert_eq!(st.size_in_bits(), 64);
-        let st = ScalarType {
-            signed: false,
-            modulus: Some(151115727451828646838272),
-        };
-        assert_eq!(st.size_in_bits(), 77);
-        let st = ScalarType {
-            signed: false,
-            modulus: Some(151115727451828646838271),
-        };
-        assert_eq!(st.size_in_bits(), 77);
-        let st = ScalarType {
-            signed: false,
-            modulus: Some(151115727451828646838273),
-        };
-        assert_eq!(st.size_in_bits(), 78);
-        let st = ScalarType {
-            signed: false,
-            modulus: Some(177777777777777777777777777777777777777),
-        };
-        assert_eq!(st.size_in_bits(), 128);
     }
 }

@@ -573,7 +573,7 @@ impl Value {
     /// assert_eq!(v.to_u64(INT32).unwrap(), -123456i32 as u64);
     /// ```
     pub fn to_u64(&self, st: ScalarType) -> Result<u64> {
-        let v = self.access_bytes(|bytes| vec_from_bytes(bytes, st.clone()))?;
+        let v = self.access_bytes(|bytes| vec_from_bytes(bytes, st))?;
         if v.len() != 1 && (v.len() != 8 || st != BIT) {
             return Err(runtime_error!("Not a scalar"));
         }
@@ -599,7 +599,7 @@ impl Value {
     /// assert_eq!(v.to_u128(INT32).unwrap(), -123456i32 as u128);
     /// ```
     pub fn to_u128(&self, st: ScalarType) -> Result<u128> {
-        let v = self.access_bytes(|bytes| vec_u128_from_bytes(bytes, st.clone()))?;
+        let v = self.access_bytes(|bytes| vec_u128_from_bytes(bytes, st))?;
         if v.len() != 1 && (v.len() != 8 || st != BIT) {
             return Err(runtime_error!("Not a scalar"));
         }
@@ -853,7 +853,7 @@ impl Value {
         }
         let st = t.get_scalar_type();
         if let ValueBody::Bytes(bytes) = self.body.as_ref() {
-            let mut result = vec_from_bytes(bytes, st.clone())?;
+            let mut result = vec_from_bytes(bytes, st)?;
             if st == BIT {
                 let num_values: u64 = t.get_dimensions().iter().product();
                 result.truncate(num_values as usize);
@@ -894,7 +894,7 @@ impl Value {
         }
         let st = t.get_scalar_type();
         if let ValueBody::Bytes(bytes) = self.body.as_ref() {
-            let mut result = vec_u128_from_bytes(bytes, st.clone())?;
+            let mut result = vec_u128_from_bytes(bytes, st)?;
             if st == BIT {
                 let num_values: u64 = t.get_dimensions().iter().product();
                 result.truncate(num_values as usize);
@@ -1570,8 +1570,8 @@ mod tests {
     use super::*;
     use crate::constants::type_size_limit_constants;
     use crate::data_types::{
-        array_type, create_scalar_type, named_tuple_type, scalar_type, tuple_type, vector_type,
-        BIT, INT32, INT64, INT8, UINT16, UINT32, UINT64, UINT8,
+        array_type, named_tuple_type, scalar_type, tuple_type, vector_type, BIT, INT32, INT64,
+        INT8, UINT16, UINT32, UINT64, UINT8,
     };
     use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -1614,50 +1614,6 @@ mod tests {
         check_type_test_worker_fail(&v, tuple_type(vec![]));
         let v = Value::from_bytes(vec![0, 0, 0]);
         check_type_test_worker_fail(&v, tuple_type(vec![]));
-        if type_size_limit_constants::NON_STANDARD_SCALAR_LEN_SUPPORT {
-            let v = Value::from_bytes(vec![0]);
-            check_type_test_worker(&v, scalar_type(create_scalar_type(false, Some(253))));
-            check_type_test_worker(&v, scalar_type(create_scalar_type(false, Some(254))));
-            check_type_test_worker(&v, scalar_type(create_scalar_type(false, Some(255))));
-            check_type_test_worker_fail(&v, scalar_type(create_scalar_type(false, Some(257))));
-            check_type_test_worker_fail(&v, scalar_type(create_scalar_type(false, Some(258))));
-            check_type_test_worker_fail(&v, scalar_type(create_scalar_type(false, Some(259))));
-            let v = Value::from_bytes(vec![0, 0]);
-            check_type_test_worker(&v, scalar_type(create_scalar_type(false, Some(257))));
-            check_type_test_worker(&v, scalar_type(create_scalar_type(false, Some(258))));
-            check_type_test_worker(&v, scalar_type(create_scalar_type(false, Some(259))));
-            let v = Value::from_bytes(vec![0, 0, 0, 0, 0, 0, 0, 0]);
-            check_type_test_worker(
-                &v,
-                scalar_type(create_scalar_type(false, Some(9223372036854775808))),
-            );
-            check_type_test_worker(
-                &v,
-                scalar_type(create_scalar_type(false, Some(9223372036854775809))),
-            );
-            check_type_test_worker(
-                &v,
-                scalar_type(create_scalar_type(false, Some(9223372036854775810))),
-            );
-            let v = Value::from_bytes(vec![0, 0, 0, 0, 0, 0, 0]);
-            check_type_test_worker(
-                &v,
-                array_type(vec![8], create_scalar_type(false, Some(128))),
-            );
-            check_type_test_worker_fail(
-                &v,
-                array_type(vec![9], create_scalar_type(false, Some(128))),
-            );
-            let v = Value::from_bytes(vec![0, 0, 0, 0, 0, 0, 0, 0]);
-            check_type_test_worker(
-                &v,
-                array_type(vec![9], create_scalar_type(false, Some(128))),
-            );
-            check_type_test_worker_fail(
-                &v,
-                array_type(vec![8], create_scalar_type(false, Some(128))),
-            );
-        }
     }
 
     #[test]

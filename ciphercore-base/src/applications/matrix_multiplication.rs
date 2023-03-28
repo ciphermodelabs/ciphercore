@@ -29,7 +29,7 @@ pub fn create_matrix_multiplication_graph(
     // Create types of input matrices.
     // Matrices can be represented as arrays with two 2-dimensional shapes.
     // First, create the array type of a first matrix with shape `[n, m]`, which corresponds to a (n x m)-matrix.
-    let first_matrix_type = array_type(vec![n, m], st.clone());
+    let first_matrix_type = array_type(vec![n, m], st);
     // Second, create the array type of a second matrix with shape `[m, k]`, which corresponds to a (m x k)-matrix.
     let second_matrix_type = array_type(vec![m, k], st);
 
@@ -73,11 +73,11 @@ mod tests {
     ) -> Value {
         || -> Result<Value> {
             let c = create_context()?;
-            let g = create_matrix_multiplication_graph(c.clone(), n, m, k, st.clone())?;
+            let g = create_matrix_multiplication_graph(c.clone(), n, m, k, st)?;
             g.set_as_main()?;
             c.finalize()?;
 
-            let left_matrix_type = array_type(vec![n, m], st.clone());
+            let left_matrix_type = array_type(vec![n, m], st);
             let right_matrix_type = array_type(vec![m, k], st);
             let val1 =
                 Value::from_flattened_array(input1_value, left_matrix_type.get_scalar_type())?;

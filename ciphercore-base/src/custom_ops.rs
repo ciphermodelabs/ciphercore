@@ -926,7 +926,7 @@ mod tests {
             let g2 = expected_c.create_graph()?;
             let i = g2.input(scalar_type(BIT))?;
             g2.set_output_node(i)?;
-            g2.set_name("__B::<b>")?;
+            g2.set_name("__B::<bit>")?;
             g2.finalize()?;
             let g1 = expected_c.create_graph()?;
             let i = g1.input(scalar_type(BIT))?;
@@ -936,7 +936,7 @@ mod tests {
             let i = g3.input(scalar_type(BIT))?;
             let o = g3.call(g2, vec![i])?;
             g3.set_output_node(o)?;
-            g3.set_name("__A::<b>")?;
+            g3.set_name("__A::<bit>")?;
             g3.finalize()?;
             let g4 = expected_c.create_graph()?;
             let i = g4.input(scalar_type(BIT))?;
@@ -973,7 +973,7 @@ mod tests {
             let g1 = expected_c.create_graph()?;
             let i = g1.input(scalar_type(BIT))?;
             g1.set_output_node(i)?;
-            g1.set_name("__B::<b>")?;
+            g1.set_name("__B::<bit>")?;
             g1.finalize()?;
             let g3 = expected_c.create_graph()?;
             let i = g3.input(scalar_type(BIT))?;
@@ -1059,7 +1059,7 @@ mod tests {
             let c = not_g.ones(scalar_type(BIT))?;
             let o = not_g.add(i, c)?;
             not_g.set_output_node(o)?;
-            not_g.set_name("__Not::<b[5]>")?;
+            not_g.set_name("__Not::<bit[5]>")?;
             not_g.finalize()?;
             let g = expected_c.create_graph()?;
             let i = g.input(array_type(vec![5], BIT))?;
@@ -1087,14 +1087,14 @@ mod tests {
             let c = not_g_2.ones(scalar_type(BIT))?;
             let o = not_g_2.add(i, c)?;
             not_g_2.set_output_node(o)?;
-            not_g_2.set_name("__Not::<b[3, 5]>")?;
+            not_g_2.set_name("__Not::<bit[3, 5]>")?;
             not_g_2.finalize()?;
             let not_g = expected_c.create_graph()?;
             let i = not_g.input(array_type(vec![5], BIT))?;
             let c = not_g.ones(scalar_type(BIT))?;
             let o = not_g.add(i, c)?;
             not_g.set_output_node(o)?;
-            not_g.set_name("__Not::<b[5]>")?;
+            not_g.set_name("__Not::<bit[5]>")?;
             not_g.finalize()?;
             let or_g = expected_c.create_graph()?;
             let i1 = or_g.input(array_type(vec![5], BIT))?;
@@ -1104,7 +1104,7 @@ mod tests {
             let i1_not_and_i2_not = or_g.multiply(i1_not, i2_not)?;
             let o = or_g.call(not_g_2, vec![i1_not_and_i2_not])?;
             or_g.set_output_node(o)?;
-            or_g.set_name("__Or::<b[5], b[3, 5]>")?;
+            or_g.set_name("__Or::<bit[5], bit[3, 5]>")?;
             or_g.finalize()?;
             let g = expected_c.create_graph()?;
             let i1 = g.input(array_type(vec![5], BIT))?;

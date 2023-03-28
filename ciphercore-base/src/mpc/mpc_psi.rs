@@ -202,8 +202,7 @@ fn random_pad_columns(columns: Node, num_extra_rows: u64, prf_keys: &[Node]) -> 
                 let mut extra_rows_shape = t.get_shape();
                 extra_rows_shape[0] = num_extra_rows;
                 let st = t.get_scalar_type();
-                let extra_rows =
-                    prf_key.prf(0, array_type(extra_rows_shape.clone(), st.clone()))?;
+                let extra_rows = prf_key.prf(0, array_type(extra_rows_shape.clone(), st))?;
                 // Merge input rows and extra rows
                 graph.concatenate(vec![column, extra_rows], 0)?
             };

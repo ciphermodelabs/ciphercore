@@ -558,12 +558,12 @@ mod tests {
         let c = simple_context(|g| {
             let mut types = vec![];
             if op == Operation::MixedMultiply {
-                types.push(array_type(dims[0].clone(), st.clone()));
+                types.push(array_type(dims[0].clone(), st));
                 types.push(array_type(dims[1].clone(), BIT));
                 types.push(array_type(dims[2].clone(), BIT));
             } else {
                 for shape in dims {
-                    types.push(array_type(shape, st.clone()));
+                    types.push(array_type(shape, st));
                 }
             }
             let i1 = g.input(types[0].clone())?;
@@ -648,7 +648,7 @@ mod tests {
         output_parties: Vec<IOStatus>,
     ) -> Result<()> {
         let output = random_evaluate(mpc_graph.clone(), inputs)?;
-        let output_type = array_type(dims.clone(), st.clone());
+        let output_type = array_type(dims.clone(), st);
 
         let out = if output_parties.is_empty() {
             // check that mpc_output is a sharing of plain_output
@@ -697,12 +697,12 @@ mod tests {
                 input_status.clone(),
                 output_parties.clone(),
                 op,
-                st.clone(),
+                st,
                 dims_in.clone(),
             )?;
             let mpc_graph = mpc_context.get_main_graph()?;
 
-            let inputs = prepare_arithmetic_input(input, input_status, vec![st.clone(); 3])?;
+            let inputs = prepare_arithmetic_input(input, input_status, vec![st; 3])?;
 
             check_arithmetic_output(
                 mpc_graph,
@@ -718,7 +718,7 @@ mod tests {
 
         helper(
             op.clone(),
-            st.clone(),
+            st,
             input.clone(),
             expected.clone(),
             vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
@@ -726,7 +726,7 @@ mod tests {
         )?;
         helper(
             op.clone(),
-            st.clone(),
+            st,
             input.clone(),
             expected.clone(),
             vec![IOStatus::Public, IOStatus::Party(0), IOStatus::Public],
@@ -734,7 +734,7 @@ mod tests {
         )?;
         helper(
             op.clone(),
-            st.clone(),
+            st,
             input.clone(),
             expected.clone(),
             vec![IOStatus::Public, IOStatus::Public, IOStatus::Party(0)],
@@ -742,7 +742,7 @@ mod tests {
         )?;
         helper(
             op.clone(),
-            st.clone(),
+            st,
             input.clone(),
             expected.clone(),
             vec![IOStatus::Public, IOStatus::Public, IOStatus::Public],
@@ -750,7 +750,7 @@ mod tests {
         )?;
         helper(
             op.clone(),
-            st.clone(),
+            st,
             input.clone(),
             expected.clone(),
             vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
@@ -872,7 +872,7 @@ mod tests {
                 input_status.clone(),
                 output_parties.clone(),
                 op.clone(),
-                st.clone(),
+                st,
                 vec![dims.clone(); 3],
             )?;
             let mpc_graph = mpc_context.get_main_graph()?;
@@ -885,7 +885,7 @@ mod tests {
                     (6..6 + flat_dims).collect(),
                 ],
                 input_status,
-                vec![st.clone(); 3],
+                vec![st; 3],
             )?;
 
             let expected = match op.clone() {
@@ -972,7 +972,7 @@ mod tests {
                         input_status.clone(),
                         output_parties.clone(),
                         Operation::MixedMultiply,
-                        st.clone(),
+                        st,
                         vec![dims.clone(); 3],
                     )?;
                     let mpc_graph = mpc_context.get_main_graph()?;
@@ -980,7 +980,7 @@ mod tests {
                     let inputs = prepare_arithmetic_input(
                         vec![vec![2, 3, 4, 5], vec![1, 1, 0, 1], vec![0, 1, 1, 1]],
                         input_status,
-                        vec![st.clone(), BIT, BIT],
+                        vec![st, BIT, BIT],
                     )?;
 
                     let expected = vec![0, 3, 0, 5];

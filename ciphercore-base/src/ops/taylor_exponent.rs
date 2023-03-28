@@ -83,7 +83,7 @@ impl CustomOperationBody for TaylorExponent {
         // Below, we compute 2 ** (arg / ln(2)) rather than exp(arg).
         // `x` is arg * ln(2).
         let one_over_ln2_int = (((1 << self.fixed_precision_points) as f64) / 2.0_f64.ln()) as u64;
-        let one_over_ln2 = constant_scalar(&g, one_over_ln2_int, sc.clone())?;
+        let one_over_ln2 = constant_scalar(&g, one_over_ln2_int, sc)?;
         let x = multiply_fixed_point(arg, one_over_ln2, self.fixed_precision_points)?;
 
         let binary_x = x.a2b()?;
@@ -99,7 +99,7 @@ impl CustomOperationBody for TaylorExponent {
         for i in self.fixed_precision_points..self.fixed_precision_points + max_exp_bits {
             let bit = x_bits.get(vec![i])?;
             let j = i - self.fixed_precision_points;
-            let p2 = constant_scalar(&g, 1_u64 << (1_u64 << j), sc.clone())?;
+            let p2 = constant_scalar(&g, 1_u64 << (1_u64 << j), sc)?;
             // `term` is 1 if bit is not set, and 2 ** (2 ** j) otherwise.
             let term = p2
                 .subtract(one.clone())?
@@ -127,13 +127,13 @@ impl CustomOperationBody for TaylorExponent {
             ])?;
             let stacked_type = vector_type(64, bit_type);
             let x_frac = put_in_bits(stacked_frac_bits.reshape(stacked_type)?.vector_to_array()?)?
-                .b2a(sc.clone())?;
+                .b2a(sc)?;
 
             // Now, we want 2 ** x = exp(x * ln(2)) = \sum_i (ln(2) * x) ** i / i!
             let mut exp_fractional = zeros_like(x_frac.clone())?;
-            let mut coef = constant_scalar(&g, 1 << self.fixed_precision_points, sc.clone())?;
+            let mut coef = constant_scalar(&g, 1 << self.fixed_precision_points, sc)?;
             let ln2_int = (2_f64.ln() * ((1 << self.fixed_precision_points) as f64)) as u64;
-            let ln2 = constant_scalar(&g, ln2_int, sc.clone())?;
+            let ln2 = constant_scalar(&g, ln2_int, sc)?;
             let y = multiply_fixed_point(x_frac, ln2, self.fixed_precision_points)?;
             for i in 0..self.taylor_terms {
                 exp_fractional = exp_fractional.add(coef.clone())?;
