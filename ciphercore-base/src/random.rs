@@ -24,6 +24,9 @@ pub const SEED_SIZE: usize = 16;
 /// Buffer size for random bytes. Benchmarks show that lowering it decreases performance, while making it higher - doesn't affect it.
 const BUFFER_SIZE: usize = 512;
 
+/// Estimation for the start size of the buffer for generic types (it grows to `BUFFER_SIZE` over time).
+const INITIAL_BUFFER_SIZE: usize = 64;
+
 /// Cryptographic pseudo-random generator based on AES-128 in the counter mode.
 /// If the seed is private, the security is based on the key-recovery hardness assumption of AES
 /// and [the PRP/PRF(Prf) switching lemma](https://eprint.iacr.org/2004/331.pdf).
@@ -52,7 +55,7 @@ impl PRNG {
         c.pad(false);
         Ok(PRNG {
             aes: c,
-            random_source: PrfSession::new(0)?,
+            random_source: PrfSession::new(0, BUFFER_SIZE)?,
         })
     }
 
@@ -147,18 +150,22 @@ impl Prf {
 
     #[cfg(test)]
     fn output_bytes(&mut self, input: u64, n: u64) -> Result<Vec<u8>> {
-        PrfSession::new(input)?.generate_random_bytes(&mut self.aes, n)
+        let initial_buffer_size = usize::min(BUFFER_SIZE, n as usize);
+        PrfSession::new(input, initial_buffer_size)?.generate_random_bytes(&mut self.aes, n)
     }
 
     pub(super) fn output_value(&mut self, input: u64, t: Type) -> Result<Value> {
-        PrfSession::new(input)?.recursively_generate_value(&mut self.aes, t)
+        PrfSession::new(input, INITIAL_BUFFER_SIZE)?.recursively_generate_value(&mut self.aes, t)
     }
 
     pub(super) fn output_permutation(&mut self, input: u64, n: u64) -> Result<Value> {
         if n > 2u64.pow(30) {
             return Err(runtime_error!("n should be less than 2^30"));
         }
-        let mut session = PrfSession::new(input)?;
+        // For small n, probability of failure is very low, so we can use `n` as the buffer size.
+        // For larger n, we start from `BUFFER_SIZE` right away.
+        let initial_buffer_size = usize::min(BUFFER_SIZE, n as usize);
+        let mut session = PrfSession::new(input, initial_buffer_size)?;
         let mut a: Vec<u64> = (0..n).collect();
         for i in 1..n {
             let j = session.generate_u32_in_range(&mut self.aes, i as u32 + 1)?;
@@ -175,36 +182,49 @@ struct PrfSession {
     input: u128,
     buffer: Vec<u8>,
     next_byte: usize,
+    // Buffer size needs to be a multiple of the cipher block size: 16.
+    current_buffer_size: usize,
+    next_buffer_size: usize,
 }
 
 impl PrfSession {
-    pub fn new(input: u64) -> Result<Self> {
+    pub fn new(input: u64, initial_buffer_size: usize) -> Result<Self> {
+        // Round up to the nearest multiple of 16.
+        let initial_buffer_size = (initial_buffer_size + 15) / 16 * 16;
         Ok(Self {
             input: (input as u128) << 64,
             // Note: we'll drop the "leftover" bytes when PrfSession is destroyed. They are not useful, but if there
             // are many small PRFs, this can be wasteful.
-            // TODO: consider doing exponential backoff (start with a small buffer size, and gradually increase it to BUFFER_SIZE).
-            // This would save us from wasting bytes for small PRFs, and will work well for large ones.
-            buffer: vec![0u8; BUFFER_SIZE + Cipher::aes_128_cbc().block_size()],
-            next_byte: BUFFER_SIZE,
+            buffer: vec![0u8; initial_buffer_size + Cipher::aes_128_cbc().block_size()],
+            next_byte: initial_buffer_size,
+            current_buffer_size: initial_buffer_size,
+            next_buffer_size: initial_buffer_size,
         })
     }
 
     fn generate_one_batch(&mut self, aes: &mut Crypter) -> Result<()> {
-        let mut i_bytes = vec![0u8; BUFFER_SIZE];
+        let mut i_bytes = vec![0u8; self.next_buffer_size];
         for i in (0..i_bytes.len()).step_by(16) {
             i_bytes[i..i + 16].copy_from_slice(&self.input.to_le_bytes());
             self.input = self.input.wrapping_add(1);
+        }
+        let buffer_len = self.next_buffer_size + Cipher::aes_128_cbc().block_size();
+        if buffer_len != self.buffer.len() {
+            self.buffer.resize(buffer_len, 0);
         }
         let count = aes
             .update(&i_bytes, &mut self.buffer)
             .map_err(|_| runtime_error!("Crypter didn't manage to update"))?;
         // finalization of Crypter is unnecessary since padding is turned off
         // check here https://www.openssl.org/docs/manmaster/man3/EVP_CipherUpdate.html
-        if count != BUFFER_SIZE {
+        if count != self.next_buffer_size {
             return Err(runtime_error!(
                 "AES encryption returned a wrong number of bytes"
             ));
+        }
+        self.current_buffer_size = self.next_buffer_size;
+        if self.next_buffer_size < BUFFER_SIZE {
+            self.next_buffer_size = usize::min(BUFFER_SIZE, self.next_buffer_size * 2);
         }
         self.next_byte = 0;
         Ok(())
@@ -219,7 +239,7 @@ impl PrfSession {
     fn fill_random_bytes(&mut self, aes: &mut Crypter, mut buff: &mut [u8]) -> Result<()> {
         while !buff.is_empty() {
             let need_bytes = buff.len();
-            let ready_bytes = &self.buffer[self.next_byte..BUFFER_SIZE];
+            let ready_bytes = &self.buffer[self.next_byte..self.current_buffer_size];
             if ready_bytes.len() >= need_bytes {
                 buff.clone_from_slice(&ready_bytes[..need_bytes]);
                 self.next_byte += need_bytes;
@@ -269,7 +289,7 @@ impl PrfSession {
         // Note: sometimes we copy garbage bytes, but they are discarded later.
         res.copy_from_slice(&self.buffer[self.next_byte..self.next_byte + 8]);
 
-        let use_bytes = std::cmp::min(BUFFER_SIZE - self.next_byte, NEED_BYTES);
+        let use_bytes = std::cmp::min(self.current_buffer_size - self.next_byte, NEED_BYTES);
         if use_bytes == NEED_BYTES {
             self.next_byte += use_bytes;
         } else {
@@ -602,7 +622,7 @@ mod tests {
         // i degrees of freedom and significance level 10^(-6).
         let critical_value = [0f64, 23.9281, 27.6310, 30.6648, 33.3768, 35.8882];
         for n in 2..6 {
-            let mut session = PrfSession::new(0)?;
+            let mut session = PrfSession::new(0, 1)?;
             let expected_count = 1000000;
             let runs = n * expected_count;
             let mut stats: HashMap<u32, u64> = HashMap::new();
