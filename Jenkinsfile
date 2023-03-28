@@ -25,6 +25,7 @@ pipeline {
   agent none
   options {
     skipDefaultCheckout true
+    disableConcurrentBuilds(abortPrevious: true)
   }
   environment {
     CI_DIR="private/ci"
