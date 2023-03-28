@@ -743,7 +743,7 @@
 //! ```json
 //! [
 //!     {"kind": "scalar", "type": "i32", "value": 123456},
-//!     {"kind": "array", "type": "b", "value": [[0, 1, 1, 0], [1, 0, 0, 1], [1, 0, 0, 1], [0, 1, 1, 0]]},
+//!     {"kind": "array", "type": "bit", "value": [[0, 1, 1, 0], [1, 0, 0, 1], [1, 0, 0, 1], [0, 1, 1, 0]]},
 //!     {"kind": "tuple", "value": [{"kind": "scalar", "type": "i32", "value": 123456}, {"kind": "tuple", "value": []}]},
 //!     {"kind": "vector", "value": [{"kind": "scalar", "type": "i32", "value": 123456}, {"kind": "scalar", "type": "i32", "value": 654321}]}
 //! ]

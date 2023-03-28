@@ -626,14 +626,14 @@ mod tests {
                 }
                 let threes = vec![3; n];
                 let first_share = subtract_vectors_u128(&input[i], &threes, st[i].get_modulus())?;
-                v.push(Value::from_flattened_array(&first_share, st[i].clone())?);
+                v.push(Value::from_flattened_array(&first_share, st[i])?);
                 for j in 1..PARTIES {
                     let share = vec![j; n];
-                    v.push(Value::from_flattened_array(&share, st[i].clone())?);
+                    v.push(Value::from_flattened_array(&share, st[i])?);
                 }
                 res.push(Value::from_vector(v));
             } else {
-                res.push(Value::from_flattened_array(&input[i], st[i].clone())?);
+                res.push(Value::from_flattened_array(&input[i], st[i])?);
             }
         }
         Ok(res)

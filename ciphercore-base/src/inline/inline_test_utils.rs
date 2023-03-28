@@ -1,8 +1,8 @@
 use crate::data_types::{scalar_type, ScalarType, BIT};
-use crate::data_values::Value;
 use crate::errors::Result;
 use crate::graphs::{Context, Graph, Node, Operation};
 use crate::inline::inline_common::InlineState;
+use crate::ops::utils::constant_scalar;
 
 pub(super) struct MockInlineState {
     pub fake_graph: Graph,
@@ -24,8 +24,7 @@ impl InlineState for MockInlineState {
     fn recursively_inline_graph(&mut self, graph: Graph) -> Result<Node> {
         self.inline_graph_calls.push(graph.clone());
         let nodes = vec![
-            self.fake_graph
-                .constant(scalar_type(BIT), Value::from_scalar(0, BIT)?)?,
+            constant_scalar(&self.fake_graph, 0, BIT)?,
             self.fake_graph.create_tuple(vec![])?,
         ];
         self.returned_nodes.push(nodes.clone());
@@ -37,23 +36,23 @@ impl InlineState for MockInlineState {
     }
 }
 
-pub(super) fn build_test_data(c: Context, t: ScalarType) -> Result<(Graph, Node, Node, Vec<Node>)> {
+pub(super) fn build_test_data(
+    c: Context,
+    st: ScalarType,
+) -> Result<(Graph, Node, Node, Vec<Node>)> {
     let g = c.create_graph()?;
-    let initial_state = g.constant(
-        scalar_type(t.clone()),
-        Value::from_scalar(if t == BIT { 1 } else { 42 }, t.clone())?,
-    )?;
-    let input_vals = if t == BIT {
+    let initial_state = constant_scalar(&g, if st == BIT { 1 } else { 42 }, st)?;
+    let input_vals = if st == BIT {
         vec![1, 0, 0, 1, 1]
     } else {
         vec![1, 2, 3, 42, 57]
     };
     let mut inputs = vec![];
     for i in input_vals {
-        let val = g.constant(scalar_type(t.clone()), Value::from_scalar(i, t.clone())?)?;
+        let val = constant_scalar(&g, i, st)?;
         inputs.push(val.clone());
     }
-    let inputs_node = g.create_vector(scalar_type(t.clone()), inputs.clone())?;
+    let inputs_node = g.create_vector(scalar_type(st), inputs.clone())?;
     Ok((
         g.clone(),
         initial_state.clone(),

@@ -34,7 +34,7 @@ use pywrapper_macro::{enum_to_struct_wrapper, fn_wrapper, impl_wrapper};
 /// let t1 = array_type(vec![2, 1, 4], t0);
 /// let t2 = vector_type(10, t1);
 /// let t3 = tuple_type(vec![t2]);
-/// assert_eq!("(<b[2, 1, 4]{10}>)", t3.to_string());
+/// assert_eq!("(<bit[2, 1, 4]{10}>)", t3.to_string());
 ///
 /// let t4 = ("Name".to_owned(), array_type(vec![100], UINT8));
 /// let t5 = ("Zip".to_owned(), array_type(vec![2], UINT64));
@@ -375,9 +375,9 @@ pub enum Type {
     /// # use ciphercore_base::data_types::{BIT, scalar_type};
     /// let c = create_context().unwrap();
     /// let g = c.create_graph().unwrap();
-    /// let st = scalar_type(BIT);
-    /// let i0 = g.input(st).unwrap();
-    /// assert_eq!(i0.get_type().unwrap(), st);
+    /// let t = scalar_type(BIT);
+    /// let i0 = g.input(t.clone()).unwrap();
+    /// assert_eq!(i0.get_type().unwrap(), t);
     /// ```
     Scalar(ScalarType),
 
@@ -526,21 +526,11 @@ impl Type {
     /// let t0 = Type::Scalar(s0.clone());
     /// assert!(t0.is_valid());
     ///
-    /// let s1 = ScalarType {
-    ///     signed: true,
-    ///     modulus: Some(15),
-    /// };
-    /// let t1 = Type::Scalar(s1.clone());
-    /// assert!(!t1.is_valid());
-    ///
     /// let a1 = array_type(vec![2, 0, 2], s0.clone());
     /// assert!(!a1.is_valid());
     ///
     /// let a2 = array_type(vec![2, 1, 2], s0);
     /// assert!(a2.is_valid());
-    ///
-    /// let a3 = array_type(vec![2, 1, 2], s1);
-    /// assert!(!a3.is_valid());
     /// ```
     pub fn is_valid(&self) -> bool {
         match self {

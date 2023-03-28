@@ -135,12 +135,12 @@ mod tests {
     fn scalar_division_helper(
         divisor: u64,
         initial_approximation: Option<u64>,
-        sc_t: ScalarType,
+        st: ScalarType,
     ) -> Result<Value> {
         let c = simple_context(|g| {
-            let i = g.input(scalar_type(sc_t.clone()))?;
+            let i = g.input(scalar_type(st))?;
             if let Some(approx) = initial_approximation {
-                let approx_const = constant_scalar(&g, approx, sc_t.clone())?;
+                let approx_const = constant_scalar(&g, approx, st)?;
                 g.custom_op(
                     CustomOperation::new(NewtonInversion {
                         iterations: 5,
@@ -161,13 +161,13 @@ mod tests {
         let mapped_c = run_instantiation_pass(c)?;
         let result = random_evaluate(
             mapped_c.get_context().get_main_graph()?,
-            vec![Value::from_scalar(divisor, sc_t)?],
+            vec![Value::from_scalar(divisor, st)?],
         )?;
         Ok(result)
     }
 
-    fn array_division_helper(divisor: Vec<u64>, sc_t: ScalarType) -> Result<Vec<u64>> {
-        let array_t = array_type(vec![divisor.len() as u64], sc_t.clone());
+    fn array_division_helper(divisor: Vec<u64>, st: ScalarType) -> Result<Vec<u64>> {
+        let array_t = array_type(vec![divisor.len() as u64], st);
         let c = simple_context(|g| {
             let i = g.input(array_t.clone())?;
             g.custom_op(
@@ -181,7 +181,7 @@ mod tests {
         let mapped_c = run_instantiation_pass(c)?;
         let result = random_evaluate(
             mapped_c.get_context().get_main_graph()?,
-            vec![Value::from_flattened_array(&divisor, sc_t)?],
+            vec![Value::from_flattened_array(&divisor, st)?],
         )?;
         result.to_flattened_array_u64(array_t)
     }

@@ -211,12 +211,12 @@ mod tests {
     fn scalar_helper(
         divisor: u64,
         initial_approximation: Option<u64>,
-        sc: ScalarType,
+        st: ScalarType,
     ) -> Result<u64> {
         let c = simple_context(|g| {
-            let i = g.input(scalar_type(sc.clone()))?;
+            let i = g.input(scalar_type(st))?;
             if let Some(approx) = initial_approximation {
-                let approx_const = constant_scalar(&g, approx, sc.clone())?;
+                let approx_const = constant_scalar(&g, approx, st)?;
                 g.custom_op(
                     CustomOperation::new(InverseSqrt {
                         iterations: 5,
@@ -237,19 +237,19 @@ mod tests {
         let mapped_c = run_instantiation_pass(c)?;
         let result = random_evaluate(
             mapped_c.get_context().get_main_graph()?,
-            vec![Value::from_scalar(divisor, sc.clone())?],
+            vec![Value::from_scalar(divisor, st)?],
         )?;
-        if sc == UINT64 {
-            result.to_u64(sc.clone())
+        if st == UINT64 {
+            result.to_u64(st)
         } else {
-            let res = result.to_i64(sc.clone())?;
+            let res = result.to_i64(st)?;
             assert!(res >= 0);
             Ok(res as u64)
         }
     }
 
-    fn array_helper(divisor: Vec<u64>, sc: ScalarType) -> Result<Vec<u64>> {
-        let array_t = array_type(vec![divisor.len() as u64], sc.clone());
+    fn array_helper(divisor: Vec<u64>, st: ScalarType) -> Result<Vec<u64>> {
+        let array_t = array_type(vec![divisor.len() as u64], st);
         let c = simple_context(|g| {
             let i = g.input(array_t.clone())?;
             g.custom_op(
@@ -263,7 +263,7 @@ mod tests {
         let mapped_c = run_instantiation_pass(c)?;
         let result = random_evaluate(
             mapped_c.get_context().get_main_graph()?,
-            vec![Value::from_flattened_array(&divisor, sc.clone())?],
+            vec![Value::from_flattened_array(&divisor, st)?],
         )?;
         result.to_flattened_array_u64(array_t)
     }
