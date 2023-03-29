@@ -4,7 +4,6 @@ pub mod type_size_limit_constants {
     pub const MAX_INDIVIDUAL_NODE_SIZE: u64 = 1000;
     pub const TYPES_VECTOR_LENGTH_LIMIT: usize = 1000;
     pub const TYPE_MEMORY_OVERHEAD: u64 = 1;
-    pub const NON_STANDARD_SCALAR_LEN_SUPPORT: bool = false;
 }
 #[cfg(not(feature = "fuzzing"))]
 pub mod type_size_limit_constants {
@@ -12,5 +11,4 @@ pub mod type_size_limit_constants {
     pub const MAX_INDIVIDUAL_NODE_SIZE: u64 = u64::MAX - 1;
     pub const TYPES_VECTOR_LENGTH_LIMIT: usize = usize::MAX - 1;
     pub const TYPE_MEMORY_OVERHEAD: u64 = 1;
-    pub const NON_STANDARD_SCALAR_LEN_SUPPORT: bool = false;
 }

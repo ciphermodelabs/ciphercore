@@ -416,9 +416,6 @@ impl TypedValue {
                     INT32 => ser_value_to_scalar_aux!(s, self.value, st, to_i32)?,
                     UINT64 => ser_value_to_scalar_aux!(s, self.value, st, to_u64)?,
                     INT64 => ser_value_to_scalar_aux!(s, self.value, st, to_i64)?,
-                    _ => {
-                        return Err(ser::Error::custom("Invalid scalar type"));
-                    }
                 };
                 s.end()
             }
@@ -490,9 +487,6 @@ impl TypedValue {
                         to_flattened_array_i64,
                         shape
                     )?,
-                    _ => {
-                        return Err(ser::Error::custom("Invalid scalar type"));
-                    }
                 };
                 s.end()
             }
@@ -569,12 +563,12 @@ mod tests {
 
     #[test]
     fn test_scalar_b() -> Result<()> {
-        let s = r#"{"kind":"scalar","type":"b","value":0}"#;
+        let s = r#"{"kind":"scalar","type":"bit","value":0}"#;
         test_scalar_helper(s, BIT, &[0])
     }
     #[test]
     fn test_array_b() -> Result<()> {
-        let s = r#"{"kind":"array","type":"b","value":[0]}"#;
+        let s = r#"{"kind":"array","type":"bit","value":[0]}"#;
         test_array_helper(s, BIT, &[0])
     }
     #[test]
@@ -807,7 +801,7 @@ mod tests {
     #[test]
     fn test_non_human_readable() -> Result<()> {
         // Complicated TypedValue.
-        let s = r#"{"kind":"named tuple","value":[{"name":"field1","value":{"kind":"tuple","type":"i32","value":[{"kind":"scalar","type":"u8","value":128},{"kind":"scalar", "type": "b", "value":true}]}},{"name":"field2","value":{"kind":"vector","value":[{"kind":"scalar","type":"i32","value":-123456},{"kind":"scalar","type":"i32","value":123456},{"kind":"scalar","type":"i32","value":-13579},{"kind":"scalar","type":"i32","value":13579}]}}]}"#;
+        let s = r#"{"kind":"named tuple","value":[{"name":"field1","value":{"kind":"tuple","type":"i32","value":[{"kind":"scalar","type":"u8","value":128},{"kind":"scalar", "type": "bit", "value":true}]}},{"name":"field2","value":{"kind":"vector","value":[{"kind":"scalar","type":"i32","value":-123456},{"kind":"scalar","type":"i32","value":123456},{"kind":"scalar","type":"i32","value":-13579},{"kind":"scalar","type":"i32","value":13579}]}}]}"#;
         let tv = serde_json::from_str::<TypedValue>(&s)?;
         let result = bincode::serialize(&tv).unwrap();
         assert_eq!(bincode::deserialize::<TypedValue>(&result).unwrap(), tv);

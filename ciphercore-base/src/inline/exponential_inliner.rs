@@ -7,7 +7,7 @@ use crate::inline::data_structures::{log_depth_sum, CombineOp};
 use crate::inline::inline_common::{
     pick_prefix_sum_algorithm, DepthOptimizationLevel, InlineState,
 };
-use crate::ops::utils::{constant_scalar, zeros};
+use crate::ops::utils::constant_scalar;
 
 const MAX_ALLOWED_STATE_BITS: u64 = 4;
 
@@ -109,7 +109,7 @@ pub(super) fn inline_iterate_small_state(
     // Precompute the transformation of initial_state, which is needed to
     // extract states from the transformation matrices. See extract_state_from_mapping()
     // for more detailed explanation.
-    let unused_node = zeros(&inliner.output_graph(), scalar_type(BIT))?;
+    let unused_node = inliner.output_graph().zeros(scalar_type(BIT))?;
     let initial_state_one_hot = if single_bit {
         unused_node.clone()
     } else {

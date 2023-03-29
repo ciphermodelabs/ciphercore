@@ -19,7 +19,7 @@ pub struct ReplicatedShares {
 }
 use ndarray::Axis;
 impl TypedValueArrayOperations<ReplicatedShares> for ReplicatedShares {
-    fn from_ndarray<ST: TryInto<u64> + std::ops::Not<Output = ST> + TryInto<u8> + Copy>(
+    fn from_ndarray<ST: TryInto<u128> + std::ops::Not<Output = ST> + TryInto<u8> + Copy>(
         a: ndarray::ArrayD<ST>,
         st: ScalarType,
     ) -> Result<ReplicatedShares> {
@@ -28,7 +28,7 @@ impl TypedValueArrayOperations<ReplicatedShares> for ReplicatedShares {
             .axis_iter(Axis(0))
             .map(|x| -> Result<Value> {
                 shapes.push(x.shape().to_vec());
-                Value::from_ndarray(x.to_owned(), st.clone())
+                Value::from_ndarray(x.to_owned(), st)
             })
             .collect();
         let shares = shares_result?;
@@ -986,9 +986,9 @@ mod tests {
             assert_eq!(shares0[1], shares1[1]);
             assert_eq!(shares1[2], shares2[2]);
             let m = UINT32.get_modulus().unwrap();
-            let v0 = ToNdarray::<u64>::to_ndarray(&shares0[0])? % m;
-            let v1 = ToNdarray::<u64>::to_ndarray(&shares1[1])? % m;
-            let v2 = ToNdarray::<u64>::to_ndarray(&shares2[2])? % m;
+            let v0 = ToNdarray::<u128>::to_ndarray(&shares0[0])? % m;
+            let v1 = ToNdarray::<u128>::to_ndarray(&shares1[1])? % m;
+            let v2 = ToNdarray::<u128>::to_ndarray(&shares2[2])? % m;
             let new_data = v0.add(v1).add(v2) % m;
             assert_eq!(new_data, ndarray::Array::from_vec(data).into_dyn());
             Ok(())

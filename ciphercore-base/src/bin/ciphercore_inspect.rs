@@ -206,7 +206,6 @@ pub(crate) fn print_stats(graph: Graph) -> Result<()> {
                     UINT16 | INT16 => total_16bits_operations += ops,
                     UINT32 | INT32 => total_32bits_operations += ops,
                     UINT64 | INT64 => total_64bits_operations += ops,
-                    _ => {}
                 };
                 total_integer_operations += ops;
             }

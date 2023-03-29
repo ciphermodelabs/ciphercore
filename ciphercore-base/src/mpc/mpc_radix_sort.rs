@@ -5,7 +5,7 @@ use crate::errors::Result;
 use crate::graphs::util::simple_context;
 use crate::graphs::{Context, Graph, Node, Operation, SliceElement};
 use crate::mpc::mpc_compiler::{check_private_tuple, PARTIES};
-use crate::ops::utils::{custom_reduce, unsqueeze, zeros};
+use crate::ops::utils::{custom_reduce, unsqueeze};
 
 use serde::{Deserialize, Serialize};
 
@@ -339,7 +339,7 @@ fn gen_multi_bit_sort_graph(context: Context, n: u64, l: u64) -> Result<Graph> {
         // f is one_hot encoding of x[i] in the sense that:
         // f[v][i] = 1 if (x[i] == v) else 0
         let f = custom_reduce(d, |first, second| first.multiply(second))?; // [num_values, n]
-        let one = g.constant(scalar_type(UINT32), Value::from_scalar(1, UINT32)?)?;
+        let one = g.ones(scalar_type(UINT32))?;
         let f = one.mixed_multiply(f.permute_axes(vec![1, 0])?)?; // [n, num_values]
 
         // Here we are going to compute s:
@@ -373,7 +373,7 @@ fn pad_left(data: Node, pad_size: u64) -> Result<Node> {
     let mut pad_shape = shape;
     pad_shape[0] = pad_size;
     let g = data.get_graph();
-    let pad = zeros(&g, array_type(pad_shape, sc))?;
+    let pad = g.zeros(array_type(pad_shape, sc))?;
     g.concatenate(vec![pad, data], 0)
 }
 
@@ -381,6 +381,7 @@ fn pad_left(data: Node, pad_size: u64) -> Result<Node> {
 mod tests {
 
     use super::*;
+    use crate::bytes::add_vectors_u128;
     use crate::data_types::{array_type, tuple_type};
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
@@ -426,7 +427,7 @@ mod tests {
         )?;
         let t = input.t.clone();
         let output = if !output_parties.is_empty() {
-            output.to_flattened_array_u64(t.clone())
+            output.to_flattened_array_u128(t.clone())
         } else {
             // check that mpc_output is a sharing of plain_output
             assert!(output.check_type(tuple_type(vec![t.clone(); PARTIES]))?);
@@ -435,22 +436,16 @@ mod tests {
                 Type::Array(_, st) => {
                     let mut res = vec![0; t.get_dimensions().into_iter().product::<u64>() as usize];
                     for val in v {
-                        let arr = val.to_flattened_array_u64(t.clone())?;
-                        for i in 0..arr.len() {
-                            res[i as usize] = u64::wrapping_add(res[i as usize], arr[i as usize]);
-                        }
+                        let arr = val.to_flattened_array_u128(t.clone())?;
+                        res = add_vectors_u128(&res, &arr, st.get_modulus())?;
                     }
-                    if let Some(m) = st.get_modulus() {
-                        Ok(res.iter().map(|x| (x % m)).collect())
-                    } else {
-                        Ok(res.iter().map(|x| *x).collect())
-                    }
+                    Ok(res)
                 }
                 _ => unreachable!(),
             })
         }?;
         let n = t.get_shape()[0];
-        let input = input.value.to_flattened_array_u64(t.clone())?;
+        let input = input.value.to_flattened_array_u128(t.clone())?;
         let mut input = input
             .chunks(input.len() / n as usize)
             .map(|x| x.to_vec())

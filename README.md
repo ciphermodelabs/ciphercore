@@ -65,7 +65,7 @@ ciphercore_evaluate b.json inputs.json
 ```
 and correctly get:
 ```JSON
-{"kind": "scalar", "type": "b", "value": 1}
+{"kind": "scalar", "type": "bit", "value": 1}
 ```
 since the Alice's number is larger than Bob's.
 

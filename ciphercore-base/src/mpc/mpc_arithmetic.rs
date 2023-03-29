@@ -1,6 +1,5 @@
 use crate::custom_ops::{CustomOperation, CustomOperationBody};
 use crate::data_types::Type;
-use crate::data_values::Value;
 use crate::errors::Result;
 use crate::graphs::{Context, Graph, Node, NodeAnnotation, Operation};
 use crate::mpc::mpc_compiler::{check_private_tuple, get_zero_shares, PARTIES};
@@ -38,9 +37,7 @@ impl CustomOperationBody for AddMPC {
                 } else if i == 0 {
                     g.add(a0i, r_node.clone())?
                 } else {
-                    let r_type = r_node.get_type()?;
-                    let zero = g.constant(r_type.clone(), Value::zero_of_type(r_type))?;
-                    g.add(a0i, zero)?
+                    g.add(a0i, g.zeros(r_node.get_type()?)?)?
                 };
                 outputs.push(a);
             }
@@ -538,7 +535,7 @@ impl CustomOperationBody for MixedMultiplyMPC {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bytes::subtract_vectors_u64;
+    use crate::bytes::subtract_vectors_u128;
     use crate::custom_ops::run_instantiation_pass;
     use crate::data_types::{
         array_type, scalar_type, tuple_type, ArrayShape, ScalarType, BIT, INT32, UINT32,
@@ -561,12 +558,12 @@ mod tests {
         let c = simple_context(|g| {
             let mut types = vec![];
             if op == Operation::MixedMultiply {
-                types.push(array_type(dims[0].clone(), st.clone()));
+                types.push(array_type(dims[0].clone(), st));
                 types.push(array_type(dims[1].clone(), BIT));
                 types.push(array_type(dims[2].clone(), BIT));
             } else {
                 for shape in dims {
-                    types.push(array_type(shape, st.clone()));
+                    types.push(array_type(shape, st));
                 }
             }
             let i1 = g.input(types[0].clone())?;
@@ -614,7 +611,7 @@ mod tests {
     }
 
     fn prepare_arithmetic_input(
-        input: Vec<Vec<u64>>,
+        input: Vec<Vec<u128>>,
         input_status: Vec<IOStatus>,
         st: Vec<ScalarType>,
     ) -> Result<Vec<Value>> {
@@ -628,15 +625,15 @@ mod tests {
                     panic!("Use non-empty input");
                 }
                 let threes = vec![3; n];
-                let first_share = subtract_vectors_u64(&input[i], &threes, st[i].get_modulus())?;
-                v.push(Value::from_flattened_array(&first_share, st[i].clone())?);
+                let first_share = subtract_vectors_u128(&input[i], &threes, st[i].get_modulus())?;
+                v.push(Value::from_flattened_array(&first_share, st[i])?);
                 for j in 1..PARTIES {
                     let share = vec![j; n];
-                    v.push(Value::from_flattened_array(&share, st[i].clone())?);
+                    v.push(Value::from_flattened_array(&share, st[i])?);
                 }
                 res.push(Value::from_vector(v));
             } else {
-                res.push(Value::from_flattened_array(&input[i], st[i].clone())?);
+                res.push(Value::from_flattened_array(&input[i], st[i])?);
             }
         }
         Ok(res)
@@ -645,13 +642,13 @@ mod tests {
     fn check_arithmetic_output(
         mpc_graph: Graph,
         inputs: Vec<Value>,
-        expected: Vec<u64>,
+        expected: Vec<u128>,
         st: ScalarType,
         dims: ArrayShape,
         output_parties: Vec<IOStatus>,
     ) -> Result<()> {
         let output = random_evaluate(mpc_graph.clone(), inputs)?;
-        let output_type = array_type(dims.clone(), st.clone());
+        let output_type = array_type(dims.clone(), st);
 
         let out = if output_parties.is_empty() {
             // check that mpc_output is a sharing of plain_output
@@ -659,23 +656,23 @@ mod tests {
             // add up shared values.
             output.access_vector(|v| {
                 let flat_dims: u64 = dims.iter().product();
-                let mut res: Vec<u64> = vec![0; flat_dims as usize];
+                let mut res = vec![0; flat_dims as usize];
                 for val in v {
-                    let arr = val.to_flattened_array_u64(output_type.clone())?;
+                    let arr = val.to_flattened_array_u128(output_type.clone())?;
                     for i in 0..flat_dims {
-                        res[i as usize] = res[i as usize].wrapping_add(arr[i as usize]);
+                        res[i as usize] = u128::wrapping_add(res[i as usize], arr[i as usize]);
                     }
                 }
                 Ok(res)
             })?
         } else {
             assert!(output.check_type(output_type.clone())?);
-            output.to_flattened_array_u64(output_type)?
+            output.to_flattened_array_u128(output_type)?
         };
         let out = if let Some(m) = st.get_modulus() {
-            out.iter().map(|x| x % m).collect()
+            out.iter().map(|x| x % m).collect::<Vec<_>>()
         } else {
-            out
+            out.iter().map(|x| x % 2_u128.pow(64)).collect::<Vec<_>>()
         };
         assert_eq!(out, expected);
         Ok(())
@@ -684,15 +681,15 @@ mod tests {
     fn helper_add_subtract(
         op: Operation,
         st: ScalarType,
-        input: Vec<Vec<u64>>,
-        expected: Vec<u64>,
+        input: Vec<Vec<u128>>,
+        expected: Vec<u128>,
         dims_in: Vec<ArrayShape>,
         dims_out: ArrayShape,
     ) -> Result<()> {
         let helper = |op: Operation,
                       st: ScalarType,
-                      input: Vec<Vec<u64>>,
-                      expected: Vec<u64>,
+                      input: Vec<Vec<u128>>,
+                      expected: Vec<u128>,
                       input_status: Vec<IOStatus>,
                       output_parties: Vec<IOStatus>|
          -> Result<()> {
@@ -700,12 +697,12 @@ mod tests {
                 input_status.clone(),
                 output_parties.clone(),
                 op,
-                st.clone(),
+                st,
                 dims_in.clone(),
             )?;
             let mpc_graph = mpc_context.get_main_graph()?;
 
-            let inputs = prepare_arithmetic_input(input, input_status, vec![st.clone(); 3])?;
+            let inputs = prepare_arithmetic_input(input, input_status, vec![st; 3])?;
 
             check_arithmetic_output(
                 mpc_graph,
@@ -721,7 +718,7 @@ mod tests {
 
         helper(
             op.clone(),
-            st.clone(),
+            st,
             input.clone(),
             expected.clone(),
             vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
@@ -729,7 +726,7 @@ mod tests {
         )?;
         helper(
             op.clone(),
-            st.clone(),
+            st,
             input.clone(),
             expected.clone(),
             vec![IOStatus::Public, IOStatus::Party(0), IOStatus::Public],
@@ -737,7 +734,7 @@ mod tests {
         )?;
         helper(
             op.clone(),
-            st.clone(),
+            st,
             input.clone(),
             expected.clone(),
             vec![IOStatus::Public, IOStatus::Public, IOStatus::Party(0)],
@@ -745,7 +742,7 @@ mod tests {
         )?;
         helper(
             op.clone(),
-            st.clone(),
+            st,
             input.clone(),
             expected.clone(),
             vec![IOStatus::Public, IOStatus::Public, IOStatus::Public],
@@ -753,7 +750,7 @@ mod tests {
         )?;
         helper(
             op.clone(),
-            st.clone(),
+            st,
             input.clone(),
             expected.clone(),
             vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
@@ -875,12 +872,12 @@ mod tests {
                 input_status.clone(),
                 output_parties.clone(),
                 op.clone(),
-                st.clone(),
+                st,
                 vec![dims.clone(); 3],
             )?;
             let mpc_graph = mpc_context.get_main_graph()?;
 
-            let flat_dims: u64 = dims.iter().product();
+            let flat_dims = dims.iter().product::<u64>() as u128;
             let inputs = prepare_arithmetic_input(
                 vec![
                     (2..2 + flat_dims).collect(),
@@ -888,7 +885,7 @@ mod tests {
                     (6..6 + flat_dims).collect(),
                 ],
                 input_status,
-                vec![st.clone(); 3],
+                vec![st; 3],
             )?;
 
             let expected = match op.clone() {
@@ -975,7 +972,7 @@ mod tests {
                         input_status.clone(),
                         output_parties.clone(),
                         Operation::MixedMultiply,
-                        st.clone(),
+                        st,
                         vec![dims.clone(); 3],
                     )?;
                     let mpc_graph = mpc_context.get_main_graph()?;
@@ -983,7 +980,7 @@ mod tests {
                     let inputs = prepare_arithmetic_input(
                         vec![vec![2, 3, 4, 5], vec![1, 1, 0, 1], vec![0, 1, 1, 1]],
                         input_status,
-                        vec![st.clone(), BIT, BIT],
+                        vec![st, BIT, BIT],
                     )?;
 
                     let expected = vec![0, 3, 0, 5];

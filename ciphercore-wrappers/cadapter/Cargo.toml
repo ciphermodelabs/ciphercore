@@ -15,7 +15,7 @@ homepage = "https://www.ciphermode.com/"
 ciphercore-base = "=0.1.2"
 ciphercore-utils = "=0.1.2"
 serde = { version = "1.0.130", features = ["derive", "rc"] }
-serde_json = "1.0.68"
+serde_json = "1.0.94"
 typetag = "0.1.7"
 petgraph = "0.6.0"
 maplit = "1.0.2"

@@ -160,13 +160,13 @@ mod tests {
         dividend: u64,
         divisor: u64,
         initial_approximation: Option<u64>,
-        sc_t: ScalarType,
+        st: ScalarType,
     ) -> Result<Value> {
         let c = simple_context(|g| {
-            let dividend_node = g.input(scalar_type(sc_t.clone()))?;
-            let divisor_node = g.input(scalar_type(sc_t.clone()))?;
+            let dividend_node = g.input(scalar_type(st))?;
+            let divisor_node = g.input(scalar_type(st))?;
             if let Some(approx) = initial_approximation {
-                let approx_const = constant_scalar(&g, approx, sc_t.clone())?;
+                let approx_const = constant_scalar(&g, approx, st)?;
                 g.custom_op(
                     CustomOperation::new(GoldschmidtDivision {
                         iterations: 5,
@@ -188,8 +188,8 @@ mod tests {
         let result = random_evaluate(
             mapped_c.get_context().get_main_graph()?,
             vec![
-                Value::from_scalar(dividend, sc_t.clone())?,
-                Value::from_scalar(divisor, sc_t)?,
+                Value::from_scalar(dividend, st)?,
+                Value::from_scalar(divisor, st)?,
             ],
         )?;
         Ok(result)
@@ -198,12 +198,12 @@ mod tests {
     fn array_division_helper_array_scalar(
         dividend: Vec<u64>,
         divisor: u64,
-        sc_t: ScalarType,
+        st: ScalarType,
     ) -> Result<Vec<u64>> {
-        let array_t = array_type(vec![dividend.len() as u64], sc_t.clone());
+        let array_t = array_type(vec![dividend.len() as u64], st);
         let c = simple_context(|g| {
             let dividend_node = g.input(array_t.clone())?;
-            let divisor_node = g.input(scalar_type(sc_t.clone()))?;
+            let divisor_node = g.input(scalar_type(st))?;
             g.custom_op(
                 CustomOperation::new(GoldschmidtDivision {
                     iterations: 5,
@@ -216,8 +216,8 @@ mod tests {
         let result = random_evaluate(
             mapped_c.get_context().get_main_graph()?,
             vec![
-                Value::from_flattened_array(&dividend, sc_t.clone())?,
-                Value::from_scalar(divisor, sc_t)?,
+                Value::from_flattened_array(&dividend, st)?,
+                Value::from_scalar(divisor, st)?,
             ],
         )?;
         result.to_flattened_array_u64(array_t)
@@ -226,11 +226,11 @@ mod tests {
     fn array_division_helper_scalar_array(
         dividend: u64,
         divisor: Vec<u64>,
-        sc_t: ScalarType,
+        st: ScalarType,
     ) -> Result<Vec<u64>> {
-        let array_t = array_type(vec![divisor.len() as u64], sc_t.clone());
+        let array_t = array_type(vec![divisor.len() as u64], st);
         let c = simple_context(|g| {
-            let dividend_node = g.input(scalar_type(sc_t.clone()))?;
+            let dividend_node = g.input(scalar_type(st))?;
             let divisor_node = g.input(array_t.clone())?;
             g.custom_op(
                 CustomOperation::new(GoldschmidtDivision {
@@ -244,8 +244,8 @@ mod tests {
         let result = random_evaluate(
             mapped_c.get_context().get_main_graph()?,
             vec![
-                Value::from_scalar(dividend, sc_t.clone())?,
-                Value::from_flattened_array(&divisor, sc_t)?,
+                Value::from_scalar(dividend, st)?,
+                Value::from_flattened_array(&divisor, st)?,
             ],
         )?;
         result.to_flattened_array_u64(array_t)
@@ -254,9 +254,9 @@ mod tests {
     fn array_division_helper_array_array(
         dividend: Vec<u64>,
         divisor: Vec<u64>,
-        sc_t: ScalarType,
+        st: ScalarType,
     ) -> Result<Vec<u64>> {
-        let array_t = array_type(vec![divisor.len() as u64], sc_t.clone());
+        let array_t = array_type(vec![divisor.len() as u64], st);
         let c = simple_context(|g| {
             let dividend_node = g.input(array_t.clone())?;
             let divisor_node = g.input(array_t.clone())?;
@@ -272,8 +272,8 @@ mod tests {
         let result = random_evaluate(
             mapped_c.get_context().get_main_graph()?,
             vec![
-                Value::from_flattened_array(&dividend, sc_t.clone())?,
-                Value::from_flattened_array(&divisor, sc_t)?,
+                Value::from_flattened_array(&dividend, st)?,
+                Value::from_flattened_array(&divisor, st)?,
             ],
         )?;
         result.to_flattened_array_u64(array_t)

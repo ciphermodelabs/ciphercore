@@ -330,33 +330,22 @@ fn calculate_carry_bits(
 
 #[cfg(test)]
 mod tests {
-    use std::ops::Not;
-
     use super::*;
 
     use crate::custom_ops::{run_instantiation_pass, CustomOperation};
     use crate::data_types::{
-        array_type, create_scalar_type, tuple_type, ScalarType, INT16, INT64, UINT16, UINT32,
-        UINT64, UINT8,
+        array_type, tuple_type, ScalarType, INT16, INT64, UINT16, UINT32, UINT64, UINT8,
     };
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
     use crate::graphs::create_context;
     use crate::graphs::util::simple_context;
 
-    fn test_helper(first: u64, second: u64, bits: u64) -> Result<()> {
-        let modulus = if bits == 64 {
-            None
-        } else {
-            Some(2u64.pow(bits as u32))
-        };
-        let mask = if let Some(modulus) = modulus {
-            modulus - 1
-        } else {
-            0u64.not()
-        };
-        let first = first & mask;
-        let second = second & mask;
+    fn test_helper(first: u64, second: u64, st: ScalarType) -> Result<()> {
+        let bits = st.size_in_bits();
+        let mask = (1u128 << bits) - 1;
+        let first = (first as u128) & mask;
+        let second = (second as u128) & mask;
 
         let c = simple_context(|g| {
             let i1 = g.input(array_type(vec![bits], BIT))?;
@@ -375,14 +364,13 @@ mod tests {
             Ok(o)
         })?;
         let mapped_c = run_instantiation_pass(c)?;
-        let scalar = create_scalar_type(false, modulus);
-        let input0 = Value::from_scalar(first, scalar.clone())?;
-        let input1 = Value::from_scalar(second, scalar.clone())?;
+        let input0 = Value::from_scalar(first, st)?;
+        let input1 = Value::from_scalar(second, st)?;
         let result_v = random_evaluate(
             mapped_c.get_context().get_main_graph()?,
             vec![input0, input1],
         )?
-        .to_u64(scalar.clone())?;
+        .to_u128(st)?;
 
         let expected_result = first.wrapping_add(second) & mask;
         assert_eq!(
@@ -395,10 +383,10 @@ mod tests {
     #[test]
     fn test_random_inputs() -> Result<()> {
         let random_numbers = [0, 1, 3, 4, 10, 100500, 123456, 787788];
-        for bits in (0..=6).map(|pw| 2u64.pow(pw)) {
+        for st in [BIT, UINT8, UINT16, UINT32, UINT64] {
             for &x in random_numbers.iter() {
                 for &y in random_numbers.iter() {
-                    test_helper(x, y, bits)?;
+                    test_helper(x, y, st)?;
                 }
             }
         }
@@ -416,8 +404,8 @@ mod tests {
             )
         })?;
         let mapped_c = run_instantiation_pass(c)?;
-        let input0 = Value::from_scalar(first, st.clone())?;
-        let input1 = Value::from_scalar(second, st.clone())?;
+        let input0 = Value::from_scalar(first, st)?;
+        let input1 = Value::from_scalar(second, st)?;
         let results = random_evaluate(
             mapped_c.get_context().get_main_graph()?,
             vec![input0, input1],
@@ -444,7 +432,7 @@ mod tests {
             (2000000000, 3000000000, UINT32, 705032704, 1),
             (u64::MAX, u64::MAX, UINT64, u64::MAX - 1, 1),
         ] {
-            let (got_sum, got_overflow) = add_with_overflow_helper(first, second, st.clone())?;
+            let (got_sum, got_overflow) = add_with_overflow_helper(first, second, st)?;
             assert_eq!(got_sum, want_sum, "{first} + {second}");
             assert_eq!(got_overflow, want_overflow, "{first} + {second}");
         }
