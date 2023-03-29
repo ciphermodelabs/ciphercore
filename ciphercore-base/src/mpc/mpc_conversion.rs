@@ -9,13 +9,15 @@ use crate::graphs::{Context, Graph, Node, NodeAnnotation};
 use crate::inline::inline_ops::{
     inline_operations, DepthOptimizationLevel, InlineConfig, InlineMode,
 };
-use crate::mpc::mpc_arithmetic::{AddMPC, MultiplyMPC};
 use crate::mpc::mpc_compiler::{check_private_tuple, compile_to_mpc_graph, PARTIES};
 use crate::ops::adder::BinaryAddTransposed;
 use crate::ops::utils::{pull_out_bits, pull_out_bits_for_type, put_in_bits};
 use crate::type_inference::a2b_type_inference;
 
 use serde::{Deserialize, Serialize};
+
+use super::mpc_arithmetic::{add_mpc, multiply_mpc};
+use super::resharing::reshare;
 
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub(super) struct A2BMPC {}
@@ -390,24 +392,18 @@ fn add_3_bitstrings(
     // where carry = a AND b XOR c AND (a XOR b), xor_123 = a XOR b XOR c
     // and Add is the binary adder.
     // a XOR b
-    let xor_12 = g.custom_op(CustomOperation::new(AddMPC {}), vec![a.clone(), b.clone()])?;
-    // a AND b
-    let and_12 = g.custom_op(
-        CustomOperation::new(MultiplyMPC {}),
-        vec![a, b, prf_for_mul_keys.clone()],
-    )?;
-    // (a XOR b) AND c
-    let xor_12_and_3 = g.custom_op(
-        CustomOperation::new(MultiplyMPC {}),
-        vec![xor_12.clone(), c.clone(), prf_for_mul_keys.clone()],
-    )?;
+    let xor_12 = add_mpc(a.clone(), b.clone())?;
+    // a AND b, don't reshare the result
+    let and_12 = multiply_mpc(a, b, prf_for_mul_keys.clone(), false)?;
+    // (a XOR b) AND c, don't reshare the result
+    let xor_12_and_3 = multiply_mpc(xor_12.clone(), c.clone(), prf_for_mul_keys.clone(), false)?;
     // a XOR b XOR c
-    let xor_123 = g.custom_op(CustomOperation::new(AddMPC {}), vec![xor_12, c])?;
-    // (a AND b) XOR (a XOR b) AND c
-    let carry = g.custom_op(CustomOperation::new(AddMPC {}), vec![and_12, xor_12_and_3])?;
+    let xor_123 = add_mpc(xor_12, c)?;
+    // (a AND b) XOR (a XOR b) AND c and reshare the result
+    let carry = add_mpc(and_12, xor_12_and_3)?;
 
     // carry << 1
-    let shifted_carry = g.call(shift_g, vec![carry])?;
+    let shifted_carry = reshare(&g.call(shift_g, vec![carry])?, &prf_for_mul_keys)?;
 
     // xor_123 + (carry << 1) = Add(a,b,c)
     g.call(adder_g, vec![prf_for_mul_keys, xor_123, shifted_carry])
