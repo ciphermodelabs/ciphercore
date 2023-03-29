@@ -3,7 +3,6 @@ use crate::data_types::Type;
 use crate::errors::Result;
 use crate::graphs::{Context, Graph, Node, NodeAnnotation};
 use crate::mpc::mpc_compiler::{check_private_tuple, PARTIES};
-use crate::ops::utils::zeros;
 
 use serde::{Deserialize, Serialize};
 
@@ -59,8 +58,8 @@ impl CustomOperationBody for ApplyPermutationMPC {
             // If an array is public and permutation is private, let's make an array of 'shares'.
             vec![
                 input.clone(),
-                zeros(&g, input.get_type()?)?,
-                zeros(&g, input.get_type()?)?,
+                g.zeros(input.get_type()?)?,
+                g.zeros(input.get_type()?)?,
             ]
         } else {
             if let Type::Tuple(shape) = input.get_type()? {
@@ -425,7 +424,7 @@ mod tests {
         let t = input.t.clone();
 
         let output = if !output_parties.is_empty() {
-            output.to_flattened_array_u64(t.clone())
+            output.to_flattened_array_u128(t.clone())
         } else {
             // check that mpc_output is a sharing of plain_output
             assert!(output.check_type(tuple_type(vec![t.clone(); PARTIES]))?);
@@ -434,9 +433,9 @@ mod tests {
                 Type::Array(_, _) => {
                     let mut res = vec![0; t.get_dimensions().into_iter().product::<u64>() as usize];
                     for val in v {
-                        let arr = val.to_flattened_array_u64(t.clone())?;
+                        let arr = val.to_flattened_array_u128(t.clone())?;
                         for i in 0..arr.len() {
-                            res[i as usize] = u64::wrapping_add(res[i as usize], arr[i as usize]);
+                            res[i as usize] = u128::wrapping_add(res[i as usize], arr[i as usize]);
                         }
                     }
                     Ok(res)
@@ -444,15 +443,15 @@ mod tests {
                 _ => unreachable!(),
             })
         }?;
-        let input = input.value.to_flattened_array_u64(t.clone())?;
-        let (input, output) = if let Some(m) = t.get_scalar_type().get_modulus() {
-            (
-                input.iter().map(|x| (x % m)).collect(),
-                output.iter().map(|x| (x % m)).collect(),
-            )
-        } else {
-            (input, output)
+        let input = input.value.to_flattened_array_u128(t.clone())?;
+        let m = match t.get_scalar_type().get_modulus() {
+            Some(m) => m,
+            None => 2u128.pow(64),
         };
+        let (input, output) = (
+            input.iter().map(|x| (x % m)).collect::<Vec<_>>(),
+            output.iter().map(|x| (x % m)).collect::<Vec<_>>(),
+        );
         assert_eq!(input.len(), output.len());
         let n = permutations[0].len();
         let perm = if permutations.len() == 1 {

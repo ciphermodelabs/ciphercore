@@ -5,13 +5,10 @@ use crate::data_values::Value;
 use crate::errors::Result;
 use crate::graphs::{Context, Graph, GraphAnnotation};
 use crate::ops::utils::{pull_out_bits, put_in_bits};
-use crate::typed_value::TypedValue;
 
 use serde::{Deserialize, Serialize};
 
-use super::utils::{
-    constant, constant_scalar, multiply_fixed_point, single_bit_to_arithmetic, zeros,
-};
+use super::utils::{constant_scalar, multiply_fixed_point, single_bit_to_arithmetic};
 
 /// A structure that defines the custom operation InverseSqrt that computes an approximate inverse square root using Newton iterations.
 ///
@@ -129,8 +126,8 @@ impl CustomOperationBody for InverseSqrt {
         let mut approximation = if has_initial_approximation {
             g.input(t)?
         } else if self.denominator_cap_2k == 0 {
-            let two = constant(&g, TypedValue::from_scalar(2, sc.clone())?)?;
-            zeros(&g, t)?.add(two)?
+            let two = constant_scalar(&g, 2, sc)?;
+            g.zeros(t)?.add(two)?
         } else {
             let divisor_bits = pull_out_bits(divisor.a2b()?)?.array_to_vector()?;
             let mut divisor_bits_reversed = vec![];
@@ -146,7 +143,7 @@ impl CustomOperationBody for InverseSqrt {
                 let bit = g.custom_op(CustomOperation::new(Or {}), vec![bit1, bit2])?;
                 divisor_bits_reversed.push(bit);
             }
-            let zero = zeros(&g, bit_type.clone())?;
+            let zero = g.zeros(bit_type.clone())?;
             let highest_one_bit_binary = g
                 .iterate(
                     g_highest_one_bit,
@@ -155,15 +152,15 @@ impl CustomOperationBody for InverseSqrt {
                 )?
                 .tuple_get(1)?
                 .vector_to_array()?;
-            let highest_one_bit = single_bit_to_arithmetic(highest_one_bit_binary, sc.clone())?;
+            let highest_one_bit = single_bit_to_arithmetic(highest_one_bit_binary, sc)?;
             let first_approximation_bits = put_in_bits(highest_one_bit)?;
             let mut powers_of_two = vec![];
             for i in 0..self.denominator_cap_2k {
                 powers_of_two.push(1u64 << i);
             }
             let powers_of_two_node = g.constant(
-                array_type(vec![self.denominator_cap_2k], sc.clone()),
-                Value::from_flattened_array(&powers_of_two, sc.clone())?,
+                array_type(vec![self.denominator_cap_2k], sc),
+                Value::from_flattened_array(&powers_of_two, sc)?,
             )?;
             first_approximation_bits.dot(powers_of_two_node)?
         };
@@ -214,12 +211,12 @@ mod tests {
     fn scalar_helper(
         divisor: u64,
         initial_approximation: Option<u64>,
-        sc: ScalarType,
+        st: ScalarType,
     ) -> Result<u64> {
         let c = simple_context(|g| {
-            let i = g.input(scalar_type(sc.clone()))?;
+            let i = g.input(scalar_type(st))?;
             if let Some(approx) = initial_approximation {
-                let approx_const = constant_scalar(&g, approx, sc.clone())?;
+                let approx_const = constant_scalar(&g, approx, st)?;
                 g.custom_op(
                     CustomOperation::new(InverseSqrt {
                         iterations: 5,
@@ -240,19 +237,19 @@ mod tests {
         let mapped_c = run_instantiation_pass(c)?;
         let result = random_evaluate(
             mapped_c.get_context().get_main_graph()?,
-            vec![Value::from_scalar(divisor, sc.clone())?],
+            vec![Value::from_scalar(divisor, st)?],
         )?;
-        if sc == UINT64 {
-            result.to_u64(sc.clone())
+        if st == UINT64 {
+            result.to_u64(st)
         } else {
-            let res = result.to_i64(sc.clone())?;
+            let res = result.to_i64(st)?;
             assert!(res >= 0);
             Ok(res as u64)
         }
     }
 
-    fn array_helper(divisor: Vec<u64>, sc: ScalarType) -> Result<Vec<u64>> {
-        let array_t = array_type(vec![divisor.len() as u64], sc.clone());
+    fn array_helper(divisor: Vec<u64>, st: ScalarType) -> Result<Vec<u64>> {
+        let array_t = array_type(vec![divisor.len() as u64], st);
         let c = simple_context(|g| {
             let i = g.input(array_t.clone())?;
             g.custom_op(
@@ -266,7 +263,7 @@ mod tests {
         let mapped_c = run_instantiation_pass(c)?;
         let result = random_evaluate(
             mapped_c.get_context().get_main_graph()?,
-            vec![Value::from_flattened_array(&divisor, sc.clone())?],
+            vec![Value::from_flattened_array(&divisor, st)?],
         )?;
         result.to_flattened_array_u64(array_t)
     }

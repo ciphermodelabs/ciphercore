@@ -1,22 +1,12 @@
 use crate::custom_ops::CustomOperationBody;
-use crate::data_types::{array_type, scalar_size_in_bits, scalar_type, ScalarType, Type, BIT};
+use crate::data_types::{array_type, scalar_size_in_bits, scalar_type, Type, BIT};
 use crate::data_values::Value;
 use crate::errors::Result;
 use crate::graphs::{Context, Graph, Node, NodeAnnotation};
 use crate::mpc::mpc_compiler::{check_private_tuple, KEY_LENGTH, PARTIES};
+use crate::ops::utils::constant_scalar;
 
 use serde::{Deserialize, Serialize};
-
-fn get_unsigned_counterpart(st: ScalarType) -> ScalarType {
-    if !st.get_signed() {
-        return st;
-    }
-
-    ScalarType {
-        signed: false,
-        modulus: st.get_modulus(),
-    }
-}
 
 /// Truncate MPC operation for public and private data.
 ///
@@ -44,7 +34,7 @@ impl CustomOperationBody for TruncateMPC {
     fn instantiate(&self, context: Context, argument_types: Vec<Type>) -> Result<Graph> {
         if argument_types.len() == 1 {
             if let Type::Array(_, st) | Type::Scalar(st) = argument_types[0].clone() {
-                if !st.get_signed() {
+                if !st.is_signed() {
                     return Err(runtime_error!(
                         "Only signed types are supported by TruncateMPC"
                     ));
@@ -91,7 +81,7 @@ impl CustomOperationBody for TruncateMPC {
         } else {
             panic!("Shouldn't be here");
         };
-        if !input_t.get_scalar_type().get_signed() {
+        if !input_t.get_scalar_type().is_signed() {
             return Err(runtime_error!(
                 "Only signed types are supported by TruncateMPC"
             ));
@@ -293,7 +283,7 @@ impl CustomOperationBody for TruncateMPC2K {
         let key_12 = prf_mul_keys.tuple_get(2)?;
 
         let st = input_t.get_scalar_type();
-        let st_size = scalar_size_in_bits(st.clone());
+        let st_size = scalar_size_in_bits(st);
 
         let x0 = {
             let share = input_node.tuple_get(0)?;
@@ -301,12 +291,9 @@ impl CustomOperationBody for TruncateMPC2K {
             //    For signed inputs, we add modulus/4 to input resulting in input + modulus/4 in [0, modulus/2)
             //    For correctness, we should remove modulus/2^(k+2) after truncation since
             //    Truncate(input + modulus/4, 2^k) = Truncate(input, 2^k) + modulus/2^(k+2)
-            if st.get_signed() {
+            if st.is_signed() {
                 // modulus/4
-                let mod_fraction = g.constant(
-                    scalar_type(st.clone()),
-                    Value::from_scalar(1u64 << (st_size - 2), st.clone())?,
-                )?;
+                let mod_fraction = constant_scalar(&g, 1u64 << (st_size - 2), st)?;
                 share.add(mod_fraction)?
             } else {
                 share
@@ -318,42 +305,25 @@ impl CustomOperationBody for TruncateMPC2K {
         // 1. Party 2 generates a random integer r of the input scalar type.
         let r = g.prf(key_2, 0, input_t.clone())?;
 
-        let unsigned_st = get_unsigned_counterpart(st.clone());
+        let unsigned_st = st.get_unsigned_counterpart();
         // 2. Party 2 extracts the MSB of r in the arithmetic form (r_msb).
         let r_msb = {
             // (0,0, ..., 1)
-            let mask = g
-                .constant(
-                    scalar_type(unsigned_st.clone()),
-                    Value::from_scalar(1u64 << (st_size - 1), unsigned_st.clone())?,
-                )?
-                .a2b()?;
+            let mask = constant_scalar(&g, 1u64 << (st_size - 1), unsigned_st)?.a2b()?;
             // (0,0, ..., r_(st_size-1)) -> r_(st_size-1)*2^(st_size-1) as unsigned integer
-            let r_msb_scaled = r.a2b()?.multiply(mask)?.b2a(unsigned_st.clone())?;
+            let r_msb_scaled = r.a2b()?.multiply(mask)?.b2a(unsigned_st)?;
             // (r_(st_size-1), 0, ..., 0) -> r_(st_size-1) of st type
-            r_msb_scaled
-                .truncate(1 << (st_size - 1))?
-                .a2b()?
-                .b2a(st.clone())?
+            r_msb_scaled.truncate(1 << (st_size - 1))?.a2b()?.b2a(st)?
         };
 
         // 3. Party 2 removes the MSB of r and truncates the result by k bits (r_truncated = sum_(i=k)^(st_size-2) r_i * 2^(i-k))
         let r_truncated = {
             // (0, ..., 0, 1, ..., 1, 0, ..., 0) to extract r_k, r_(k+1), ..., r_(st_size-2)
-            let mask = g
-                .constant(
-                    scalar_type(unsigned_st.clone()),
-                    Value::from_scalar(
-                        (1u64 << (st_size - 1)) - (1u64 << self.k),
-                        unsigned_st.clone(),
-                    )?,
-                )?
-                .a2b()?;
+            let mask =
+                constant_scalar(&g, (1u64 << (st_size - 1)) - (1u64 << self.k), unsigned_st)?
+                    .a2b()?;
             // r_k + r_(k+1) * 2 + ... + r_(st_size-2) * 2^(st_size-2-k)
-            r.a2b()?
-                .multiply(mask)?
-                .b2a(st.clone())?
-                .truncate(1 << self.k)?
+            r.a2b()?.multiply(mask)?.b2a(st)?.truncate(1 << self.k)?
         };
 
         // 4. Party 2 creates 2-out-of-2 shares of r, r_msb and r_truncated.
@@ -399,19 +369,19 @@ impl CustomOperationBody for TruncateMPC2K {
         // (c / scale) mod 2^(st_size-1-k)
         let c_truncated = c
             .a2b()?
-            .b2a(unsigned_st.clone())?
+            .b2a(unsigned_st)?
             .truncate(1 << self.k)?
             .a2b()?
-            .b2a(st.clone())?;
+            .b2a(st)?;
         let c_truncated_mod = {
             // (1,1, ..., 1, 0, ..., 0) to perform mod 2^(st_size-1-k)
             let mask = g
                 .constant(
-                    scalar_type(st.clone()),
-                    Value::from_scalar((1u64 << (st_size - 1 - self.k)) - 1, st.clone())?,
+                    scalar_type(st),
+                    Value::from_scalar((1u64 << (st_size - 1 - self.k)) - 1, st)?,
                 )?
                 .a2b()?;
-            c_truncated.a2b()?.multiply(mask)?.b2a(st.clone())?
+            c_truncated.a2b()?.multiply(mask)?.b2a(st)?
         };
 
         // 9. Parties 0 and 1 compute the MSB of c via c/2^(st_size-1).
@@ -420,14 +390,14 @@ impl CustomOperationBody for TruncateMPC2K {
             .b2a(unsigned_st)?
             .truncate(1 << (st_size - 1))?
             .a2b()?
-            .b2a(st.clone())?;
+            .b2a(st)?;
 
         // 10. Parties 0 and 1 compute 2-out-of-2 shares of b = r_msb XOR c_msb using the following expressions:
         //             b0 = r_msb0 + c_msb - 2 * c_msb * r_msb0,
         //             b1 = r_msb1 - 2 * c_msb * r_msb1.
         //     Note that b0 + b1 = r_msb + c_msb - 2*c_msb*r_msb = r_msb XOR c_msb.
         //     All the above operations can be done locally as c_msb is known to parties 0 and 1.
-        let two = g.constant(scalar_type(st.clone()), Value::from_scalar(2, st.clone())?)?;
+        let two = constant_scalar(&g, 2, st)?;
         let b0 = r_msb0
             .subtract(r_msb0.multiply(c_msb.clone())?.multiply(two.clone())?)?
             .add(c_msb.clone())?;
@@ -436,10 +406,7 @@ impl CustomOperationBody for TruncateMPC2K {
         // 11. Parties 0 and 1 compute 2-out-of-2 shares of y' = c_truncated_mod - r_truncated + b * 2^(st_size-1-k).
         //     This value is equal to the desired result floor(x/2^k) + w.
         // 2^(st_size-1-k)
-        let power2 = g.constant(
-            scalar_type(st.clone()),
-            Value::from_scalar(1u64 << (st_size - 1 - self.k), st.clone())?,
-        )?;
+        let power2 = constant_scalar(&g, 1u64 << (st_size - 1 - self.k), st)?;
         // y' = c_truncated_mod - r_truncated + b * 2^(st_size-1-k)
         // This is 2-out-of-2 sharing of the result
         let y_prime0 = b0
@@ -461,13 +428,10 @@ impl CustomOperationBody for TruncateMPC2K {
         //     Together with y0 and y2 this value constitute the sharing of the truncation output.
         let y1 = {
             let sum01 = y_tilde0_sent.add(y_tilde1_sent)?;
-            if st.get_signed() {
+            if st.is_signed() {
                 // 14!. If input is signed, we should remove modulus/2^(k+2) after truncation since
                 //      Truncate(input + modulus/4, 2^k) = Truncate(input, 2^k) + modulus/2^(k+2)
-                let mod_fraction = g.constant(
-                    scalar_type(st.clone()),
-                    Value::from_scalar(1u64 << (st_size - 2 - self.k), st)?,
-                )?;
+                let mod_fraction = constant_scalar(&g, 1u64 << (st_size - 2 - self.k), st)?;
                 sum01.subtract(mod_fraction)?
             } else {
                 sum01
@@ -489,7 +453,7 @@ impl CustomOperationBody for TruncateMPC2K {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bytes::subtract_vectors_u64;
+    use crate::bytes::{add_u128, subtract_vectors_u128};
     use crate::data_types::{array_type, scalar_type, ScalarType, INT64, UINT64};
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
@@ -512,39 +476,39 @@ mod tests {
         prepare_for_mpc_evaluation(c, vec![vec![party_id]], vec![output_parties], inline_config)
     }
 
-    fn prepare_input(input: Vec<u64>, input_status: IOStatus, t: Type) -> Result<Vec<Value>> {
+    fn prepare_input(input: Vec<u128>, input_status: IOStatus, t: Type) -> Result<Vec<Value>> {
         let mpc_input = match t {
             Type::Scalar(st) => {
                 if input_status == IOStatus::Public || matches!(input_status, IOStatus::Party(_)) {
-                    return Ok(vec![Value::from_scalar(input[0], st.clone())?]);
+                    return Ok(vec![Value::from_scalar(input[0], st)?]);
                 }
 
                 // shares of input = (input - 3, 1, 2)
                 let mut shares_vec = vec![];
                 shares_vec.push(Value::from_scalar(
-                    subtract_vectors_u64(&input, &[3], st.get_modulus())?[0],
-                    st.clone(),
+                    subtract_vectors_u128(&input, &[3], st.get_modulus())?[0],
+                    st,
                 )?);
 
                 for i in 1..PARTIES as u64 {
-                    shares_vec.push(Value::from_scalar(i, st.clone())?);
+                    shares_vec.push(Value::from_scalar(i, st)?);
                 }
                 shares_vec
             }
             Type::Array(_, st) => {
                 if input_status == IOStatus::Public || matches!(input_status, IOStatus::Party(_)) {
-                    return Ok(vec![Value::from_flattened_array(&input, st.clone())?]);
+                    return Ok(vec![Value::from_flattened_array(&input, st)?]);
                 }
 
                 // shares of input = (input - 3, 1, 2)
                 let mut shares_vec = vec![];
                 let threes = vec![3; input.len()];
-                let first_share = subtract_vectors_u64(&input, &threes, st.get_modulus())?;
-                shares_vec.push(Value::from_flattened_array(&first_share, st.clone())?);
+                let first_share = subtract_vectors_u128(&input, &threes, st.get_modulus())?;
+                shares_vec.push(Value::from_flattened_array(&first_share, st)?);
 
                 for i in 1..PARTIES {
                     let share = vec![i; input.len()];
-                    shares_vec.push(Value::from_flattened_array(&share, st.clone())?);
+                    shares_vec.push(Value::from_flattened_array(&share, st)?);
                 }
                 shares_vec
             }
@@ -558,12 +522,12 @@ mod tests {
 
     // output and expected are assumed to be small enough to be converted to i64 slices
     fn compare_truncate_output(
-        output: &[u64],
-        expected: &[u64],
+        output: &[u128],
+        expected: &[u128],
         equal: bool,
         st: ScalarType,
     ) -> Result<()> {
-        if st.get_signed() {
+        if st.is_signed() {
             for (i, out_value) in output.iter().enumerate() {
                 let mut dif = (*out_value) as i64 - expected[i] as i64;
                 dif = dif.abs();
@@ -592,7 +556,7 @@ mod tests {
     fn check_output(
         mpc_graph: Graph,
         inputs: Vec<Value>,
-        expected: Vec<u64>,
+        expected: Vec<u128>,
         output_parties: Vec<IOStatus>,
         t: Type,
     ) -> Result<()> {
@@ -606,34 +570,30 @@ mod tests {
                 for val in v {
                     let arr = match t.clone() {
                         Type::Scalar(_) => {
-                            vec![val.to_u64(st.clone())?]
+                            vec![val.to_u128(st)?]
                         }
-                        Type::Array(_, _) => val.to_flattened_array_u64(t.clone())?,
+                        Type::Array(_, _) => val.to_flattened_array_u128(t.clone())?,
                         _ => {
                             panic!("Shouldn't be here");
                         }
                     };
                     for i in 0..expected.len() {
-                        res[i] = if let Some(m) = modulus {
-                            (res[i] + arr[i]) % m
-                        } else {
-                            res[i].wrapping_add(arr[i])
-                        };
+                        res[i] = add_u128(res[i], arr[i], modulus);
                     }
                 }
                 Ok(res)
             })?;
-            compare_truncate_output(&out, &expected, true, st.clone())?;
+            compare_truncate_output(&out, &expected, true, st)?;
         } else {
             assert!(output.check_type(t.clone())?);
             let out = match t.clone() {
-                Type::Scalar(_) => vec![output.to_u64(st.clone())?],
-                Type::Array(_, _) => output.to_flattened_array_u64(t.clone())?,
+                Type::Scalar(_) => vec![output.to_u128(st)?],
+                Type::Array(_, _) => output.to_flattened_array_u128(t.clone())?,
                 _ => {
                     panic!("Shouldn't be here");
                 }
             };
-            compare_truncate_output(&out, &expected, true, st.clone())?;
+            compare_truncate_output(&out, &expected, true, st)?;
         }
 
         Ok(())
@@ -641,7 +601,7 @@ mod tests {
 
     fn truncate_helper(st: ScalarType, scale: u64) -> Result<()> {
         let helper = |t: Type,
-                      input: Vec<u64>,
+                      input: Vec<u128>,
                       input_status: IOStatus,
                       output_parties: Vec<IOStatus>,
                       inline_config: InlineConfig|
@@ -657,13 +617,13 @@ mod tests {
 
             let mpc_input = prepare_input(input.clone(), input_status.clone(), t.clone())?;
 
-            let expected = if t.get_scalar_type().get_signed() {
+            let expected = if t.get_scalar_type().is_signed() {
                 input
                     .iter()
                     .map(|x| {
                         let val = *x as i64;
                         let res = val / (scale as i64);
-                        res as u64
+                        res as u128
                     })
                     .collect()
             } else {
@@ -671,7 +631,7 @@ mod tests {
                     .iter()
                     .map(|x| {
                         let val = *x;
-                        let res = val / scale;
+                        let res = val / (scale as u128);
                         res
                     })
                     .collect()
@@ -684,7 +644,7 @@ mod tests {
             default_mode: InlineMode::Simple,
             ..Default::default()
         };
-        let helper_runs = |inputs: Vec<u64>, t: Type| -> Result<()> {
+        let helper_runs = |inputs: Vec<u128>, t: Type| -> Result<()> {
             helper(
                 t.clone(),
                 inputs.clone(),
@@ -730,57 +690,58 @@ mod tests {
             Ok(())
         };
         // This test should fail with a probability depending on input and the number of runs
-        let helper_malformed = |inputs: Vec<u64>, t: Type, runs: u64| -> Result<()> {
+        let helper_malformed = |inputs: Vec<u128>, t: Type, runs: u64| -> Result<()> {
             for _ in 0..runs {
                 helper_runs(inputs.clone(), t.clone())?;
             }
             Ok(())
         };
 
-        helper_runs(vec![0], scalar_type(st.clone()))?;
-        helper_runs(vec![1000], scalar_type(st.clone()))?;
-        helper_runs(vec![0, 0], array_type(vec![2], st.clone()))?;
-        helper_runs(vec![2000, 255], array_type(vec![2], st.clone()))?;
-        if scale.is_power_of_two() && !st.get_signed() {
+        helper_runs(vec![0], scalar_type(st))?;
+        helper_runs(vec![1000], scalar_type(st))?;
+        helper_runs(vec![0, 0], array_type(vec![2], st))?;
+        helper_runs(vec![2000, 255], array_type(vec![2], st))?;
+        // TODO: add tests for uint128.
+        if scale.is_power_of_two() && !st.is_signed() {
             // 2^63 - 1, this is a maximal UINT64 value that can be truncated without errors by TruncateMPC2K
-            helper_runs(vec![(1u64 << 63) - 1], scalar_type(st.clone()))?;
+            helper_runs(vec![(1u128 << 63) - 1], scalar_type(st))?;
         }
 
-        if st.get_signed() {
+        if st.is_signed() {
             // -1
-            helper_runs(vec![u64::MAX], scalar_type(st.clone()))?;
+            helper_runs(vec![u64::MAX as u128], scalar_type(st))?;
             // -1000
-            helper_runs(vec![u64::MAX - 999], scalar_type(st.clone()))?;
+            helper_runs(vec![u64::MAX as u128 - 999], scalar_type(st))?;
             // [-10. -1024]
             helper_runs(
-                vec![u64::MAX as u64 - 9, u64::MAX - 1023],
-                array_type(vec![2], st.clone()),
+                vec![u64::MAX as u128 - 9, u64::MAX as u128 - 1023],
+                array_type(vec![2], st),
             )?;
             if scale.is_power_of_two() {
                 // - 2^62, this is a minimal INT32 value that can be truncated without errors by TruncateMPC2K
-                helper_runs(vec![1u64 << 62], scalar_type(st.clone()))?;
+                helper_runs(vec![1u128 << 62], scalar_type(st))?;
                 // 2^62-1, this is a maximal INT32 value that can be truncated without errors by TruncateMPC2K
-                helper_runs(vec![(1u64 << 62) - 1], scalar_type(st.clone()))?;
+                helper_runs(vec![(1u128 << 62) - 1], scalar_type(st))?;
             }
         }
 
         // Probabilistic tests of TruncateMPC for big values in absolute size
         if scale != 1 && !scale.is_power_of_two() {
             // 2^63 - 1, should fail with probability 1 - 2^(-40)
-            assert!(helper_malformed(vec![i64::MAX as u64], scalar_type(st.clone()), 40).is_err());
+            assert!(helper_malformed(vec![i64::MAX as u128], scalar_type(st), 40).is_err());
             // -2^63, should fail with probability 1 - 2^(-40)
-            assert!(helper_malformed(vec![1u64 << 63], scalar_type(st.clone()), 40).is_err());
+            assert!(helper_malformed(vec![1u128 << 63], scalar_type(st), 40).is_err());
             // [2^63 - 1, 2^63 - 2]
             assert!(helper_malformed(
-                vec![i64::MAX as u64, i64::MAX as u64 - 1],
-                array_type(vec![2], st.clone()),
+                vec![i64::MAX as u128, i64::MAX as u128 - 1],
+                array_type(vec![2], st),
                 40
             )
             .is_err());
             // [-2^63, -2^63 + 1]
             assert!(helper_malformed(
-                vec![1u64 << 63, (1u64 << 63) + 1],
-                array_type(vec![2], st.clone()),
+                vec![1u128 << 63, (1u128 << 63) + 1],
+                array_type(vec![2], st),
                 40
             )
             .is_err());
@@ -789,20 +750,21 @@ mod tests {
     }
 
     #[test]
-    fn test_truncate() {
-        truncate_helper(UINT64, 1).unwrap();
-        truncate_helper(UINT64, 1 << 3).unwrap();
-        truncate_helper(UINT64, 1 << 7).unwrap();
-        truncate_helper(UINT64, 1 << 29).unwrap();
-        truncate_helper(UINT64, 1 << 31).unwrap();
+    fn test_truncate() -> Result<()> {
+        truncate_helper(UINT64, 1)?;
+        truncate_helper(UINT64, 1 << 3)?;
+        truncate_helper(UINT64, 1 << 7)?;
+        truncate_helper(UINT64, 1 << 29)?;
+        truncate_helper(UINT64, 1 << 31)?;
 
-        truncate_helper(INT64, 1).unwrap();
-        truncate_helper(INT64, 15).unwrap();
-        truncate_helper(INT64, 1 << 3).unwrap();
-        truncate_helper(INT64, 1 << 7).unwrap();
-        truncate_helper(INT64, 1 << 29).unwrap();
-        truncate_helper(INT64, (1 << 29) - 1).unwrap();
+        truncate_helper(INT64, 1)?;
+        truncate_helper(INT64, 15)?;
+        truncate_helper(INT64, 1 << 3)?;
+        truncate_helper(INT64, 1 << 7)?;
+        truncate_helper(INT64, 1 << 29)?;
+        truncate_helper(INT64, (1 << 29) - 1)?;
 
         assert!(truncate_helper(UINT64, 15).is_err());
+        Ok(())
     }
 }

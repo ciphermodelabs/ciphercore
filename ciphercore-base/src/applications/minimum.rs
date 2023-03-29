@@ -18,13 +18,13 @@ use crate::ops::min_max::Min;
 /// Graph that finds the minimum of an array
 pub fn create_minimum_graph(context: Context, n: u64, st: ScalarType) -> Result<Graph> {
     // Get sign of the input scalar type that indicates whether signed comparisons should be computed
-    let signed_comparison = st.get_signed();
+    let signed_comparison = st.is_signed();
 
     // Create a graph in a given context that will be used for finding the minimum
     let g = context.create_graph()?;
 
     // Create the type of the input array with `2^n` elements.
-    let input_type = array_type(vec![1 << n], st.clone());
+    let input_type = array_type(vec![1 << n], st);
 
     // Add an input node to the empty graph g created above.
     // This input node requires the input array type generated previously.
@@ -86,20 +86,20 @@ mod tests {
 
     use super::*;
 
-    fn test_minimum_helper<T: TryInto<u64> + Not<Output = T> + TryInto<u8> + Copy>(
+    fn test_minimum_helper<T: TryInto<u128> + Not<Output = T> + TryInto<u8> + Copy>(
         input_value: &[T],
         n: u64,
         st: ScalarType,
     ) -> Value {
         || -> Result<Value> {
             let c = create_context()?;
-            let g = create_minimum_graph(c.clone(), n, st.clone())?;
+            let g = create_minimum_graph(c.clone(), n, st)?;
             g.set_as_main()?;
             c.finalize()?;
             let mapped_c = run_instantiation_pass(c)?.get_context();
             let mapped_g = mapped_c.get_main_graph()?;
 
-            let input_type = array_type(vec![n], st.clone());
+            let input_type = array_type(vec![n], st);
             let val = Value::from_flattened_array(input_value, input_type.get_scalar_type())?;
             random_evaluate(mapped_g, vec![val])
         }()

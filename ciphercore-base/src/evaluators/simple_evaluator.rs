@@ -1,9 +1,8 @@
 use crate::broadcast::{index_to_number, number_to_index};
 use crate::bytes::{
-    add_u64, add_vectors_u64, dot_vectors_u64, multiply_u64, multiply_vectors_u64,
-    subtract_vectors_u64,
+    add_u128, add_vectors_u128, dot_vectors_u128, multiply_u128, multiply_vectors_u128,
+    subtract_vectors_u128, vec_to_bytes, vec_u128_from_bytes,
 };
-use crate::bytes::{vec_from_bytes, vec_to_bytes};
 use crate::data_types::{array_type, ArrayShape, Type, BIT, UINT64};
 use crate::data_values::Value;
 use crate::errors::Result;
@@ -23,7 +22,7 @@ use std::iter::repeat;
 use super::join::evaluate_join;
 
 /// It is assumed that shape can be broadcast to shape_res
-fn broadcast_to_shape(arr: &[u64], shape: &[u64], shape_res: &[u64]) -> Vec<u64> {
+fn broadcast_to_shape<T: Copy>(arr: &[T], shape: &[u64], shape_res: &[u64]) -> Vec<T> {
     let res_length: u64 = shape_res.iter().product();
     let mut result = vec![];
     let offset = shape_res.len() - shape.len();
@@ -93,34 +92,34 @@ pub(crate) fn evaluate_add_subtract_multiply(
         | (Type::Array(_, st), Type::Scalar(_))
         | (Type::Scalar(_), Type::Array(_, st))
         | (Type::Array(_, st), Type::Array(_, _)) => {
-            //pack bytes into vectors of u64
-            let bytes1_u64 = value1
-                .access_bytes(|ref_bytes| Ok(vec_from_bytes(ref_bytes, st.clone())?.to_vec()))?;
-            let bytes2_u64 = value2
-                .access_bytes(|ref_bytes| Ok(vec_from_bytes(ref_bytes, st.clone())?.to_vec()))?;
+            //pack bytes into vectors of u128
+            let bytes1_u128 = value1
+                .access_bytes(|ref_bytes| Ok(vec_u128_from_bytes(ref_bytes, st)?.to_vec()))?;
+            let bytes2_u128 = value2
+                .access_bytes(|ref_bytes| Ok(vec_u128_from_bytes(ref_bytes, st)?.to_vec()))?;
             let shape1 = type1.get_dimensions();
             let shape2 = type2.get_dimensions();
             let shape_res = result_type.get_dimensions();
-            let result_u64 = match operation {
-                Operation::Add => add_vectors_u64(
-                    &broadcast_to_shape(&bytes1_u64, &shape1, &shape_res),
-                    &broadcast_to_shape(&bytes2_u64, &shape2, &shape_res),
+            let result_u128 = match operation {
+                Operation::Add => add_vectors_u128(
+                    &broadcast_to_shape(&bytes1_u128, &shape1, &shape_res),
+                    &broadcast_to_shape(&bytes2_u128, &shape2, &shape_res),
                     st.get_modulus(),
                 )?,
-                Operation::Subtract => subtract_vectors_u64(
-                    &broadcast_to_shape(&bytes1_u64, &shape1, &shape_res),
-                    &broadcast_to_shape(&bytes2_u64, &shape2, &shape_res),
+                Operation::Subtract => subtract_vectors_u128(
+                    &broadcast_to_shape(&bytes1_u128, &shape1, &shape_res),
+                    &broadcast_to_shape(&bytes2_u128, &shape2, &shape_res),
                     st.get_modulus(),
                 )?,
-                Operation::Multiply => multiply_vectors_u64(
-                    &broadcast_to_shape(&bytes1_u64, &shape1, &shape_res),
-                    &broadcast_to_shape(&bytes2_u64, &shape2, &shape_res),
+                Operation::Multiply => multiply_vectors_u128(
+                    &broadcast_to_shape(&bytes1_u128, &shape1, &shape_res),
+                    &broadcast_to_shape(&bytes2_u128, &shape2, &shape_res),
                     st.get_modulus(),
                 )?,
                 _ => panic!("Should not be here"),
             };
             //unpack bytes from vectors of u64
-            vec_to_bytes(&result_u64, st)?
+            vec_to_bytes(&result_u128, st)?
         }
         _ => {
             return Err(runtime_error!("Not implemented"));
@@ -144,20 +143,20 @@ pub(crate) fn evaluate_mixed_multiply(
         | (Type::Scalar(st), Type::Array(_, _))
         | (Type::Array(_, st), Type::Array(_, _)) => {
             //pack bytes into vectors of u64
-            let bytes1_u64 = value1
-                .access_bytes(|ref_bytes| Ok(vec_from_bytes(ref_bytes, st.clone())?.to_vec()))?;
-            let bytes2_u64 =
-                value2.access_bytes(|ref_bytes| Ok(vec_from_bytes(ref_bytes, BIT)?.to_vec()))?;
+            let bytes1_u128 = value1
+                .access_bytes(|ref_bytes| Ok(vec_u128_from_bytes(ref_bytes, st)?.to_vec()))?;
+            let bytes2_u128 = value2
+                .access_bytes(|ref_bytes| Ok(vec_u128_from_bytes(ref_bytes, BIT)?.to_vec()))?;
             let shape1 = type1.get_dimensions();
             let shape2 = type2.get_dimensions();
             let shape_res = result_type.get_dimensions();
-            let result_u64 = multiply_vectors_u64(
-                &broadcast_to_shape(&bytes1_u64, &shape1, &shape_res),
-                &broadcast_to_shape(&bytes2_u64, &shape2, &shape_res),
+            let result_u128 = multiply_vectors_u128(
+                &broadcast_to_shape(&bytes1_u128, &shape1, &shape_res),
+                &broadcast_to_shape(&bytes2_u128, &shape2, &shape_res),
                 st.get_modulus(),
             )?;
-            //unpack bytes from vectors of u64
-            vec_to_bytes(&result_u64, st)?
+            //unpack bytes from vectors of u128
+            vec_to_bytes(&result_u128, st)?
         }
         _ => {
             return Err(runtime_error!("Not implemented"));
@@ -179,8 +178,8 @@ fn evaluate_dot(
     if type0.is_array() && type1.is_array() {
         let shape0 = type0.get_shape();
         let shape1 = type1.get_shape();
-        let entries0 = value0.to_flattened_array_u64(type0)?;
-        let entries1 = value1.to_flattened_array_u64(type1)?;
+        let entries0 = value0.to_flattened_array_u128(type0)?;
+        let entries1 = value1.to_flattened_array_u128(type1)?;
         let result_length = if result_type.is_scalar() {
             1
         } else {
@@ -190,9 +189,9 @@ fn evaluate_dot(
         let mut result_entries = vec![0; result_length];
         if shape0.len() == 1 && shape1.len() == 1 {
             for i in 0..shape0[0] {
-                result_entries[0] = add_u64(
+                result_entries[0] = add_u128(
                     result_entries[0],
-                    multiply_u64(entries0[i as usize], entries1[i as usize], modulus),
+                    multiply_u128(entries0[i as usize], entries1[i as usize], modulus),
                     modulus,
                 );
             }
@@ -218,9 +217,9 @@ fn evaluate_dot(
                     }
                     let n0 = index_to_number(&index0, &shape0);
                     let n1 = index_to_number(&index1, &shape1);
-                    result_entries[i as usize] = add_u64(
+                    result_entries[i as usize] = add_u128(
                         result_entries[i as usize],
-                        multiply_u64(entries0[n0 as usize], entries1[n1 as usize], modulus),
+                        multiply_u128(entries0[n0 as usize], entries1[n1 as usize], modulus),
                         modulus,
                     );
                 }
@@ -253,8 +252,8 @@ fn evaluate_matmul(
     }
     let mut shape0 = type0.get_shape();
     let mut shape1 = type1.get_shape();
-    let entries0 = value0.to_flattened_array_u64(type0)?;
-    let entries1 = value1.to_flattened_array_u64(type1)?;
+    let entries0 = value0.to_flattened_array_u128(type0)?;
+    let entries1 = value1.to_flattened_array_u128(type1)?;
     let result_length = if result_type.is_scalar() {
         1
     } else {
@@ -264,9 +263,9 @@ fn evaluate_matmul(
     let mut result_entries = vec![0; result_length];
     if shape0.len() == 1 && shape1.len() == 1 {
         for i in 0..shape0[0] {
-            result_entries[0] = add_u64(
+            result_entries[0] = add_u128(
                 result_entries[0],
-                multiply_u64(entries0[i as usize], entries1[i as usize], modulus),
+                multiply_u128(entries0[i as usize], entries1[i as usize], modulus),
                 modulus,
             );
         }
@@ -296,9 +295,9 @@ fn evaluate_matmul(
                 index1[shape1.len() - 2] = j;
                 let n0 = index_to_number(&index0, &shape0);
                 let n1 = index_to_number(&index1, &shape1);
-                result_entries[i as usize] = add_u64(
+                result_entries[i as usize] = add_u128(
                     result_entries[i as usize],
-                    multiply_u64(entries0[n0 as usize], entries1[n1 as usize], modulus),
+                    multiply_u128(entries0[n0 as usize], entries1[n1 as usize], modulus),
                     modulus,
                 );
             }
@@ -354,8 +353,8 @@ fn general_gemm(
     trans_t1: Type,
     result_type: Type,
 ) -> Result<Value> {
-    let entries0 = trans_value0.to_flattened_array_u64(trans_t0.clone())?;
-    let entries1 = trans_value1.to_flattened_array_u64(trans_t1.clone())?;
+    let entries0 = trans_value0.to_flattened_array_u128(trans_t0.clone())?;
+    let entries1 = trans_value1.to_flattened_array_u128(trans_t1.clone())?;
 
     let shape0 = trans_t0.get_shape();
     let shape1 = trans_t1.get_shape();
@@ -396,7 +395,7 @@ fn general_gemm(
             for j in 0..n1 {
                 let row1 = &entries1
                     [matrix_start_index1 + j * row_size..matrix_start_index1 + (j + 1) * row_size];
-                result_entries[matrix_i + i * n1 + j] = dot_vectors_u64(row0, row1, modulus)?;
+                result_entries[matrix_i + i * n1 + j] = dot_vectors_u128(row0, row1, modulus)?;
             }
         }
     }
@@ -432,7 +431,7 @@ fn evaluate_gemm(
     let shape1 = transpose_shape(type1.get_shape(), !transpose1);
 
     // Transposed types
-    let trans_t0 = array_type(shape0, st.clone());
+    let trans_t0 = array_type(shape0, st);
     let trans_t1 = array_type(shape1, st);
 
     general_gemm(trans_value0, trans_value1, trans_t0, trans_t1, result_type)
@@ -553,13 +552,13 @@ pub(crate) fn shuffle_array(array: &mut Vec<u64>, prng: &mut PRNG) -> Result<()>
 fn evaluate_sum(node: Node, input_value: Value, axes: ArrayShape) -> Result<Value> {
     let dependency = node.get_node_dependencies()[0].clone();
     let inp_t = dependency.get_type()?;
-    let values = input_value.to_flattened_array_u64(inp_t.clone())?;
+    let values = input_value.to_flattened_array_u128(inp_t.clone())?;
     let res_t = node.get_type()?;
     match res_t {
         Type::Scalar(st) => {
-            let mut result = 0u64;
+            let mut result = 0;
             for v in values {
-                result = add_u64(result, v, st.get_modulus());
+                result = add_u128(result, v, st.get_modulus());
             }
             Value::from_scalar(result, st)
         }
@@ -584,7 +583,7 @@ fn evaluate_sum(node: Node, input_value: Value, axes: ArrayShape) -> Result<Valu
                         new_index.push(inp_index[*ax]);
                     }
                     let new_i = index_to_number(&new_index, &res_shape) as usize;
-                    result[new_i] = add_u64(result[new_i], *value, st.get_modulus());
+                    result[new_i] = add_u128(result[new_i], *value, st.get_modulus());
                 }
                 Value::from_flattened_array(&result, st)
             }
@@ -597,7 +596,7 @@ fn evaluate_sum(node: Node, input_value: Value, axes: ArrayShape) -> Result<Valu
 
 fn evaluate_cum_sum(node: Node, input_value: Value, axis: u64) -> Result<Value> {
     let t = node.get_node_dependencies()[0].get_type()?;
-    let in_vec = input_value.to_flattened_array_u64(t.clone())?;
+    let in_vec = input_value.to_flattened_array_u128(t.clone())?;
     let (shape, st) = match t {
         Type::Array(shape, st) => (shape, st),
         _ => return Err(runtime_error!("Inconsistency with type checker")),
@@ -608,7 +607,7 @@ fn evaluate_cum_sum(node: Node, input_value: Value, axis: u64) -> Result<Value> 
         if index[axis as usize] > 0 {
             index[axis as usize] -= 1;
             let j = index_to_number(&index, &shape) as usize;
-            out_vec[i] = add_u64(out_vec[i], out_vec[j], st.get_modulus());
+            out_vec[i] = add_u128(out_vec[i], out_vec[j], st.get_modulus());
         }
     }
     Value::from_flattened_array(&out_vec, st)
@@ -804,13 +803,12 @@ impl Evaluator for SimpleEvaluator {
                 let st = t.get_scalar_type();
                 if !shape.is_empty() {
                     for value in values {
-                        let arr =
-                            value.to_flattened_array_u64(array_type(shape.clone(), st.clone()))?;
+                        let arr = value.to_flattened_array_u64(array_type(shape.clone(), st))?;
                         result.extend_from_slice(&arr);
                     }
                 } else {
                     for value in values {
-                        let arr = value.to_u64(st.clone())?;
+                        let arr = value.to_u64(st)?;
                         result.push(arr);
                     }
                 }
@@ -868,7 +866,7 @@ impl Evaluator for SimpleEvaluator {
                     ));
                 }
                 let result = execute_inverse_permutation(values)?;
-                Value::from_flattened_array(&result, t.get_scalar_type())
+                Value::from_flattened_array_u64(&result, t.get_scalar_type())
             }
             Operation::Sum(axes) => evaluate_sum(node, dependencies_values[0].clone(), axes),
             Operation::CumSum(axis) => evaluate_cum_sum(node, dependencies_values[0].clone(), axis),
@@ -951,12 +949,12 @@ impl Evaluator for SimpleEvaluator {
                 let scalar_type = dependency_type.get_scalar_type();
                 let dependency_value = dependencies_values[0].clone();
                 let mut entries = if dependency_type.is_scalar() {
-                    vec![dependency_value.to_u64(scalar_type.clone())?]
+                    vec![dependency_value.to_u64(scalar_type)?]
                 } else {
                     dependency_value.to_flattened_array_u64(dependency_type.clone())?
                 };
                 for entry in &mut entries {
-                    if scalar_type.get_signed() {
+                    if scalar_type.is_signed() {
                         match scalar_type.get_modulus() {
                             Some(modulus) => {
                                 let mut val = *entry as i64;
@@ -1039,7 +1037,7 @@ impl Evaluator for SimpleEvaluator {
 
                 shuffle_array(&mut result_array, &mut self.prng)?;
 
-                Value::from_flattened_array(&result_array, UINT64)
+                Value::from_flattened_array_u64(&result_array, UINT64)
             }
             Operation::DecomposeSwitchingMap(n) => {
                 let input_node = node.get_node_dependencies()[0].clone();
@@ -1135,10 +1133,10 @@ impl Evaluator for SimpleEvaluator {
                     perm2_array.extend_from_slice(&little_perm2_array);
                 }
 
-                let perm1_val = Value::from_flattened_array(&perm1_array, UINT64)?;
-                let dup_map_val = Value::from_flattened_array(&duplication_map, UINT64)?;
-                let dup_bits_val = Value::from_flattened_array(&duplication_bits, BIT)?;
-                let perm2_val = Value::from_flattened_array(&perm2_array, UINT64)?;
+                let perm1_val = Value::from_flattened_array_u64(&perm1_array, UINT64)?;
+                let dup_map_val = Value::from_flattened_array_u64(&duplication_map, UINT64)?;
+                let dup_bits_val = Value::from_flattened_array_u64(&duplication_bits, BIT)?;
+                let perm2_val = Value::from_flattened_array_u64(&perm2_array, UINT64)?;
                 Ok(Value::from_vector(vec![
                     perm1_val,
                     Value::from_vector(vec![dup_map_val, dup_bits_val]),
@@ -1209,7 +1207,7 @@ impl Evaluator for SimpleEvaluator {
                         );
                     }
                 }
-                Value::from_flattened_array(&result_array, UINT64)
+                Value::from_flattened_array_u64(&result_array, UINT64)
             }
             Operation::PRF(iv, t) => {
                 let key_value = dependencies_values[0].clone();
@@ -1276,13 +1274,13 @@ impl Evaluator for SimpleEvaluator {
                 let binary_t = node.get_node_dependencies()[1].get_type()?;
                 let first_row_t = node.get_node_dependencies()[2].get_type()?;
 
-                let input_array = input_array_value.to_flattened_array_u64(input_t.clone())?;
-                let binary_array = binary_array_value.to_flattened_array_u64(binary_t)?;
+                let input_array = input_array_value.to_flattened_array_u128(input_t.clone())?;
+                let binary_array = binary_array_value.to_flattened_array_u128(binary_t)?;
                 let input_st = input_t.get_scalar_type();
                 let first_row = if first_row_t.is_scalar() {
-                    vec![first_row_value.to_u64(input_st.clone())?]
+                    vec![first_row_value.to_u128(input_st)?]
                 } else {
-                    first_row_value.to_flattened_array_u64(first_row_t.clone())?
+                    first_row_value.to_flattened_array_u128(first_row_t.clone())?
                 };
 
                 let row_size = first_row_t.get_dimensions().iter().product::<u64>() as usize;
@@ -1295,7 +1293,7 @@ impl Evaluator for SimpleEvaluator {
                         // Extract an input row and sum it with the previous output row
                         let previous_row = &result_array[i * row_size..(i + 1) * row_size];
                         let input_row = &input_array[i * row_size..(i + 1) * row_size];
-                        add_vectors_u64(input_row, previous_row, input_st.get_modulus())?
+                        add_vectors_u128(input_row, previous_row, input_st.get_modulus())?
                     };
                     result_array.append(&mut result_row);
                 }
@@ -1598,7 +1596,7 @@ mod tests {
         inputs: Vec<Value>,
     ) -> Result<Vec<u64>> {
         let c = simple_context(|g| {
-            let i = g.input(array_type(input_shape.clone(), st.clone()))?;
+            let i = g.input(array_type(input_shape.clone(), st))?;
             let b = g.input(array_type(vec![input_shape[0]], BIT))?;
             let first_row = if input_shape.len() > 1 {
                 g.input(array_type(input_shape[1..].to_vec(), st))?
@@ -2035,7 +2033,7 @@ mod tests {
             }
             {
                 let input_value = Value::from_flattened_array(&[0, x, 2, 1, x, 3, 4, x], UINT64)?;
-                let expected = vec![0, 6, 2, 1, 5, 3, 4, 7];
+                let expected = vec![0, 7, 2, 1, 6, 3, 4, 5];
                 assert_eq!(
                     cuckoo_to_permutation_helper(vec![8], input_value, seed)?,
                     expected
@@ -2043,7 +2041,7 @@ mod tests {
             }
             {
                 let input_value = Value::from_flattened_array(&[0, x, 2, 1, x, 0, 1, x], UINT64)?;
-                let expected = vec![0, 3, 2, 1, 2, 0, 1, 3];
+                let expected = vec![0, 3, 2, 1, 3, 0, 1, 2];
                 assert_eq!(
                     cuckoo_to_permutation_helper(vec![2, 4], input_value, seed)?,
                     expected
@@ -2214,7 +2212,7 @@ mod tests {
             {
                 let input_map = vec![2, 0, 1, 3, 2, 4, 3, 8];
 
-                let expected_perm1 = vec![2, 6, 0, 1, 3, 5, 4, 8];
+                let expected_perm1 = vec![2, 7, 0, 1, 3, 6, 4, 8];
                 let expected_dup_map = vec![0, 1, 0, 0, 0, 1, 0, 0];
                 let expected_perm2 = vec![0, 2, 3, 4, 1, 6, 5, 7];
 
@@ -2242,7 +2240,7 @@ mod tests {
             }
             {
                 let input_map = vec![6, 6, 6, 6, 6, 6, 6];
-                let expected_perm1 = vec![6, 0, 1, 3, 4, 2, 5];
+                let expected_perm1 = vec![6, 4, 1, 2, 3, 5, 0];
                 let expected_dup_map = vec![0, 1, 1, 1, 1, 1, 1];
                 let expected_perm2 = vec![0, 1, 2, 3, 4, 5, 6];
 
@@ -2361,17 +2359,14 @@ mod tests {
         fn get_type(&self) -> Type {
             let mut v = vec![];
             for col in self.iter() {
-                v.push((
-                    col.header.clone(),
-                    array_type(col.shape.clone(), col.st.clone()),
-                ));
+                v.push((col.header.clone(), array_type(col.shape.clone(), col.st)));
             }
             named_tuple_type(v)
         }
         fn get_value(&self) -> Result<Value> {
             let mut v = vec![];
             for col in self.iter() {
-                v.push(Value::from_flattened_array(&col.data, col.st.clone())?);
+                v.push(Value::from_flattened_array(&col.data, col.st)?);
             }
             Ok(Value::from_vector(v))
         }

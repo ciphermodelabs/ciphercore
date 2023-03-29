@@ -4925,7 +4925,7 @@ mod tests {
         let se = serde_json::to_string(&o).unwrap();
         assert_eq!(
             se,
-            format!("{{\"Constant\":[{{\"Scalar\":{{\"signed\":false,\"modulus\":2}}}},{{\"version\":{},\"data\":\"{{\\\"body\\\":{{\\\"Bytes\\\":[1]}}}}\"}}]}}", DATA_VERSION)
+            format!("{{\"Constant\":[{{\"Scalar\":\"bit\"}},{{\"version\":{},\"data\":\"{{\\\"body\\\":{{\\\"Bytes\\\":[1]}}}}\"}}]}}", DATA_VERSION)
         );
         let de = serde_json::from_str::<Operation>(&se).unwrap();
         assert_eq!(de, o);

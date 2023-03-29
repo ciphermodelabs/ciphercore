@@ -1,7 +1,7 @@
 use crate::errors::Result;
 use serde::{Deserialize, Serialize};
 //DATA_VERSION represents the current version of serializable data types, i.e., Value and Context. We only bump this const when we make backwards-incompatible changes of Value and Context.
-pub(crate) const DATA_VERSION: u64 = 1;
+pub(crate) const DATA_VERSION: u64 = 2;
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct VersionedData {

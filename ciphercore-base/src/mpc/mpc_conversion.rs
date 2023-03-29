@@ -2,7 +2,6 @@ use crate::custom_ops::{
     run_instantiation_pass, ContextMappings, CustomOperation, CustomOperationBody,
 };
 use crate::data_types::{array_type, scalar_type, tuple_type, ScalarType, Type, BIT};
-use crate::data_values::Value;
 use crate::errors::Result;
 use crate::graphs::util::simple_context;
 use crate::graphs::SliceElement::SubArray;
@@ -13,7 +12,7 @@ use crate::inline::inline_ops::{
 use crate::mpc::mpc_arithmetic::{AddMPC, MultiplyMPC};
 use crate::mpc::mpc_compiler::{check_private_tuple, compile_to_mpc_graph, PARTIES};
 use crate::ops::adder::BinaryAddTransposed;
-use crate::ops::utils::{pull_out_bits, pull_out_bits_for_type, put_in_bits, zeros};
+use crate::ops::utils::{pull_out_bits, pull_out_bits_for_type, put_in_bits};
 use crate::type_inference::a2b_type_inference;
 
 use serde::{Deserialize, Serialize};
@@ -160,7 +159,7 @@ impl CustomOperationBody for B2AMPC {
             if let Type::Array(_, _) | Type::Scalar(_) = argument_types[0].clone() {
                 let g = context.create_graph()?;
                 let input = g.input(argument_types[0].clone())?;
-                g.b2a(input, self.st.clone())?.set_as_output()?;
+                g.b2a(input, self.st)?.set_as_output()?;
                 g.finalize()?;
                 return Ok(g);
             } else {
@@ -288,15 +287,12 @@ impl CustomOperationBody for B2AMPC {
         // [-x_0, x_1, -x_2]
         bit_shares.insert(1, x1_revealed);
 
-        let zero = g.constant(
-            scalar_type(self.st.clone()),
-            Value::zero_of_type(scalar_type(self.st.clone())),
-        )?;
+        let zero = g.zeros(scalar_type(self.st))?;
 
         // Convert -x_0, x_1 and -x_2 from binary to arithmetic
         let mut arith_shares = vec![];
         for share in bit_shares.into_iter() {
-            arith_shares.push(put_in_bits(share)?.b2a(self.st.clone())?);
+            arith_shares.push(put_in_bits(share)?.b2a(self.st)?);
         }
         // Negate -x_0 and -x_2 to x_0 and x_2, respectively
         arith_shares[0] = zero.subtract(arith_shares[0].clone())?;
@@ -322,8 +318,7 @@ fn get_left_shift_graph(context: Context, bits_t: Type) -> Result<Graph> {
         let shape = bits_t.get_shape();
         let mut new_shape = shape;
         new_shape[0] = 1;
-        let t = array_type(new_shape, BIT);
-        let zero = zeros(&shift_g, t)?;
+        let zero = shift_g.zeros(array_type(new_shape, BIT))?;
 
         let mut result_shares = vec![];
         for i in 0..PARTIES {
@@ -421,7 +416,7 @@ fn add_3_bitstrings(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bytes::subtract_vectors_u64;
+    use crate::bytes::subtract_vectors_u128;
     use crate::data_types::{array_type, ScalarType, INT32, UINT32};
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
@@ -452,7 +447,7 @@ mod tests {
 
     fn prepare_input(
         op: Operation,
-        input: Vec<u64>,
+        input: Vec<u128>,
         input_status: IOStatus,
         t: Type,
     ) -> Result<Vec<Value>> {
@@ -476,40 +471,40 @@ mod tests {
         match t {
             Type::Array(_, st) => {
                 if matches!(input_status, IOStatus::Party(_)) {
-                    res.push(Value::from_flattened_array(&input, st.clone())?);
+                    res.push(Value::from_flattened_array(&input, st)?);
                     return Ok(res);
                 }
                 if let Operation::B2A(_) = op {
                     // shares of input = (input^3, 2, 1)
-                    let first_share: Vec<u64> = input.iter().map(|x| (*x) ^ 3).collect();
-                    data_input.push(Value::from_flattened_array(&first_share, st.clone())?);
+                    let first_share: Vec<u128> = input.iter().map(|x| (*x) ^ 3).collect();
+                    data_input.push(Value::from_flattened_array(&first_share, st)?);
                 } else {
                     // shares of input = (input-3, 1, 2)
                     let threes = vec![3; input.len()];
-                    let first_share = subtract_vectors_u64(&input, &threes, st.get_modulus())?;
-                    data_input.push(Value::from_flattened_array(&first_share, st.clone())?);
+                    let first_share = subtract_vectors_u128(&input, &threes, st.get_modulus())?;
+                    data_input.push(Value::from_flattened_array(&first_share, st)?);
                 }
                 for i in 1..PARTIES {
                     let share = vec![i; input.len()];
-                    data_input.push(Value::from_flattened_array(&share, st.clone())?);
+                    data_input.push(Value::from_flattened_array(&share, st)?);
                 }
             }
             Type::Scalar(st) => {
                 if matches!(input_status, IOStatus::Party(_)) {
-                    res.push(Value::from_scalar(input[0], st.clone())?);
+                    res.push(Value::from_scalar(input[0], st)?);
                     return Ok(res);
                 }
                 if let Operation::B2A(_) = op {
                     // shares of input = (input^3, 2, 1)
                     let first_share = input[0] ^ 3;
-                    data_input.push(Value::from_scalar(first_share, st.clone())?);
+                    data_input.push(Value::from_scalar(first_share, st)?);
                 } else {
                     // shares of input = (input-3, 1, 1)
-                    let first_share = subtract_vectors_u64(&input, &vec![3], st.get_modulus())?;
-                    data_input.push(Value::from_scalar(first_share[0], st.clone())?);
+                    let first_share = subtract_vectors_u128(&input, &vec![3], st.get_modulus())?;
+                    data_input.push(Value::from_scalar(first_share[0], st)?);
                 }
                 for i in 1..PARTIES {
-                    data_input.push(Value::from_scalar(i, st.clone())?);
+                    data_input.push(Value::from_scalar(i, st)?);
                 }
             }
             _ => {
@@ -526,7 +521,7 @@ mod tests {
         op: Operation,
         mpc_graph: Graph,
         inputs: Vec<Value>,
-        expected: Vec<u64>,
+        expected: Vec<u128>,
         output_parties: Vec<IOStatus>,
         t: Type,
     ) -> Result<()> {
@@ -539,9 +534,9 @@ mod tests {
                 for val in v {
                     let arr = match t.clone() {
                         Type::Scalar(_) => {
-                            vec![val.to_u64(st.clone())?]
+                            vec![val.to_u128(st)?]
                         }
-                        Type::Array(_, _) => val.to_flattened_array_u64(t.clone())?,
+                        Type::Array(_, _) => val.to_flattened_array_u128(t.clone())?,
                         _ => {
                             panic!("Shouldn't be here");
                         }
@@ -559,8 +554,8 @@ mod tests {
         } else {
             assert!(output.check_type(t.clone())?);
             match t.clone() {
-                Type::Scalar(_) => vec![output.to_u64(st.clone())?],
-                Type::Array(_, _) => output.to_flattened_array_u64(t.clone())?,
+                Type::Scalar(_) => vec![output.to_u128(st)?],
+                Type::Array(_, _) => output.to_flattened_array_u128(t.clone())?,
                 _ => {
                     panic!("Shouldn't be here");
                 }
@@ -579,7 +574,7 @@ mod tests {
     }
 
     fn conversion_test(op: Operation, st: ScalarType) -> Result<()> {
-        let helper = |input: Vec<u64>,
+        let helper = |input: Vec<u128>,
                       input_status: IOStatus,
                       output_parties: Vec<IOStatus>,
                       inline_config: InlineConfig,
@@ -616,7 +611,7 @@ mod tests {
             default_mode: InlineMode::Simple,
             ..Default::default()
         };
-        let helper_runs = |inputs: Vec<u64>, t: Type| -> Result<()> {
+        let helper_runs = |inputs: Vec<u128>, t: Type| -> Result<()> {
             helper(
                 inputs.clone(),
                 IOStatus::Party(2),
@@ -661,13 +656,14 @@ mod tests {
             )?;
             Ok(())
         };
-        helper_runs(vec![85], scalar_type(st.clone()))?;
-        helper_runs(vec![-12345677i32 as u64], scalar_type(st.clone()))?;
-        helper_runs(vec![2, 85], array_type(vec![2], st.clone()))?;
-        helper_runs(vec![0, 255], array_type(vec![2], st.clone()))?;
+        helper_runs(vec![85], scalar_type(st))?;
+        helper_runs(vec![(-12345677i32) as u128], scalar_type(st))?;
+        helper_runs(vec![-12345677i32 as u128], scalar_type(st))?;
+        helper_runs(vec![2, 85], array_type(vec![2], st))?;
+        helper_runs(vec![0, 255], array_type(vec![2], st))?;
         helper_runs(
-            vec![12345678, -12345677i32 as u64],
-            array_type(vec![2], st.clone()),
+            vec![12345678, (-12345677i32) as u128],
+            array_type(vec![2], st),
         )?;
         Ok(())
     }

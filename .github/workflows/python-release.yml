@@ -8,13 +8,12 @@ env:
   DIST_DIR: ${{ github.sha }}
 
 jobs:
-
   create_wheels_manylinux:
     runs-on: ubuntu-latest
-    name: Create wheels for manylinux2010
-    container: quay.io/pypa/manylinux2010_x86_64
+    name: Create wheels for manylinux2014
+    container: quay.io/pypa/manylinux2014_x86_64
     steps:
-      # v1 is required when using manylinux2010
+      # v1 was required when using manylinux2010, not sure about manylinux2014
       - uses: actions/checkout@v1
 
       - name: Install dependencies
@@ -23,7 +22,7 @@ jobs:
       - name: Build and audit wheels
         working-directory: ./ciphercore-wrappers/python/
         run: sh build_wheels.sh
-      
+
       - name: Upload artifact
         uses: actions/upload-artifact@v1
         with:
@@ -67,7 +66,7 @@ jobs:
         shell: bash
         working-directory: ./ciphercore-wrappers/python/dist
         run: for file in *.whl ; do mv $file ${file//macosx_10_1[0-9]/macosx_10_11} ; done
-      
+
       - name: Upload artifact
         uses: actions/upload-artifact@v2
         with:

@@ -6,57 +6,6 @@ use crate::random::PRNG;
 
 use crate::errors::Result;
 use crate::typed_value::TypedValue;
-use json::JsonValue;
-
-#[doc(hidden)]
-/// Parses the JSON input to return a vector of type value
-///
-/// Runtime error is returned if input JSON value is not of array type.
-///
-/// This function is for internal use.
-///
-/// # Arguments
-///
-/// `j` - reference to a JSON value
-///
-/// # Returns
-///
-/// Vector of typed values
-///
-/// ## Example
-///
-/// ```
-/// # use json::{JsonValue, object};
-/// # use ciphercore_base::evaluators::get_result_util::parse_json_array;
-/// # use ciphercore_base::typed_value::TypedValue;
-/// # use ciphercore_base::data_types::{INT64, scalar_type};
-/// # use ciphercore_base::data_values::Value;
-///
-/// let mut array = JsonValue::new_array();
-/// let val1: i64 = -123123;
-/// array.push(object!{
-///     kind: "scalar",
-///     type: "i64",
-///     value: val1,
-/// });
-/// let tv_sc_i64 = TypedValue::new(
-///     scalar_type(INT64),
-///     Value::from_scalar(val1, INT64).unwrap()).unwrap();
-///
-/// let typed_val = parse_json_array(&array).unwrap();
-/// assert_eq!(typed_val[0], tv_sc_i64);
-/// ```
-pub fn parse_json_array(j: &JsonValue) -> Result<Vec<TypedValue>> {
-    if let JsonValue::Array(a) = j {
-        let mut result = vec![];
-        for element in a {
-            result.push(TypedValue::from_json(element)?);
-        }
-        Ok(result)
-    } else {
-        Err(runtime_error!("JSON array expected"))
-    }
-}
 
 #[doc(hidden)]
 /// This function evaluates a given context on given inputs using a given evaluator.

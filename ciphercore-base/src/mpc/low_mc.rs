@@ -3,7 +3,7 @@ use crate::data_types::{array_type, Type, BIT};
 use crate::data_values::Value;
 use crate::errors::Result;
 use crate::graphs::{Context, Graph, SliceElement};
-use crate::ops::utils::{extend_with_zeros, zeros};
+use crate::ops::utils::extend_with_zeros;
 
 use serde::{Deserialize, Serialize};
 
@@ -217,7 +217,7 @@ impl CustomOperationBody for LowMC {
 
         // Create a mask for bit extraction
         let one = g.ones(array_type(vec![1, 1], BIT))?;
-        let two_zeros = zeros(&g, array_type(vec![2, 1], BIT))?;
+        let two_zeros = g.zeros(array_type(vec![2, 1], BIT))?;
 
         // mask that extracts every third bit s_boxes_per_round times
         let mut bits_mask_vec = vec![];
@@ -229,9 +229,9 @@ impl CustomOperationBody for LowMC {
 
         // Create zero rows for shifting bits
         let mut bit_row_shape = vec![1, num_state_blocks];
-        let zero_row = zeros(&g, array_type(bit_row_shape.clone(), BIT))?;
+        let zero_row = g.zeros(array_type(bit_row_shape.clone(), BIT))?;
         bit_row_shape[0] = 2;
-        let two_zero_rows = zeros(&g, array_type(bit_row_shape, BIT))?;
+        let two_zero_rows = g.zeros(array_type(bit_row_shape, BIT))?;
 
         state = state.reshape(flattened_state_t)?;
         state = state.permute_axes(vec![1, 0])?;

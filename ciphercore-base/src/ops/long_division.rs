@@ -526,18 +526,18 @@ mod tests {
     fn long_division_helper(
         dividends: Vec<i64>,
         divisors: Vec<i64>,
-        dividend_t: ScalarType,
-        divisor_t: ScalarType,
+        dividend_st: ScalarType,
+        divisor_st: ScalarType,
     ) -> Result<(TypedValue, TypedValue)> {
         let n = dividends.len();
         if n != divisors.len() {
             return Err(runtime_error!("dividends and divisors length mismatch"));
         }
-        if dividend_t.get_signed() != divisor_t.get_signed() {
+        if dividend_st.is_signed() != divisor_st.is_signed() {
             return Err(runtime_error!("dividends and divisors signed mismatch"));
         }
-        let dividends_t = array_type(vec![n as u64], dividend_t.clone());
-        let divisors_t = array_type(vec![n as u64], divisor_t.clone());
+        let dividends_t = array_type(vec![n as u64], dividend_st);
+        let divisors_t = array_type(vec![n as u64], divisor_st);
         let c = simple_context(|g| {
             let input_dividends = g.input(dividends_t.clone())?;
             let input_divisors = g.input(divisors_t.clone())?;
@@ -545,12 +545,12 @@ mod tests {
             let binary_divisors = input_divisors.a2b()?;
             let result = g.custom_op(
                 CustomOperation::new(LongDivision {
-                    signed: dividend_t.get_signed(),
+                    signed: dividend_st.is_signed(),
                 }),
                 vec![binary_dividends, binary_divisors],
             )?;
-            let quotient = result.tuple_get(0)?.b2a(dividend_t.clone())?;
-            let remainder = result.tuple_get(1)?.b2a(divisor_t.clone())?;
+            let quotient = result.tuple_get(0)?.b2a(dividend_st)?;
+            let remainder = result.tuple_get(1)?.b2a(divisor_st)?;
             g.create_tuple(vec![quotient, remainder])
         })?;
         let c = run_instantiation_pass(c)?.context;
@@ -558,8 +558,8 @@ mod tests {
         let result = random_evaluate(
             g,
             vec![
-                Value::from_flattened_array(&dividends, dividend_t)?,
-                Value::from_flattened_array(&divisors, divisor_t)?,
+                Value::from_flattened_array(&dividends, dividend_st)?,
+                Value::from_flattened_array(&divisors, divisor_st)?,
             ],
         )?
         .to_vector()?;

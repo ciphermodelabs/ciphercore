@@ -1,8 +1,7 @@
-use crate::bytes::{add_vectors_u64, subtract_vectors_u64, vec_from_bytes, vec_to_bytes};
+use crate::bytes::{add_vectors_u128, subtract_vectors_u128, vec_to_bytes, vec_u128_from_bytes};
 use crate::data_types::{
-    array_type, get_size_in_bits, get_types_vector, is_valid_shape, named_tuple_type, scalar_type,
-    tuple_type, vector_type, ArrayShape, ScalarType, Type, BIT, INT16, INT32, INT64, INT8, UINT16,
-    UINT32, UINT64, UINT8,
+    array_type, get_size_in_bits, get_types_vector, named_tuple_type, tuple_type, vector_type,
+    ScalarType, Type,
 };
 use crate::data_values;
 use crate::data_values::Value;
@@ -13,7 +12,6 @@ use crate::typed_value_operations::{
     remove_helper, FromVectorMode, ToNdarray, TypedValueArrayOperations, TypedValueOperations,
 };
 
-use json::{object, object::Object, JsonValue};
 use std::ops::Not;
 
 #[cfg(feature = "py-binding")]
@@ -22,23 +20,6 @@ use crate::data_types::PyBindingType;
 use crate::data_values::PyBindingValue;
 #[cfg(feature = "py-binding")]
 use pywrapper_macro::struct_wrapper;
-
-macro_rules! to_json_aux {
-    ($v:expr, $t:expr, $cnv:ident) => {
-        JsonValue::from($v.$cnv($t.clone())?)
-    };
-}
-
-macro_rules! to_json_array_aux {
-    ($v:expr, $t:expr, $cnv:ident) => {
-        JsonValue::from(
-            $v.$cnv($t.clone())?
-                .into_iter()
-                .map(|x| JsonValue::from(x))
-                .collect::<Vec<JsonValue>>(),
-        )
-    };
-}
 
 /// A structure that stores pointer to a value and its type that corresponds to an input, output or an intermediate result of
 /// a computation.
@@ -58,8 +39,8 @@ pub struct TypedValue {
 
 impl std::fmt::Debug for TypedValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.to_json() {
-            Ok(json) => f.write_str(&json.to_string()),
+        match serde_json::to_string(self) {
+            Ok(json) => f.write_str(&json),
             Err(err) => f.write_fmt(format_args!(
                 "Failed to convert TypedValue to json: {err:?}"
             )),
@@ -567,11 +548,11 @@ impl TypedValueArrayOperations<TypedValue> for TypedValue {
     ///     Ok(())
     /// }).unwrap();
     /// ```
-    fn from_ndarray<T: TryInto<u64> + Not<Output = T> + TryInto<u8> + Copy>(
+    fn from_ndarray<T: TryInto<u128> + Not<Output = T> + TryInto<u8> + Copy>(
         a: ndarray::ArrayD<T>,
         st: ScalarType,
     ) -> Result<Self> {
-        let t = array_type(a.shape().iter().map(|x| *x as u64).collect(), st.clone());
+        let t = array_type(a.shape().iter().map(|x| *x as u64).collect(), st);
         Ok(TypedValue {
             t,
             value: Value::from_ndarray(a, st)?,
@@ -727,12 +708,12 @@ impl TypedValue {
     ///     Ok(())
     /// }).unwrap();
     /// ```
-    pub fn from_scalar<T: TryInto<u64> + Not<Output = T> + TryInto<u8> + Copy>(
+    pub fn from_scalar<T: TryInto<u128> + Not<Output = T> + TryInto<u8> + Copy>(
         x: T,
         st: ScalarType,
     ) -> Result<Self> {
         Ok(TypedValue {
-            t: Type::Scalar(st.clone()),
+            t: Type::Scalar(st),
             value: Value::from_scalar(x, st)?,
             name: None,
         })
@@ -758,210 +739,9 @@ impl TypedValue {
     /// ```
     pub fn to_u64(&self) -> Result<u64> {
         if let Type::Scalar(st) = &self.t {
-            Ok(self.value.to_u64(st.clone())?)
+            Ok(self.value.to_u64(*st)?)
         } else {
             Err(runtime_error!("Cannot convert type {:?} to u64", self.t))
-        }
-    }
-
-    pub fn from_json(j: &JsonValue) -> Result<Self> {
-        if let JsonValue::Object(o) = j {
-            let kind = o
-                .get("kind")
-                .ok_or_else(|| runtime_error!("Unknown value kind"))?
-                .as_str()
-                .ok_or_else(|| runtime_error!("Kind is not a string"))?;
-            match kind {
-                "scalar" => {
-                    let st = scalar_type_from_json(o)?;
-                    let value = get_value(o)?;
-                    if let JsonValue::Number(_) = value {
-                        let value = extract_values(vec![value.clone()], st.clone())?;
-                        Ok(TypedValue::new(scalar_type(st), value)?)
-                    } else {
-                        Err(runtime_error!("Not a scalar"))
-                    }
-                }
-                "array" => {
-                    let st = scalar_type_from_json(o)?;
-                    let value = get_value(o)?;
-                    let shape = get_shape(value)?;
-                    if !is_valid_shape(shape.clone()) {
-                        return Err(runtime_error!("Invalid shape"));
-                    }
-                    let flattened_value = flatten_value(value)?;
-                    let value = extract_values(flattened_value, st.clone())?;
-                    Ok(TypedValue::new(array_type(shape, st), value)?)
-                }
-                "tuple" => {
-                    let value = get_value(o)?;
-                    let a = match value {
-                        JsonValue::Array(inner) => inner,
-                        _ => {
-                            return Err(runtime_error!("Not a tuple"));
-                        }
-                    };
-                    let mut types = vec![];
-                    let mut values = vec![];
-                    for element in a {
-                        let tv = TypedValue::from_json(element)?;
-                        types.push(tv.t);
-                        values.push(tv.value);
-                    }
-                    Ok(TypedValue::new(
-                        tuple_type(types),
-                        Value::from_vector(values),
-                    )?)
-                }
-                "named tuple" => {
-                    let value = get_value(o)?;
-                    let a = match value {
-                        JsonValue::Array(inner) => inner,
-                        _ => {
-                            return Err(runtime_error!("Not a named tuple"));
-                        }
-                    };
-                    let mut names = vec![];
-                    let mut values = vec![];
-                    for element in a {
-                        let o = match element {
-                            JsonValue::Object(inner) => inner,
-                            _ => {
-                                return Err(runtime_error!(
-                                    "Named element tuple must be an object"
-                                ));
-                            }
-                        };
-                        let name = o
-                            .get("name")
-                            .ok_or_else(|| runtime_error!("No name for a named tuple element"))?
-                            .as_str()
-                            .ok_or_else(|| {
-                                runtime_error!("Name of a named tuple element is not a string")
-                            })?
-                            .to_owned();
-                        let value = TypedValue::from_json(o.get("value").ok_or_else(|| {
-                            runtime_error!("No value for a named tuple element")
-                        })?)?;
-                        names.push(name);
-                        values.push(value);
-                    }
-                    let overall_type = named_tuple_type(
-                        names
-                            .into_iter()
-                            .zip(values.iter().map(|tv| tv.t.clone()))
-                            .collect::<Vec<(String, Type)>>(),
-                    );
-                    let overall_value: Vec<Value> =
-                        values.iter().map(|tv| tv.value.clone()).collect();
-                    TypedValue::new(overall_type, Value::from_vector(overall_value))
-                }
-                "vector" => {
-                    let value = get_value(o)?;
-                    let a = match value {
-                        JsonValue::Array(inner) => inner,
-                        _ => {
-                            return Err(runtime_error!("Not a vector"));
-                        }
-                    };
-                    let mut types = vec![];
-                    let mut values = vec![];
-                    for element in a {
-                        let tv = TypedValue::from_json(element)?;
-                        types.push(tv.t);
-                        values.push(tv.value);
-                    }
-                    let result_type = if types.is_empty() {
-                        vector_type(0, tuple_type(vec![]))
-                    } else {
-                        for i in 0..types.len() {
-                            if types[i] != types[0] {
-                                return Err(runtime_error!(
-                                    "Vector with incompatible element types"
-                                ));
-                            }
-                        }
-                        vector_type(types.len() as u64, types[0].clone())
-                    };
-                    Ok(TypedValue::new(result_type, Value::from_vector(values))?)
-                }
-                _ => Err(runtime_error!("Unknown kind: {kind}")),
-            }
-        } else {
-            Err(runtime_error!("JSON object expected"))
-        }
-    }
-
-    pub fn to_json(&self) -> Result<JsonValue> {
-        match &self.t {
-            Type::Scalar(st) => {
-                let string_type = format!("{st}");
-                let value = match *st {
-                    BIT => to_json_aux!(self.value, st, to_u8),
-                    UINT8 => to_json_aux!(self.value, st, to_u8),
-                    INT8 => to_json_aux!(self.value, st, to_i8),
-                    UINT16 => to_json_aux!(self.value, st, to_u16),
-                    INT16 => to_json_aux!(self.value, st, to_i16),
-                    UINT32 => to_json_aux!(self.value, st, to_u32),
-                    INT32 => to_json_aux!(self.value, st, to_i32),
-                    UINT64 => to_json_aux!(self.value, st, to_u64),
-                    INT64 => to_json_aux!(self.value, st, to_i64),
-                    _ => {
-                        return Err(runtime_error!("Invalid scalar type"));
-                    }
-                };
-                Ok(object! {"kind": "scalar", "type": string_type, "value": value})
-            }
-            Type::Array(shape, st) => {
-                let string_type = format!("{st}");
-                let flattened_array = match *st {
-                    BIT => to_json_array_aux!(self.value, self.t, to_flattened_array_u8),
-                    UINT8 => to_json_array_aux!(self.value, self.t, to_flattened_array_u8),
-                    INT8 => to_json_array_aux!(self.value, self.t, to_flattened_array_i8),
-                    UINT16 => to_json_array_aux!(self.value, self.t, to_flattened_array_u16),
-                    INT16 => to_json_array_aux!(self.value, self.t, to_flattened_array_i16),
-                    UINT32 => to_json_array_aux!(self.value, self.t, to_flattened_array_u32),
-                    INT32 => to_json_array_aux!(self.value, self.t, to_flattened_array_i32),
-                    UINT64 => to_json_array_aux!(self.value, self.t, to_flattened_array_u64),
-                    INT64 => to_json_array_aux!(self.value, self.t, to_flattened_array_i64),
-                    _ => {
-                        return Err(runtime_error!("Invalid scalar type"));
-                    }
-                };
-                let shaped_array = json_reshape(shape.clone(), &flattened_array)?;
-                Ok(object! {"kind": "array", "type": string_type, "value": shaped_array})
-            }
-            Type::Tuple(tv) => {
-                let sub_values = self.value.access_vector(|vector| Ok(vector.clone()))?;
-                let mut result = vec![];
-                for i in 0..tv.len() {
-                    let sub_typed_value = TypedValue::new((*tv[i]).clone(), sub_values[i].clone())?;
-                    result.push(sub_typed_value.to_json()?);
-                }
-                Ok(object! {"kind": "tuple", "value": JsonValue::from(result)})
-            }
-            Type::NamedTuple(pairs) => {
-                let sub_values = self.value.access_vector(|vector| Ok(vector.clone()))?;
-                let mut result = vec![];
-                for i in 0..pairs.len() {
-                    let sub_typed_value =
-                        TypedValue::new((*pairs[i].1).clone(), sub_values[i].clone())?;
-                    result.push(
-                        object! {"name": pairs[i].0.clone(), "value": sub_typed_value.to_json()?},
-                    );
-                }
-                Ok(object! {"kind": "named tuple", "value": JsonValue::from(result)})
-            }
-            Type::Vector(len, element_type) => {
-                let sub_values = self.value.access_vector(|vector| Ok(vector.clone()))?;
-                let mut result = vec![];
-                for i in 0..*len {
-                    let sub_typed_value =
-                        TypedValue::new((**element_type).clone(), sub_values[i as usize].clone())?;
-                    result.push(sub_typed_value.to_json()?);
-                }
-                Ok(object! {"kind": "vector", "value": JsonValue::from(result)})
-            }
         }
     }
 
@@ -1031,136 +811,12 @@ impl TypedValue {
     }
 }
 
-fn get_value(o: &Object) -> Result<&JsonValue> {
-    let v = o
-        .get("value")
-        .ok_or_else(|| runtime_error!("Unknown value"))?;
-    Ok(v)
-}
-
-fn get_shape(j: &JsonValue) -> Result<ArrayShape> {
-    match j {
-        JsonValue::Number(_) => Ok(vec![]),
-        JsonValue::Array(a) => {
-            let mut shapes = vec![];
-            for element in a {
-                shapes.push(get_shape(element)?);
-            }
-            if shapes.is_empty() {
-                return Ok(vec![0]);
-            }
-            for i in 0..shapes.len() {
-                if shapes[i] != shapes[0] {
-                    return Err(runtime_error!("Unbalanced shapes"));
-                }
-            }
-            let mut result = vec![shapes.len() as u64];
-            result.extend(shapes[0].iter());
-            Ok(result)
-        }
-        _ => Err(runtime_error!("Invalid array value")),
-    }
-}
-
-fn flatten_value(j: &JsonValue) -> Result<Vec<JsonValue>> {
-    match j {
-        JsonValue::Number(_) => Ok(vec![j.clone()]),
-        JsonValue::Array(a) => {
-            let mut result = vec![];
-            for element in a {
-                result.extend(flatten_value(element)?.into_iter());
-            }
-            Ok(result)
-        }
-        _ => Err(runtime_error!("Invalid array value")),
-    }
-}
-
-macro_rules! extract_values_aux {
-    ($numbers:ident,$st:ident,$convert:ident) => {{
-        let mut result = vec![];
-        for number in $numbers {
-            let cast_number = number
-                .$convert()
-                .ok_or_else(|| runtime_error!("Unable to cast"))?;
-            result.push(cast_number);
-        }
-        Ok(Value::from_flattened_array(&result, $st)?)
-    }};
-}
-
-fn extract_values(numbers: Vec<JsonValue>, st: ScalarType) -> Result<Value> {
-    match st {
-        BIT | UINT8 => {
-            extract_values_aux!(numbers, st, as_u8)
-        }
-        INT8 => {
-            extract_values_aux!(numbers, st, as_i8)
-        }
-        UINT16 => {
-            extract_values_aux!(numbers, st, as_u16)
-        }
-        INT16 => {
-            extract_values_aux!(numbers, st, as_i16)
-        }
-        UINT32 => {
-            extract_values_aux!(numbers, st, as_u32)
-        }
-        INT32 => {
-            extract_values_aux!(numbers, st, as_i32)
-        }
-        UINT64 => {
-            extract_values_aux!(numbers, st, as_u64)
-        }
-        INT64 => {
-            extract_values_aux!(numbers, st, as_i64)
-        }
-        _ => Err(runtime_error!("Invalid scalar type")),
-    }
-}
-
-fn json_reshape(shape: ArrayShape, j: &JsonValue) -> Result<JsonValue> {
-    let e = || Err(runtime_error!("Can't JSON-reshape"));
-    if let JsonValue::Array(a) = j {
-        if shape.is_empty() {
-            return Ok(a[0].clone());
-        }
-        if a.len() as u64 % shape[0] == 0 {
-            let chunks = a
-                .chunks_exact(a.len() / shape[0] as usize)
-                .map(Vec::from)
-                .collect::<Vec<Vec<JsonValue>>>();
-            let truncated_shape: Vec<u64> = shape.into_iter().skip(1).collect();
-            let mut result = vec![];
-            for chunk in chunks {
-                result.push(json_reshape(
-                    truncated_shape.clone(),
-                    &JsonValue::from(chunk),
-                )?);
-            }
-            Ok(JsonValue::from(result))
-        } else {
-            e()
-        }
-    } else {
-        e()
-    }
-}
-
-fn scalar_type_from_json(o: &Object) -> Result<ScalarType> {
-    o.get("type")
-        .ok_or_else(|| runtime_error!("Unknown scalar type"))?
-        .as_str()
-        .ok_or_else(|| runtime_error!("Scalar type is not a string"))?
-        .parse::<ScalarType>()
-}
-
 pub fn generalized_subtract(v: Value, v0: Value, t: Type) -> Result<Value> {
     match t {
         Type::Scalar(st) | Type::Array(_, st) => {
-            let v_raw = v.access_bytes(|bytes| vec_from_bytes(bytes, st.clone()))?;
-            let v0_raw = v0.access_bytes(|bytes| vec_from_bytes(bytes, st.clone()))?;
-            let result = subtract_vectors_u64(&v_raw, &v0_raw, st.get_modulus())?;
+            let v_raw = v.access_bytes(|bytes| vec_u128_from_bytes(bytes, st))?;
+            let v0_raw = v0.access_bytes(|bytes| vec_u128_from_bytes(bytes, st))?;
+            let result = subtract_vectors_u128(&v_raw, &v0_raw, st.get_modulus())?;
             Ok(Value::from_bytes(vec_to_bytes(&result, st)?))
         }
         Type::Tuple(tv) => {
@@ -1208,9 +864,9 @@ pub fn generalized_subtract(v: Value, v0: Value, t: Type) -> Result<Value> {
 pub fn generalized_add(v: Value, v0: Value, t: Type) -> Result<Value> {
     match t {
         Type::Scalar(st) | Type::Array(_, st) => {
-            let v_raw = v.access_bytes(|bytes| vec_from_bytes(bytes, st.clone()))?;
-            let v0_raw = v0.access_bytes(|bytes| vec_from_bytes(bytes, st.clone()))?;
-            let result = add_vectors_u64(&v_raw, &v0_raw, st.get_modulus())?;
+            let v_raw = v.access_bytes(|bytes| vec_u128_from_bytes(bytes, st))?;
+            let v0_raw = v0.access_bytes(|bytes| vec_u128_from_bytes(bytes, st))?;
+            let result = add_vectors_u128(&v_raw, &v0_raw, st.get_modulus())?;
             Ok(Value::from_bytes(vec_to_bytes(&result, st)?))
         }
         Type::Tuple(tv) => {
@@ -1302,7 +958,9 @@ mod tests {
     use std::ops::Add;
 
     use super::*;
-    use crate::data_types::tuple_type;
+    use crate::data_types::{
+        scalar_type, tuple_type, BIT, INT32, INT8, UINT16, UINT32, UINT64, UINT8,
+    };
 
     #[test]
     fn test_secret_sharing() {
@@ -1529,367 +1187,14 @@ mod tests {
             assert_eq!(shares0[1], shares1[1]);
             assert_eq!(shares1[2], shares2[2]);
             let m = UINT32.get_modulus().unwrap();
-            let v0 = ToNdarray::<u64>::to_ndarray(&shares0[0])? % m;
-            let v1 = ToNdarray::<u64>::to_ndarray(&shares1[1])? % m;
-            let v2 = ToNdarray::<u64>::to_ndarray(&shares2[2])? % m;
+            let v0 = ToNdarray::<u128>::to_ndarray(&shares0[0])? % m;
+            let v1 = ToNdarray::<u128>::to_ndarray(&shares1[1])? % m;
+            let v2 = ToNdarray::<u128>::to_ndarray(&shares2[2])? % m;
             let new_data = v0.add(v1).add(v2) % m;
             assert_eq!(new_data, ndarray::Array::from_vec(data).into_dyn());
             Ok(())
         }()
         .unwrap();
-    }
-
-    #[test]
-    fn test_from_to_json() {
-        || -> Result<()> {
-            let s = r#"{"kind":"scalar","type":"b","value":0}"#;
-            let tv = TypedValue::from_json(&json::parse(&s)?)?;
-            assert_eq!(tv.t, scalar_type(BIT));
-            tv.value.access_bytes(|b| {
-                assert_eq!(b, &[0]);
-                Ok(())
-            })?;
-            assert_eq!(tv.to_json()?.dump(), s);
-            Ok(())
-        }()
-        .unwrap();
-        || -> Result<()> {
-            let s = r#"{"kind":"array","type":"b","value":[0]}"#;
-            let tv = TypedValue::from_json(&json::parse(&s)?)?;
-            assert_eq!(tv.t, array_type(vec![1], BIT));
-            tv.value.access_bytes(|b| {
-                assert_eq!(b, &[0]);
-                Ok(())
-            })?;
-            assert_eq!(tv.to_json()?.dump(), s);
-            Ok(())
-        }()
-        .unwrap();
-        || -> Result<()> {
-            let s = r#"{"kind":"scalar","type":"u8","value":123}"#;
-            let tv = TypedValue::from_json(&json::parse(&s)?)?;
-            assert_eq!(tv.t, scalar_type(UINT8));
-            tv.value.access_bytes(|b| {
-                assert_eq!(b, &[123]);
-                Ok(())
-            })?;
-            assert_eq!(tv.to_json()?.dump(), s);
-            Ok(())
-        }()
-        .unwrap();
-        || -> Result<()> {
-            let s = r#"{"kind":"array","type":"u8","value":[123]}"#;
-            let tv = TypedValue::from_json(&json::parse(&s)?)?;
-            assert_eq!(tv.t, array_type(vec![1], UINT8));
-            tv.value.access_bytes(|b| {
-                assert_eq!(b, &[123]);
-                Ok(())
-            })?;
-            assert_eq!(tv.to_json()?.dump(), s);
-            Ok(())
-        }()
-        .unwrap();
-        || -> Result<()> {
-            let s = r#"{"kind":"scalar","type":"i8","value":-123}"#;
-            let tv = TypedValue::from_json(&json::parse(&s)?)?;
-            assert_eq!(tv.t, scalar_type(INT8));
-            tv.value.access_bytes(|b| {
-                assert_eq!(b, &[133]);
-                Ok(())
-            })?;
-            assert_eq!(tv.to_json()?.dump(), s);
-            Ok(())
-        }()
-        .unwrap();
-        || -> Result<()> {
-            let s = r#"{"kind":"array","type":"i8","value":[-123]}"#;
-            let tv = TypedValue::from_json(&json::parse(&s)?)?;
-            assert_eq!(tv.t, array_type(vec![1], INT8));
-            tv.value.access_bytes(|b| {
-                assert_eq!(b, &[133]);
-                Ok(())
-            })?;
-            assert_eq!(tv.to_json()?.dump(), s);
-            Ok(())
-        }()
-        .unwrap();
-        || -> Result<()> {
-            let s = r#"{"kind":"scalar","type":"u16","value":1234}"#;
-            let tv = TypedValue::from_json(&json::parse(&s)?)?;
-            assert_eq!(tv.t, scalar_type(UINT16));
-            tv.value.access_bytes(|b| {
-                assert_eq!(b, &[210, 4]);
-                Ok(())
-            })?;
-            assert_eq!(tv.to_json()?.dump(), s);
-            Ok(())
-        }()
-        .unwrap();
-        || -> Result<()> {
-            let s = r#"{"kind":"array","type":"u16","value":[1234]}"#;
-            let tv = TypedValue::from_json(&json::parse(&s)?)?;
-            assert_eq!(tv.t, array_type(vec![1], UINT16));
-            tv.value.access_bytes(|b| {
-                assert_eq!(b, &[210, 4]);
-                Ok(())
-            })?;
-            assert_eq!(tv.to_json()?.dump(), s);
-            Ok(())
-        }()
-        .unwrap();
-        || -> Result<()> {
-            let s = r#"{"kind":"scalar","type":"i16","value":-1234}"#;
-            let tv = TypedValue::from_json(&json::parse(&s)?)?;
-            assert_eq!(tv.t, scalar_type(INT16));
-            tv.value.access_bytes(|b| {
-                assert_eq!(b, &[46, 251]);
-                Ok(())
-            })?;
-            assert_eq!(tv.to_json()?.dump(), s);
-            Ok(())
-        }()
-        .unwrap();
-        || -> Result<()> {
-            let s = r#"{"kind":"array","type":"i16","value":[-1234]}"#;
-            let tv = TypedValue::from_json(&json::parse(&s)?)?;
-            assert_eq!(tv.t, array_type(vec![1], INT16));
-            tv.value.access_bytes(|b| {
-                assert_eq!(b, &[46, 251]);
-                Ok(())
-            })?;
-            assert_eq!(tv.to_json()?.dump(), s);
-            Ok(())
-        }()
-        .unwrap();
-        || -> Result<()> {
-            let s = r#"{"kind":"scalar","type":"u32","value":123456}"#;
-            let tv = TypedValue::from_json(&json::parse(&s)?)?;
-            assert_eq!(tv.t, scalar_type(UINT32));
-            tv.value.access_bytes(|b| {
-                assert_eq!(b, &[64, 226, 1, 0]);
-                Ok(())
-            })?;
-            assert_eq!(tv.to_json()?.dump(), s);
-            Ok(())
-        }()
-        .unwrap();
-        || -> Result<()> {
-            let s = r#"{"kind":"array","type":"u32","value":[123456]}"#;
-            let tv = TypedValue::from_json(&json::parse(&s)?)?;
-            assert_eq!(tv.t, array_type(vec![1], UINT32));
-            tv.value.access_bytes(|b| {
-                assert_eq!(b, &[64, 226, 1, 0]);
-                Ok(())
-            })?;
-            assert_eq!(tv.to_json()?.dump(), s);
-            Ok(())
-        }()
-        .unwrap();
-        || -> Result<()> {
-            let s = r#"{"kind":"scalar","type":"i32","value":-123456}"#;
-            let tv = TypedValue::from_json(&json::parse(&s)?)?;
-            assert_eq!(tv.t, scalar_type(INT32));
-            tv.value.access_bytes(|b| {
-                assert_eq!(b, &[192, 29, 254, 255]);
-                Ok(())
-            })?;
-            assert_eq!(tv.to_json()?.dump(), s);
-            Ok(())
-        }()
-        .unwrap();
-        || -> Result<()> {
-            let s = r#"{"kind":"array","type":"i32","value":[-123456]}"#;
-            let tv = TypedValue::from_json(&json::parse(&s)?)?;
-            assert_eq!(tv.t, array_type(vec![1], INT32));
-            tv.value.access_bytes(|b| {
-                assert_eq!(b, &[192, 29, 254, 255]);
-                Ok(())
-            })?;
-            assert_eq!(tv.to_json()?.dump(), s);
-            Ok(())
-        }()
-        .unwrap();
-        || -> Result<()> {
-            let s = r#"{"kind":"scalar","type":"u64","value":123456}"#;
-            let tv = TypedValue::from_json(&json::parse(&s)?)?;
-            assert_eq!(tv.t, scalar_type(UINT64));
-            tv.value.access_bytes(|b| {
-                assert_eq!(b, &[64, 226, 1, 0, 0, 0, 0, 0]);
-                Ok(())
-            })?;
-            assert_eq!(tv.to_json()?.dump(), s);
-            Ok(())
-        }()
-        .unwrap();
-        || -> Result<()> {
-            let s = r#"{"kind":"array","type":"u64","value":[123456]}"#;
-            let tv = TypedValue::from_json(&json::parse(&s)?)?;
-            assert_eq!(tv.t, array_type(vec![1], UINT64));
-            tv.value.access_bytes(|b| {
-                assert_eq!(b, &[64, 226, 1, 0, 0, 0, 0, 0]);
-                Ok(())
-            })?;
-            assert_eq!(tv.to_json()?.dump(), s);
-            Ok(())
-        }()
-        .unwrap();
-        || -> Result<()> {
-            let s = r#"{"kind":"scalar","type":"i64","value":-123456}"#;
-            let tv = TypedValue::from_json(&json::parse(&s)?)?;
-            assert_eq!(tv.t, scalar_type(INT64));
-            tv.value.access_bytes(|b| {
-                assert_eq!(b, &[192, 29, 254, 255, 255, 255, 255, 255]);
-                Ok(())
-            })?;
-            assert_eq!(tv.to_json()?.dump(), s);
-            Ok(())
-        }()
-        .unwrap();
-        || -> Result<()> {
-            let s = r#"{"kind":"array","type":"i64","value":[-123456]}"#;
-            let tv = TypedValue::from_json(&json::parse(&s)?)?;
-            assert_eq!(tv.t, array_type(vec![1], INT64));
-            tv.value.access_bytes(|b| {
-                assert_eq!(b, &[192, 29, 254, 255, 255, 255, 255, 255]);
-                Ok(())
-            })?;
-            assert_eq!(tv.to_json()?.dump(), s);
-            Ok(())
-        }()
-        .unwrap();
-        || -> Result<()> {
-            let s = r#"{"kind":"array","type":"i32","value":[[-123456,123456],[13579,-13579]]}"#;
-            let tv = TypedValue::from_json(&json::parse(&s)?)?;
-            assert_eq!(tv.t, array_type(vec![2, 2], INT32));
-            tv.value.access_bytes(|b| {
-                assert_eq!(
-                    b,
-                    &[192, 29, 254, 255, 64, 226, 1, 0, 11, 53, 0, 0, 245, 202, 255, 255]
-                );
-                Ok(())
-            })?;
-            assert_eq!(tv.to_json()?.dump(), s);
-            Ok(())
-        }()
-        .unwrap();
-        || -> Result<()> {
-            let s = r#"{"kind":"tuple","value":[{"kind":"scalar","type":"i32","value":-123456},{"kind":"tuple","value":[]}]}"#;
-            let tv = TypedValue::from_json(&json::parse(&s)?)?;
-            assert_eq!(tv.t, tuple_type(vec![scalar_type(INT32), tuple_type(vec![])]));
-            tv.value.access_vector(|v| {
-                assert_eq!(v.len(), 2);
-                v[0].access_bytes(|b| {
-                    assert_eq!(b, &[192, 29, 254, 255]);
-                    Ok(())
-                })?;
-                v[1].access_vector(|v1| {
-                    assert!(v1.is_empty());
-                    Ok(())
-                })?;
-                Ok(())
-            })?;
-            assert_eq!(tv.to_json()?.dump(), s);
-            Ok(())
-        }().unwrap();
-        || -> Result<()> {
-            let s = r#"{"kind":"named tuple","value":[{"name":"field1","value":{"kind":"scalar","type":"i32","value":-123456}},{"name":"field2","value":{"kind":"tuple","value":[]}}]}"#;
-            let tv = TypedValue::from_json(&json::parse(&s)?)?;
-            assert_eq!(tv.t, named_tuple_type(vec![("field1".to_owned(), scalar_type(INT32)), ("field2".to_owned(), tuple_type(vec![]))]));
-            tv.value.access_vector(|v| {
-                assert_eq!(v.len(), 2);
-                v[0].access_bytes(|b| {
-                    assert_eq!(b, &[192, 29, 254, 255]);
-                    Ok(())
-                })?;
-                v[1].access_vector(|v1| {
-                    assert!(v1.is_empty());
-                    Ok(())
-                })?;
-                Ok(())
-            })?;
-            assert_eq!(tv.to_json()?.dump(), s);
-            Ok(())
-        }().unwrap();
-        || -> Result<()> {
-            let s = r#"{"kind":"vector","value":[{"kind":"scalar","type":"i32","value":-123456},{"kind":"scalar","type":"i32","value":123456},{"kind":"scalar","type":"i32","value":-13579},{"kind":"scalar","type":"i32","value":13579}]}"#;
-            let tv = TypedValue::from_json(&json::parse(&s)?)?;
-            assert_eq!(tv.t, vector_type(4, scalar_type(INT32)));
-            tv.value.access_vector(|v| {
-                assert_eq!(v.len(), 4);
-                v[0].access_bytes(|b| {
-                    assert_eq!(b, &[192, 29, 254, 255]);
-                    Ok(())
-                })?;
-                v[1].access_bytes(|b| {
-                    assert_eq!(b, &[64, 226, 1, 0]);
-                    Ok(())
-                })?;
-                v[2].access_bytes(|b| {
-                    assert_eq!(b, &[245, 202, 255, 255]);
-                    Ok(())
-                })?;
-                v[3].access_bytes(|b| {
-                    assert_eq!(b, &[11, 53, 0, 0]);
-                    Ok(())
-                })?;
-                Ok(())
-            })?;
-            assert_eq!(tv.to_json()?.dump(), s);
-            Ok(())
-        }().unwrap();
-        || -> Result<()> {
-            let s = r#"{"kind":"vector","value":[]}"#;
-            let tv = TypedValue::from_json(&json::parse(&s)?)?;
-            assert_eq!(tv.t, vector_type(0, tuple_type(vec![])));
-            tv.value.access_vector(|v| {
-                assert_eq!(v.len(), 0);
-                Ok(())
-            })?;
-            assert_eq!(tv.to_json()?.dump(), s);
-            Ok(())
-        }()
-        .unwrap();
-        || -> Result<()> {
-            let s = r#"[]"#;
-            assert!(TypedValue::from_json(&json::parse(&s)?).is_err());
-            let s = r#"{}"#;
-            assert!(TypedValue::from_json(&json::parse(&s)?).is_err());
-            let s = r#"{"kind":{}}"#;
-            assert!(TypedValue::from_json(&json::parse(&s)?).is_err());
-            let s = r#"{"kind":"wrongkind"}"#;
-            assert!(TypedValue::from_json(&json::parse(&s)?).is_err());
-            let s = r#"{"kind":"scalar","type":"i32","value":{}}"#;
-            assert!(TypedValue::from_json(&json::parse(&s)?).is_err());
-            let s = r#"{"kind":"scalar","type":"i32"}"#;
-            assert!(TypedValue::from_json(&json::parse(&s)?).is_err());
-            let s = r#"{"kind":"scalar","type":"bzz","value":123}"#;
-            assert!(TypedValue::from_json(&json::parse(&s)?).is_err());
-            let s = r#"{"kind":"scalar","type":[],"value":123}"#;
-            assert!(TypedValue::from_json(&json::parse(&s)?).is_err());
-            let s = r#"{"kind":"scalar","value":123}"#;
-            assert!(TypedValue::from_json(&json::parse(&s)?).is_err());
-            let s = r#"{"kind":"array","type":"i32","value":[[123,456],123]}"#;
-            assert!(TypedValue::from_json(&json::parse(&s)?).is_err());
-            let s = r#"{"kind":"tuple","value":{}}"#;
-            assert!(TypedValue::from_json(&json::parse(&s)?).is_err());
-            let s = r#"{"kind":"array","type":"i32","value":{}}"#;
-            assert!(TypedValue::from_json(&json::parse(&s)?).is_err());
-            let s = r#"{"kind":"vector","value":{}}"#;
-            assert!(TypedValue::from_json(&json::parse(&s)?).is_err());
-            let s = r#"{"kind":"vector","value":[{"kind":"scalar","type":"i32","value":123},{"kind":"tuple","value":{}}]}"#;
-            assert!(TypedValue::from_json(&json::parse(&s)?).is_err());
-            let s = r#"{"kind":"named tuple","value":{}}"#;
-            assert!(TypedValue::from_json(&json::parse(&s)?).is_err());
-            let s = r#"{"kind":"named tuple","value":[{}]}"#;
-            assert!(TypedValue::from_json(&json::parse(&s)?).is_err());
-            let s = r#"{"kind":"named tuple","value":[{"name":123,"value":{}}]}"#;
-            assert!(TypedValue::from_json(&json::parse(&s)?).is_err());
-            let s = r#"{"kind":"named tuple","value":[{"name":"field1"}]}"#;
-            assert!(TypedValue::from_json(&json::parse(&s)?).is_err());
-            let s = r#"{"kind":"named tuple","value":[{"name":"field1","value":123123}]}"#;
-            assert!(TypedValue::from_json(&json::parse(&s)?).is_err());
-            Ok(())
-        }().unwrap();
     }
     #[test]
     fn test_is_equal() {

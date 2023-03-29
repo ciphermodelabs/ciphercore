@@ -8,7 +8,7 @@ use crate::ops::utils::{pull_out_bits, put_in_bits};
 use serde::{Deserialize, Serialize};
 
 use super::comparisons::GreaterThanEqualTo;
-use super::utils::{constant_scalar, multiply_fixed_point, zeros, zeros_like};
+use super::utils::{constant_scalar, multiply_fixed_point, zeros_like};
 
 /// A structure that defines the custom operation TaylorExponent that computes an approximate exp(x / (2 ** fixed_precision)) * (2 ** fixed_precision) using Taylor expansion.
 ///
@@ -83,7 +83,7 @@ impl CustomOperationBody for TaylorExponent {
         // Below, we compute 2 ** (arg / ln(2)) rather than exp(arg).
         // `x` is arg * ln(2).
         let one_over_ln2_int = (((1 << self.fixed_precision_points) as f64) / 2.0_f64.ln()) as u64;
-        let one_over_ln2 = constant_scalar(&g, one_over_ln2_int, sc.clone())?;
+        let one_over_ln2 = constant_scalar(&g, one_over_ln2_int, sc)?;
         let x = multiply_fixed_point(arg, one_over_ln2, self.fixed_precision_points)?;
 
         let binary_x = x.a2b()?;
@@ -99,7 +99,7 @@ impl CustomOperationBody for TaylorExponent {
         for i in self.fixed_precision_points..self.fixed_precision_points + max_exp_bits {
             let bit = x_bits.get(vec![i])?;
             let j = i - self.fixed_precision_points;
-            let p2 = constant_scalar(&g, 1_u64 << (1_u64 << j), sc.clone())?;
+            let p2 = constant_scalar(&g, 1_u64 << (1_u64 << j), sc)?;
             // `term` is 1 if bit is not set, and 2 ** (2 ** j) otherwise.
             let term = p2
                 .subtract(one.clone())?
@@ -120,20 +120,20 @@ impl CustomOperationBody for TaylorExponent {
             ])?;
             let mut bits_before_point_shape = x_bits.get_type()?.get_shape();
             bits_before_point_shape[0] = 64 - self.fixed_precision_points;
-            let zero_bits_before_point = zeros(&g, array_type(bits_before_point_shape, BIT))?;
+            let zero_bits_before_point = g.zeros(array_type(bits_before_point_shape, BIT))?;
             let stacked_frac_bits = g.create_tuple(vec![
                 bits_after_point.array_to_vector()?,
                 zero_bits_before_point.array_to_vector()?,
             ])?;
             let stacked_type = vector_type(64, bit_type);
             let x_frac = put_in_bits(stacked_frac_bits.reshape(stacked_type)?.vector_to_array()?)?
-                .b2a(sc.clone())?;
+                .b2a(sc)?;
 
             // Now, we want 2 ** x = exp(x * ln(2)) = \sum_i (ln(2) * x) ** i / i!
             let mut exp_fractional = zeros_like(x_frac.clone())?;
-            let mut coef = constant_scalar(&g, 1 << self.fixed_precision_points, sc.clone())?;
+            let mut coef = constant_scalar(&g, 1 << self.fixed_precision_points, sc)?;
             let ln2_int = (2_f64.ln() * ((1 << self.fixed_precision_points) as f64)) as u64;
-            let ln2 = constant_scalar(&g, ln2_int, sc.clone())?;
+            let ln2 = constant_scalar(&g, ln2_int, sc)?;
             let y = multiply_fixed_point(x_frac, ln2, self.fixed_precision_points)?;
             for i in 0..self.taylor_terms {
                 exp_fractional = exp_fractional.add(coef.clone())?;
