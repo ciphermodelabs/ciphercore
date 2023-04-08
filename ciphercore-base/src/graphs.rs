@@ -194,6 +194,61 @@ impl Operation {
             Operation::PRF(_, _) | Operation::PermutationFromPRF(_, _)
         )
     }
+
+    pub fn is_broadcasting_called(&self) -> bool {
+        matches!(
+            self,
+            Operation::Add
+                | Operation::Subtract
+                | Operation::Multiply
+                | Operation::Matmul
+                | Operation::Gemm(_, _)
+                | Operation::MixedMultiply
+                | Operation::Stack(_)
+        )
+    }
+
+    pub fn is_mpc_compiled(&self) -> bool {
+        matches!(
+            self,
+            Operation::Input(_)
+                | Operation::Zeros(_)
+                | Operation::Ones(_)
+                | Operation::Add
+                | Operation::Subtract
+                | Operation::Multiply
+                | Operation::MixedMultiply
+                | Operation::Dot
+                | Operation::Matmul
+                | Operation::Gemm(_, _)
+                | Operation::Truncate(_)
+                | Operation::Sum(_)
+                | Operation::CumSum(_)
+                | Operation::PermuteAxes(_)
+                | Operation::Get(_)
+                | Operation::GetSlice(_)
+                | Operation::Reshape(_)
+                | Operation::Stack(_)
+                | Operation::Concatenate(_)
+                | Operation::Constant(_, _)
+                | Operation::A2B
+                | Operation::B2A(_)
+                | Operation::CreateTuple
+                | Operation::CreateNamedTuple(_)
+                | Operation::CreateVector(_)
+                | Operation::TupleGet(_)
+                | Operation::NamedTupleGet(_)
+                | Operation::VectorGet
+                | Operation::Zip
+                | Operation::Repeat(_)
+                | Operation::ArrayToVector
+                | Operation::VectorToArray
+                | Operation::Join(_, _)
+                | Operation::ApplyPermutation(_)
+                | Operation::Sort(_)
+        )
+    }
+
     pub fn update_prf_id(&self, prf_id: u64) -> Result<Self> {
         match self {
             Operation::PRF(_, scalar_type) => Ok(Operation::PRF(prf_id, scalar_type.clone())),

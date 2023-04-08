@@ -11,6 +11,7 @@ enum ProxyObject {
     UnknownNode,
     ArrayToVector(Node),
     Tuple(Vec<Arc<ProxyObjectWithNode>>),
+    NamedTuple(HashMap<String, Arc<ProxyObjectWithNode>>),
     Zip(Vec<Arc<ProxyObjectWithNode>>),
     Vector(Vec<Arc<ProxyObjectWithNode>>),
     A2B(Node),
@@ -112,6 +113,24 @@ pub(super) fn optimize_graph_meta_operations(graph: Graph, out_graph: Graph) -> 
                     node,
                 })
             }
+            Operation::CreateNamedTuple(names) => {
+                let mut computed_elements = HashMap::new();
+                for i in 0..deps.len() {
+                    let element = if let Some(meta) = meta_deps[i].clone() {
+                        meta.clone()
+                    } else {
+                        ProxyObjectWithNode {
+                            meta: ProxyObject::UnknownNode,
+                            node: deps[i].clone(),
+                        }
+                    };
+                    computed_elements.insert(names[i].clone(), Arc::new(element));
+                }
+                Some(ProxyObjectWithNode {
+                    meta: ProxyObject::NamedTuple(computed_elements),
+                    node: simple_node.clone(),
+                })
+            }
             Operation::CreateTuple => {
                 let mut computed_elements = vec![];
                 for i in 0..deps.len() {
@@ -203,6 +222,16 @@ fn maybe_apply_meta_op(
     deps: Vec<ProxyObjectWithNode>,
 ) -> Result<Option<ProxyObjectWithNode>> {
     match node.get_operation() {
+        Operation::NamedTupleGet(name) => {
+            if deps.len() != 1 {
+                return Err(runtime_error!("NamedTupleGet should have 1 argument"));
+            }
+            if let ProxyObject::NamedTuple(element_ptrs) = deps[0].clone().meta {
+                Ok(Some((*element_ptrs[&name]).clone()))
+            } else {
+                Ok(None)
+            }
+        }
         Operation::TupleGet(index) => {
             if deps.len() != 1 {
                 return Err(runtime_error!("TupleGet should have 1 argument"));
@@ -375,6 +404,63 @@ mod tests {
                 o1.set_name("First TupleGet")?;
                 let o = o1.tuple_get(1)?;
                 o.set_name("Second TupleGet")?;
+                Ok(o)
+            })?;
+            let new_c = optimize_helper(c.clone())?;
+
+            let expected_c = simple_context(|g| {
+                let _i1 = g.input(scalar_type(UINT64))?;
+                let i2 = g.input(scalar_type(UINT64))?;
+                Ok(i2)
+            })?;
+            assert!(contexts_deep_equal(new_c, expected_c));
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    #[test]
+    fn test_simple_named_tuple_get() {
+        || -> Result<()> {
+            let c = simple_context(|g| {
+                let i1 = g.input(scalar_type(UINT64))?;
+                let i2 = g.input(scalar_type(UINT64))?;
+                let n1 = "n1".to_string();
+                let n2 = "n2".to_string();
+                let t = g.create_named_tuple(vec![(n1.clone(), i1), (n2, i2)])?;
+                t.set_name("CreateNamedTuple")?;
+                let o = t.named_tuple_get(n1)?;
+                o.set_name("NamedTupleGet")?;
+                Ok(o)
+            })?;
+            let new_c = optimize_helper(c.clone())?;
+
+            let expected_c = simple_context(|g| {
+                let i1 = g.input(scalar_type(UINT64))?;
+                let _i2 = g.input(scalar_type(UINT64))?;
+                Ok(i1)
+            })?;
+            assert!(contexts_deep_equal(new_c, expected_c));
+            Ok(())
+        }()
+        .unwrap();
+    }
+
+    #[test]
+    fn test_nested_named_tuple_get() {
+        || -> Result<()> {
+            let c = simple_context(|g| {
+                let i1 = g.input(scalar_type(UINT64))?;
+                let i2 = g.input(scalar_type(UINT64))?;
+                let n1 = "n1".to_string();
+                let n2 = "n2".to_string();
+                let n3 = "n3".to_string();
+                let t1 = g.create_named_tuple(vec![(n1.clone(), i1.clone()), (n2.clone(), i2)])?;
+                let t2 = g.create_named_tuple(vec![(n3.clone(), t1), (n1, i1)])?;
+                let o1 = t2.named_tuple_get(n3)?;
+                o1.set_name("First NamedTupleGet")?;
+                let o = o1.named_tuple_get(n2)?;
+                o.set_name("Second NamedTupleGet")?;
                 Ok(o)
             })?;
             let new_c = optimize_helper(c.clone())?;
