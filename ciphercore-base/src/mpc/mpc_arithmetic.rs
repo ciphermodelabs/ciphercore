@@ -2,10 +2,13 @@ use crate::custom_ops::{CustomOperation, CustomOperationBody};
 use crate::data_types::Type;
 use crate::errors::Result;
 use crate::graphs::{Context, Graph, Node, NodeAnnotation, Operation};
-use crate::mpc::mpc_compiler::{check_private_tuple, get_zero_shares, PARTIES};
+use crate::mpc::mpc_compiler::{check_private_tuple, PARTIES};
 use crate::mpc::utils::ObliviousTransfer;
 
 use serde::{Deserialize, Serialize};
+
+use super::mpc_compiler::is_array_shared;
+use super::resharing::reshare;
 
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub(super) struct AddMPC {}
@@ -191,15 +194,7 @@ fn mixed_product(
 
 /// Given two nodes containing private values, applies a bilinear product to them
 /// using an interactive MPC protocol from ABY3.
-fn private_product(
-    node0: Node,
-    node1: Node,
-    prf_type: Type,
-    g: Graph,
-    op: Operation,
-) -> Result<Node> {
-    let mut outputs = vec![];
-    let prf_keys = g.input(prf_type)?;
+fn private_product(node0: Node, node1: Node, g: Graph, op: Operation) -> Result<Node> {
     let mut shares0 = vec![];
     let mut shares1 = vec![];
     for i in 0..PARTIES as u64 {
@@ -224,18 +219,7 @@ fn private_product(
         let z = g.add(z2, z3)?;
         z_shares.push(z.clone());
     }
-    let zero_shares = get_zero_shares(g.clone(), prf_keys, z_shares[0].get_type()?)?;
-
-    for i in 0..PARTIES {
-        // x_i * y_i + x_i * y_(i+1) + x_(i+1) * y_i + zero_share_i
-        let mul_share = g.add(z_shares[i].clone(), zero_shares[i].clone())?;
-        // networking
-        let network_node = g.nop(mul_share)?;
-        let im1 = ((i + PARTIES - 1) % PARTIES) as u64;
-        network_node.add_annotation(NodeAnnotation::Send(i as u64, im1))?;
-        outputs.push(network_node);
-    }
-    g.create_tuple(outputs)?.set_as_output()
+    g.create_tuple(z_shares)?.set_as_output()
 }
 
 fn instantiate_bilinear_product(
@@ -250,10 +234,11 @@ fn instantiate_bilinear_product(
         Operation::Gemm(_, _) => "GemmMPC".to_owned(),
         _ => return Err(runtime_error!("Not a bilinear product")),
     };
-    if !(2..=3).contains(&argument_types.len()) {
+    if argument_types.len() != 2 {
         return Err(runtime_error!(
-            "{} should have either 2 or 3 inputs.",
-            op_name
+            "{} should have 2 inputs, {} provided",
+            op_name,
+            argument_types.len()
         ));
     }
     let g = context.create_graph()?;
@@ -271,14 +256,7 @@ fn instantiate_bilinear_product(
         (Type::Tuple(v0), Type::Tuple(v1)) => {
             check_private_tuple(v0)?;
             check_private_tuple(v1)?;
-            if argument_types.len() != 3 {
-                return Err(runtime_error!(
-                    "{} with two private inputs should be provided a tuple of keys",
-                    op_name
-                ));
-            }
-            let prf_type = argument_types[2].clone();
-            private_product(i0, i1, prf_type, g.clone(), op)?;
+            private_product(i0, i1, g.clone(), op)?;
         }
         (Type::Tuple(v0), Type::Array(_, _) | Type::Scalar(_)) => {
             check_private_tuple(v0)?;
@@ -530,6 +508,89 @@ impl CustomOperationBody for MixedMultiplyMPC {
     fn get_name(&self) -> String {
         "MixedMultiplyMPC".to_owned()
     }
+}
+
+pub(super) fn general_multiply_mpc(
+    input_a: Node,
+    input_b: Node,
+    op: Operation,
+    prf_keys_mul: Option<Node>,
+    reshare_needed: bool,
+) -> Result<Node> {
+    let custom_op = match op {
+        Operation::Multiply => CustomOperation::new(MultiplyMPC {}),
+        Operation::MixedMultiply => CustomOperation::new(MixedMultiplyMPC {}),
+        Operation::Dot => CustomOperation::new(DotMPC {}),
+        Operation::Matmul => CustomOperation::new(MatmulMPC {}),
+        Operation::Gemm(transpose_a, transpose_b) => CustomOperation::new(GemmMPC {
+            transpose_a,
+            transpose_b,
+        }),
+        _ => {
+            return Err(runtime_error!("Should not be here"));
+        }
+    };
+    let g = input_a.get_graph();
+    // Public inputs must be arrays and shared inputs must be tuples
+    if (is_array_shared(&input_a)? || op == Operation::MixedMultiply) && is_array_shared(&input_b)?
+    {
+        // If both inputs are private, the MPC protocol requires invoking PRFs.
+        // Thus, PRF keys must be provided.
+        let keys = match prf_keys_mul {
+            Some(ref k) => k.clone(),
+            None => {
+                return Err(runtime_error!("Propagation of annotations failed"));
+            }
+        };
+        if op == Operation::MixedMultiply {
+            g.custom_op(custom_op, vec![input_a, input_b, keys])
+        } else {
+            let product_node = g.custom_op(custom_op, vec![input_a, input_b])?;
+            if reshare_needed {
+                reshare(&product_node, &keys)
+            } else {
+                Ok(product_node)
+            }
+        }
+    } else {
+        g.custom_op(custom_op, vec![input_a, input_b])
+    }
+}
+
+// If we add multiplication nodes manually, reshare their results by default.
+pub(super) fn multiply_mpc(a: Node, b: Node, prf_keys: Node, reshare_needed: bool) -> Result<Node> {
+    general_multiply_mpc(a, b, Operation::Multiply, Some(prf_keys), reshare_needed)
+}
+
+pub(super) fn mixed_multiply_mpc(a: Node, b: Node, prf_keys: Node) -> Result<Node> {
+    general_multiply_mpc(a, b, Operation::MixedMultiply, Some(prf_keys), true)
+}
+
+pub(super) fn gemm_mpc(
+    a: Node,
+    b: Node,
+    transpose_a: bool,
+    transpose_b: bool,
+    prf_keys: Node,
+    reshare_needed: bool,
+) -> Result<Node> {
+    general_multiply_mpc(
+        a,
+        b,
+        Operation::Gemm(transpose_a, transpose_b),
+        Some(prf_keys),
+        reshare_needed,
+    )
+}
+
+pub(super) fn add_mpc(a: Node, b: Node) -> Result<Node> {
+    a.get_graph()
+        .custom_op(CustomOperation::new(AddMPC {}), vec![a, b])
+}
+
+pub(super) fn subtract_mpc(a: Node, b: Node) -> Result<Node> {
+    a.get_graph()
+        .custom_op(CustomOperation::new(SubtractMPC {}), vec![a, b])
 }
 
 #[cfg(test)]

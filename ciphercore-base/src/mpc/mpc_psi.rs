@@ -14,7 +14,7 @@ use crate::type_inference::NULL_HEADER;
 use serde::{Deserialize, Serialize};
 
 use super::low_mc::{LowMC, LowMCBlockSize, LOW_MC_KEY_SIZE};
-use super::mpc_arithmetic::{AddMPC, GemmMPC, MixedMultiplyMPC, MultiplyMPC, SubtractMPC};
+use super::mpc_arithmetic::{add_mpc, gemm_mpc, mixed_multiply_mpc, multiply_mpc, subtract_mpc};
 use super::mpc_compiler::{
     check_private_tuple, get_node_shares, get_zero_shares, IOStatus, KEY_LENGTH, PARTIES,
 };
@@ -97,72 +97,25 @@ fn concatenate_mpc(arrays: &[Node], axis: u64) -> Result<Node> {
     g.create_tuple(res_shares)
 }
 
-fn general_multiply_mpc(
-    op: CustomOperation,
-    a: Node,
-    b: Node,
-    prf_keys: Node,
-    is_mixed_multiply: bool,
-) -> Result<Node> {
-    let args = if (is_shared(&a)? || is_mixed_multiply) && is_shared(&b)? {
-        vec![a, b, prf_keys]
-    } else {
-        vec![a, b]
-    };
-    args[0].get_graph().custom_op(op, args)
-}
-
-fn multiply_mpc(a: Node, b: Node, prf_keys: Node) -> Result<Node> {
-    general_multiply_mpc(CustomOperation::new(MultiplyMPC {}), a, b, prf_keys, false)
-}
-
-fn gemm_mpc(a: Node, b: Node, prf_keys: Node) -> Result<Node> {
-    general_multiply_mpc(
-        CustomOperation::new(GemmMPC {
-            transpose_a: false,
-            transpose_b: true,
-        }),
-        a,
-        b,
-        prf_keys,
-        false,
-    )
-}
-
-fn mixed_multiply_mpc(a: Node, b: Node, prf_keys: Node) -> Result<Node> {
-    general_multiply_mpc(
-        CustomOperation::new(MixedMultiplyMPC {}),
-        a,
-        b,
-        prf_keys,
-        true,
-    )
-}
-
-fn add_mpc(a: Node, b: Node) -> Result<Node> {
-    a.get_graph()
-        .custom_op(CustomOperation::new(AddMPC {}), vec![a, b])
-}
-
-fn subtract_mpc(a: Node, b: Node) -> Result<Node> {
-    a.get_graph()
-        .custom_op(CustomOperation::new(SubtractMPC {}), vec![a, b])
-}
-
-fn reveal_array(a: Node, party_id: u64) -> Result<Node> {
-    // Shares with IDs party_id and party_id + 1 belong to the given party.
-    // The only missing share (when PARTIES = 3) is the share with ID = party_id - 1.
+fn reveal_array_from_3_out_of_3(a: Node, party_id: u64) -> Result<Node> {
+    // Share with party_id ID belongs to the given party.
+    // The missing shares (when PARTIES = 3) are the shares with IDs equal to party_id - 1 and party_id + 1.
     let next_id = (party_id + 1) % PARTIES as u64;
     let previous_id = (party_id + PARTIES as u64 - 1) % PARTIES as u64;
 
-    let missing_share = a
+    let missing_share1 = a
         .tuple_get(previous_id)?
         .nop()?
         .add_annotation(NodeAnnotation::Send(previous_id, party_id))?;
 
+    let missing_share2 = a
+        .tuple_get(next_id)?
+        .nop()?
+        .add_annotation(NodeAnnotation::Send(next_id, party_id))?;
+
     a.tuple_get(party_id)?
-        .add(a.tuple_get(next_id)?)?
-        .add(missing_share)
+        .add(missing_share1)?
+        .add(missing_share2)
 }
 
 fn sum_named_columns(a: Node, b: Node) -> Result<Node> {
@@ -414,7 +367,7 @@ fn mask_column(column: Node, column_mask: Node, prf_keys: Node) -> Result<Node> 
     let column_mask = reshape_shared_array(column_mask, array_type(mask_shape, BIT))?;
 
     if t.get_scalar_type() == BIT {
-        multiply_mpc(column, column_mask, prf_keys)
+        multiply_mpc(column, column_mask, prf_keys, true)
     } else {
         mixed_multiply_mpc(column, column_mask, prf_keys)
     }
@@ -890,8 +843,14 @@ impl CustomOperationBody for JoinMPC {
                             lowmc_graph: Graph,
                             num_entries: u64|
          -> Result<Node> {
-            let hashed_columns =
-                gemm_mpc(merged_columns, random_hash_matrix.clone(), prf_keys.clone())?;
+            let hashed_columns = gemm_mpc(
+                merged_columns,
+                random_hash_matrix.clone(),
+                false,
+                true,
+                prf_keys.clone(),
+                true,
+            )?;
 
             let oprf_set = g.call(
                 lowmc_graph,
@@ -906,6 +865,7 @@ impl CustomOperationBody for JoinMPC {
                     subtract_mpc(oprf_set, r.clone())?,
                     reshape_shared_array(null_column, array_type(vec![num_entries, 1], BIT))?,
                     prf_keys.clone(),
+                    false, // Don't reshare this multiply as the results are later revealed
                 )?,
                 r,
             )
@@ -930,9 +890,9 @@ impl CustomOperationBody for JoinMPC {
         )?;
 
         // 4. Reveal OPRF(X) to party 2
-        let revealed_oprf_set_x = reveal_array(oprf_set_x, 2)?;
+        let revealed_oprf_set_x = reveal_array_from_3_out_of_3(oprf_set_x, 2)?;
         // 5. Reveal OPRF(Y) to party 1
-        let revealed_oprf_set_y = reveal_array(oprf_set_y, 1)?;
+        let revealed_oprf_set_y = reveal_array_from_3_out_of_3(oprf_set_y, 1)?;
 
         // 6. Parties 1 and 2 generate random matrices for hashing of shape [3, m, LOW_MC_BLOCK_SIZE],
         // where m = ceil(log(max(num_entries_y, num_entries_x)+1).
@@ -1120,7 +1080,7 @@ impl CustomOperationBody for JoinMPC {
             // - in other cases, the selection bit must be 0.
             // This can be computed as select_bit = eq_bit AND match_bits XOR eq_bit.
             let select_bits = add_mpc(
-                multiply_mpc(eq_bits.clone(), match_bits.clone(), prf_keys.clone())?,
+                multiply_mpc(eq_bits.clone(), match_bits.clone(), prf_keys.clone(), true)?,
                 eq_bits.clone(),
             )?;
 

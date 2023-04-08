@@ -8,9 +8,6 @@ use crate::graphs::{
 };
 use crate::inline::inline_ops::{inline_operations, InlineConfig};
 use crate::mpc::mpc_apply_permutation::ApplyPermutationMPC;
-use crate::mpc::mpc_arithmetic::{
-    AddMPC, DotMPC, MatmulMPC, MixedMultiplyMPC, MultiplyMPC, SubtractMPC,
-};
 use crate::mpc::mpc_conversion::{A2BMPC, B2AMPC};
 use crate::mpc::mpc_truncate::{TruncateMPC, TruncateMPC2K};
 use crate::optimizer::optimize::optimize_context;
@@ -18,9 +15,10 @@ use crate::optimizer::optimize::optimize_context;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
-use super::mpc_arithmetic::GemmMPC;
+use super::mpc_arithmetic::{add_mpc, general_multiply_mpc, subtract_mpc};
 use super::mpc_psi::JoinMPC;
 use super::mpc_radix_sort::RadixSortMPC;
+use super::resharing::{get_nodes_to_reshare, reshare};
 
 // We implement the ABY3 protocol, which has 3 parties involved
 pub const PARTIES: usize = 3;
@@ -217,7 +215,7 @@ pub(super) fn get_zero_shares(g: Graph, prf_keys: Node, t: Type) -> Result<Vec<N
 /// a Boolean value indicating whether PRF keys should be used for multiplication,
 /// a Boolean value indicating whether PRF keys should be used for B2A.
 /// a Boolean value indicating whether PRF keys should be used for Truncate2k.
-fn propagate_private_annotations(
+pub(super) fn propagate_private_annotations(
     graph: Graph,
     is_input_private: Vec<bool>,
 ) -> Result<(HashSet<Node>, bool, bool, bool)> {
@@ -344,6 +342,10 @@ fn propagate_private_annotations(
     ))
 }
 
+pub(super) fn is_array_shared(array: &Node) -> Result<bool> {
+    Ok(array.get_type()?.is_tuple())
+}
+
 pub(super) fn compile_to_mpc_graph(
     in_graph: Graph,
     is_input_private: Vec<bool>,
@@ -451,9 +453,11 @@ pub(super) fn compile_to_mpc_graph(
         out_graph.create_tuple(result_shares)
     };
 
+    let nodes_to_reshare = get_nodes_to_reshare(&in_graph, &private_nodes)?;
+
     for node in in_graph.get_nodes() {
         let op = node.get_operation();
-        let new_node = match op.clone() {
+        let mut new_node = match op.clone() {
             Operation::Input(_) => apply_op(node.clone(), op, vec![], vec![])?,
             Operation::Add | Operation::Subtract => {
                 let dependencies = node.get_node_dependencies();
@@ -461,75 +465,25 @@ pub(super) fn compile_to_mpc_graph(
                 let input1 = dependencies[1].clone();
                 let new_input0 = out_mapping.get_node(input0);
                 let new_input1 = out_mapping.get_node(input1);
-                let custom_op = match op.clone() {
-                    Operation::Add => CustomOperation::new(AddMPC {}),
-                    Operation::Subtract => CustomOperation::new(SubtractMPC {}),
+                match op.clone() {
+                    Operation::Add => add_mpc(new_input0, new_input1)?,
+                    Operation::Subtract => subtract_mpc(new_input0, new_input1)?,
                     _ => panic!("Should not be here"),
-                };
-                out_graph.custom_op(custom_op, vec![new_input0.clone(), new_input1.clone()])?
+                }
             }
-            Operation::Multiply | Operation::MixedMultiply | Operation::Dot | Operation::Matmul => {
+            Operation::Multiply
+            | Operation::MixedMultiply
+            | Operation::Dot
+            | Operation::Matmul
+            | Operation::Gemm(_, _) => {
                 let dependencies = node.get_node_dependencies();
                 let input0 = dependencies[0].clone();
                 let input1 = dependencies[1].clone();
                 let new_input0 = out_mapping.get_node(input0.clone());
                 let new_input1 = out_mapping.get_node(input1.clone());
-                let custom_op = match op.clone() {
-                    Operation::Multiply => CustomOperation::new(MultiplyMPC {}),
-                    Operation::MixedMultiply => CustomOperation::new(MixedMultiplyMPC {}),
-                    Operation::Dot => CustomOperation::new(DotMPC {}),
-                    Operation::Matmul => CustomOperation::new(MatmulMPC {}),
-                    _ => panic!("Should not be here"),
-                };
-
-                if (private_nodes.contains(&input0) || op == Operation::MixedMultiply)
-                    && private_nodes.contains(&input1)
-                {
-                    // If both inputs are private, the MPC protocol requires invoking PRFs.
-                    // Thus, PRF keys must be provided.
-                    let keys = match prf_keys_mul {
-                        Some(ref k) => k.clone(),
-                        None => {
-                            return Err(runtime_error!("Propagation of annotations failed"));
-                        }
-                    };
-                    out_graph.custom_op(
-                        custom_op,
-                        vec![new_input0.clone(), new_input1.clone(), keys],
-                    )?
-                } else {
-                    out_graph.custom_op(custom_op, vec![new_input0.clone(), new_input1.clone()])?
-                }
-            }
-            Operation::Gemm(transpose_a, transpose_b) => {
-                let dependencies = node.get_node_dependencies();
-                let input0 = dependencies[0].clone();
-                let input1 = dependencies[1].clone();
-                let new_input0 = out_mapping.get_node(input0.clone());
-                let new_input1 = out_mapping.get_node(input1.clone());
-                let custom_op = CustomOperation::new(GemmMPC {
-                    transpose_a,
-                    transpose_b,
-                });
-
-                if (private_nodes.contains(&input0) || op == Operation::MixedMultiply)
-                    && private_nodes.contains(&input1)
-                {
-                    // If both inputs are private, the MPC protocol requires invoking PRFs.
-                    // Thus, PRF keys must be provided.
-                    let keys = match prf_keys_mul {
-                        Some(ref k) => k.clone(),
-                        None => {
-                            return Err(runtime_error!("Propagation of annotations failed"));
-                        }
-                    };
-                    out_graph.custom_op(
-                        custom_op,
-                        vec![new_input0.clone(), new_input1.clone(), keys],
-                    )?
-                } else {
-                    out_graph.custom_op(custom_op, vec![new_input0.clone(), new_input1.clone()])?
-                }
+                // Don't reshare the product node.
+                // Let compiler to check the following nodes and decide.
+                general_multiply_mpc(new_input0, new_input1, op, prf_keys_mul.clone(), false)?
             }
             Operation::Join(join_t, headers) => {
                 let dependencies = node.get_node_dependencies();
@@ -739,6 +693,18 @@ pub(super) fn compile_to_mpc_graph(
             }
         };
         if private_nodes.contains(&node) {
+            new_node = if nodes_to_reshare.contains(&node) {
+                // Node is 3-out-of-3 and needs resharing to 2-out-of-3 sharing
+                let keys_mul = match prf_keys_mul {
+                    Some(ref k) => k.clone(),
+                    None => {
+                        return Err(runtime_error!("Propagation of annotations failed"));
+                    }
+                };
+                reshare(&new_node, &keys_mul)?
+            } else {
+                new_node
+            };
             new_node.add_annotation(NodeAnnotation::Private)?;
         }
         out_mapping.insert_node(node, new_node);
@@ -2071,6 +2037,114 @@ mod tests {
 
         let c = uniquify_prf_id(c)?;
         assert!(check_prf_id(c).is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn test_resharing() -> Result<()> {
+        {
+            let c = create_context()?;
+            let g = c.create_graph()?;
+            let i1 = g.input(array_type(vec![2, 10], BIT))?;
+            let i2 = g.input(array_type(vec![10, 3], BIT))?;
+            let prod = i1.matmul(i2)?;
+            let out = prod.sum(vec![0])?;
+            out.set_as_output()?;
+            g.finalize()?;
+            g.set_as_main()?;
+            c.finalize()?;
+
+            let shared_nodes = propagate_private_annotations(g.clone(), vec![true, true])?.0;
+            let reshared_nodes = get_nodes_to_reshare(&g, &shared_nodes)?;
+
+            assert!(reshared_nodes.len() == 1);
+            assert!(reshared_nodes.contains(&out));
+
+            let shared_nodes = propagate_private_annotations(g.clone(), vec![false, true])?.0;
+            let reshared_nodes = get_nodes_to_reshare(&g, &shared_nodes)?;
+
+            assert!(reshared_nodes.len() == 0);
+
+            let shared_nodes = propagate_private_annotations(g.clone(), vec![false, false])?.0;
+            let reshared_nodes = get_nodes_to_reshare(&g, &shared_nodes)?;
+
+            assert!(reshared_nodes.len() == 0);
+        }
+
+        {
+            let c = create_context()?;
+            let g = c.create_graph()?;
+            let i1 = g.input(array_type(vec![2, 10], BIT))?;
+            let i2 = g.input(array_type(vec![10, 3], BIT))?;
+            let prod = i1.matmul(i2)?;
+            let i3 = g.input(array_type(vec![3, 4], BIT))?;
+            let out = prod.matmul(i3)?;
+            out.set_as_output()?;
+            g.finalize()?;
+            g.set_as_main()?;
+            c.finalize()?;
+
+            let shared_nodes = propagate_private_annotations(g.clone(), vec![true, true, true])?.0;
+            let reshared_nodes = get_nodes_to_reshare(&g, &shared_nodes)?;
+
+            assert!(reshared_nodes.len() == 2);
+            assert!(reshared_nodes.contains(&prod));
+            assert!(reshared_nodes.contains(&out));
+
+            let shared_nodes = propagate_private_annotations(g.clone(), vec![false, true, true])?.0;
+            let reshared_nodes = get_nodes_to_reshare(&g, &shared_nodes)?;
+
+            assert!(reshared_nodes.len() == 1);
+            assert!(reshared_nodes.contains(&out));
+
+            let shared_nodes = propagate_private_annotations(g.clone(), vec![true, true, false])?.0;
+            let reshared_nodes = get_nodes_to_reshare(&g, &shared_nodes)?;
+
+            assert!(reshared_nodes.len() == 1);
+            assert!(reshared_nodes.contains(&prod));
+        }
+        {
+            let c = create_context()?;
+            let g = c.create_graph()?;
+            let i1 = g.input(array_type(vec![2, 10], BIT))?;
+            let i2 = g.input(array_type(vec![10, 3], BIT))?;
+            let prod12 = i1.matmul(i2)?;
+            let i3 = g.input(array_type(vec![2, 4], BIT))?;
+            let i4 = g.input(array_type(vec![4, 3], BIT))?;
+            let prod34 = i3.matmul(i4)?;
+            let out = prod12.add(prod34)?;
+            out.set_as_output()?;
+            g.finalize()?;
+            g.set_as_main()?;
+            c.finalize()?;
+
+            let shared_nodes = propagate_private_annotations(g.clone(), vec![true; 4])?.0;
+            let reshared_nodes = get_nodes_to_reshare(&g, &shared_nodes)?;
+
+            assert!(reshared_nodes.len() == 1);
+            assert!(reshared_nodes.contains(&out));
+        }
+        {
+            let c = create_context()?;
+            let g = c.create_graph()?;
+            let i1 = g.input(array_type(vec![2, 10], INT32))?;
+            let i2 = g.input(array_type(vec![10, 3], INT32))?;
+            let prod12 = i1.matmul(i2)?;
+            let i3 = g.input(array_type(vec![2, 3], INT32))?;
+            let s123 = prod12.add(i3)?;
+            let out = s123.a2b()?;
+            out.set_as_output()?;
+            g.finalize()?;
+            g.set_as_main()?;
+            c.finalize()?;
+
+            let shared_nodes = propagate_private_annotations(g.clone(), vec![true; 3])?.0;
+            let reshared_nodes = get_nodes_to_reshare(&g, &shared_nodes)?;
+
+            assert!(reshared_nodes.len() == 1);
+            assert!(reshared_nodes.contains(&s123));
+        }
+
         Ok(())
     }
 }
