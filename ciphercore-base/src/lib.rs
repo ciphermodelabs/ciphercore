@@ -21,8 +21,7 @@
 //!    - [Matrix multiplication](#matrix-multiplication)
 //!    - [Millionaires' problem](#millionaires-problem)
 //!    - [Minimum of an array](#minimum-of-an-array)
-//!    - [Sorting](#sorting)
-//!    - [Set intersection](#set-intersection)
+//!    - [Sort](#sort)
 //! - [Graph creation and management](#graph-creation-and-management)
 //!    - [Overview of CipherCore operations](#overview-of-ciphercore-operations)
 //!       - [Data types](#data-types)
@@ -319,8 +318,7 @@
 //! * matrix multiplication,
 //! * Millionaires' problem,
 //! * minimum of an array,
-//! * sorting using [Batcher's sorting algorithm](https://math.mit.edu/~shor/18.310/batcher.pdf),
-//! * set intersection using [the HEK algorithm](https://homes.luddy.indiana.edu/yh33/mypub/psi.pdf).
+//! * sort using [Radix Sort MPC protocol](https://eprint.iacr.org/2019/695.pdf),
 //!
 //! ## Matrix multiplication
 //!
@@ -351,23 +349,10 @@
 //!     <img src="https://raw.githubusercontent.com/ciphermodelabs/ciphercore/main/reference/images/minimum.svg" alt="Minimum Graph" width="30%"/>
 //! </p>
 //!
-//! ## Sorting
+//! ## Sort
 //!
 //! Given an array of integers, this example sorts them in an ascending order.
-//! The serialization binary generates the following graph corresponding to the Batcher's sorting network.
-//!
-//! <p align = "center">
-//!     <img src="https://raw.githubusercontent.com/ciphermodelabs/ciphercore/main/reference/images/sorting_graph_rot90.svg" alt="Sorting Graph" width="100%"/>
-//! </p>
-//!
-//! ## Set intersection
-//!
-//! Given two arrays of integers without duplicate elements, this example computes their intersection.
-//! The serialization binary generates the following graph corresponding to [the sorting-based algorithm of Huang, Evans and Katz](https://homes.luddy.indiana.edu/yh33/mypub/psi.pdf).
-//!
-//! <p align = "center">
-//!     <img src="https://raw.githubusercontent.com/ciphermodelabs/ciphercore/main/reference/images/set_intersection_graph_rot90.svg" alt="Set Intersection Graph" width="100%"/>
-//! </p>
+//! The serialization binary generates the following graph corresponding to [the Radix Sort MPC protocol](https://eprint.iacr.org/2019/695.pdf).
 //!
 //! # Graph creation and management
 //!
@@ -633,6 +618,7 @@
 //! * composing values into [vectors](https://docs.rs/ciphercore-base/latest/ciphercore_base/graphs/struct.Graph.html#method.create_vector), [tuples](https://docs.rs/ciphercore-base/latest/ciphercore_base/graphs/struct.Graph.html#method.create_tuple) or [named tuples](https://docs.rs/ciphercore-base/latest/ciphercore_base/graphs/struct.Graph.html#method.create_named_tuple),
 //! * extracting sub-arrays ([get](https://docs.rs/ciphercore-base/latest/ciphercore_base/graphs/struct.Graph.html#method.get), [get_slice](https://docs.rs/ciphercore-base/latest/ciphercore_base/graphs/struct.Graph.html#method.get_slice)), vector elements ([vector_get](https://docs.rs/ciphercore-base/latest/ciphercore_base/graphs/struct.Graph.html#method.vector_get)) or tuple elements ([tuple_get](https://docs.rs/ciphercore-base/latest/ciphercore_base/graphs/struct.Graph.html#method.tuple_get), [named_tuple_get](https://docs.rs/ciphercore-base/latest/ciphercore_base/graphs/struct.Graph.html#method.named_tuple_get)),
 //! * [permutation](https://docs.rs/ciphercore-base/latest/ciphercore_base/graphs/struct.Graph.html#method.permute_axes) of arrays,
+//! * [sort](https://docs.rs/ciphercore-base/latest/ciphercore_base/graphs/struct.Graph.html#method.sort) of arrays by the key,
 //! * [repetition of values](https://docs.rs/ciphercore-base/latest/ciphercore_base/graphs/struct.Graph.html#method.repeat),
 //! * [reshaping](https://docs.rs/ciphercore-base/latest/ciphercore_base/graphs/struct.Graph.html#method.reshape) values to other compatible types,
 //! * [joining arrays](https://docs.rs/ciphercore-base/latest/ciphercore_base/graphs/struct.Graph.html#method.stack),
@@ -679,7 +665,7 @@
 //! * [multiplexer](https://docs.rs/ciphercore-base/latest/ciphercore_base/ops/multiplexer/struct.Mux.html),
 //! * [multiplicative inverse](https://docs.rs/ciphercore-base/latest/ciphercore_base/ops/newton_inversion/struct.NewtonInversion.html),
 //! * [inverse square root](https://docs.rs/ciphercore-base/latest/ciphercore_base/ops/inverse_sqrt/struct.InverseSqrt.html),
-//! * [sorting of binary strings](https://docs.rs/ciphercore-base/latest/ciphercore_base/ops/sorting/struct.Sort.html).
+//! * [sorting by integer key](https://docs.rs/ciphercore-base/latest/ciphercore_base/ops/integer_key_sort/struct.SortByIntegerKey.html).
 //!
 //! # CLI Tools
 //!

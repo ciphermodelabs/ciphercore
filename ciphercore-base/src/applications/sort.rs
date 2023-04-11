@@ -1,103 +1,77 @@
 //! Sorting of an array
 use crate::custom_ops::CustomOperation;
-use crate::data_types::{array_type, scalar_size_in_bits, ScalarType, Type, BIT};
+use crate::data_types::{array_type, ScalarType, BIT};
 use crate::errors::Result;
 use crate::graphs::*;
-use crate::ops::sorting::Sort;
+use crate::ops::integer_key_sort::SortByIntegerKey;
 
-/// Creates a graph that sorts an array of bitstrings of length b using [Batcher's algorithm](https://math.mit.edu/~shor/18.310/batcher.pdf).
+/// Creates a graph that sorts an array using [Radix Sort MPC protocol](https://eprint.iacr.org/2019/695.pdf).
 ///
 /// # Arguments
 ///
 /// * `context` - context where a sorting graph should be created
-/// * `k` - number of elements of an array (i.e., 2<sup>k</sup>)
-/// * `b` - length of input bitstrings
-/// * `signed_comparison` - Boolean value indicating whether input bitstrings represent signed or unsigned integers
-///
-/// # Returns
-///
-/// Graph that sorts an array of bitstrings
-pub fn create_binary_batchers_sorting_graph(
-    context: Context,
-    k: u32,
-    b: u64,
-    signed_comparison: bool,
-) -> Result<Graph> {
-    // Create a graph in a given context that will be used for sorting
-    let b_graph = context.create_graph()?;
-    // Number of bit strings equal to 2<sup>k</sup>
-    let n = 2_u64.pow(k);
-    // Create an input node accepting binary arrays of shape [n, b]
-    let i_a = b_graph.input(Type::Array(vec![n, b], BIT))?;
-    // Sort bitstrings of length b
-    let sorted_node = b_graph.custom_op(
-        CustomOperation::new(Sort {
-            k,
-            b,
-            signed_comparison,
-        }),
-        vec![i_a],
-    )?;
-    // Before computation every graph should be finalized, which means that it should have a designated output node
-    // This can be done by calling `g.set_output_node(output)?` or as below
-    b_graph.set_output_node(sorted_node)?;
-    // Finalization checks that the output node of the graph g is set. After finalization the graph can't be changed
-    b_graph.finalize()?;
-
-    Ok(b_graph)
-}
-
-/// Creates a graph that sorts an array using [Batcher's algorithm](https://math.mit.edu/~shor/18.310/batcher.pdf).
-///
-/// # Arguments
-///
-/// * `context` - context where a sorting graph should be created
-/// * `k` - number of elements of an array (i.e., 2<sup>k</sup>)
+/// * `n` - number of elements of an array
 /// * `st` - scalar type of array elements
 ///
 /// # Returns
 ///
 /// Graph that sorts an array
-pub fn create_batchers_sorting_graph(context: Context, k: u32, st: ScalarType) -> Result<Graph> {
+pub fn create_sort_graph(context: Context, n: u64, st: ScalarType) -> Result<Graph> {
     // Create a graph in a given context that will be used for sorting
-    let b_graph = context.create_graph()?;
-    // To create inputs nodes, compute the bitsize of the input scalar type
-    let b = scalar_size_in_bits(st);
-    // Boolean value indicating whether input bitstrings represent signed or unsigned integers
-    let signed_comparison = st.is_signed();
-    // Number of bit strings equal to 2<sup>k</sup>
-    let n = 2_u64.pow(k);
+    let graph = context.create_graph()?;
     // Define the input node with an array of n integers
-    let i = b_graph.input(array_type(vec![n], st))?;
-    // If the given scalar type is non-binary, convert input integers to bits.
-    let i_a = if st == BIT {
-        // Sort custom operation accepts only binary arrays of shape [n, b]
-        i.reshape(array_type(vec![n, 1], BIT))?
-    } else {
-        i.a2b()?
-    };
-    // Sort bitstrings of length b
-    let sorted_node = b_graph.custom_op(
-        CustomOperation::new(Sort {
-            k,
-            b,
-            signed_comparison,
-        }),
-        vec![i_a],
+    let input = graph.input(array_type(vec![n], st))?;
+    // Create named a tuple as required by the interface.
+    let key = "key".to_string();
+    let node = graph.create_named_tuple(vec![(key.clone(), input)])?;
+    // Sort an array
+    let sorted_node = graph.custom_op(
+        CustomOperation::new(SortByIntegerKey { key: key.clone() }),
+        vec![node],
     )?;
-    // Convert output from the binary form to the arithmetic form
-    let output = if st != BIT {
-        sorted_node.b2a(st)?
-    } else {
-        sorted_node
-    };
+    // Extract result from tuple by key.
+    let output = sorted_node.named_tuple_get(key)?;
+
     // Before computation every graph should be finalized, which means that it should have a designated output node
     // This can be done by calling `g.set_output_node(output)?` or as below
-    b_graph.set_output_node(output)?;
+    graph.set_output_node(output)?;
     // Finalization checks that the output node of the graph g is set. After finalization the graph can't be changed
-    b_graph.finalize()?;
+    graph.finalize()?;
 
-    Ok(b_graph)
+    Ok(graph)
+}
+
+/// Creates a graph that sorts an array of bitstrings using [Radix Sort MPC protocol](https://eprint.iacr.org/2019/695.pdf).
+///
+/// # Arguments
+///
+/// * `context` - context where a sorting graph should be created
+/// * `n` - number of elements of an array
+/// * `b` - length of bitstrings
+///
+/// # Returns
+///
+/// Graph that sorts an array
+pub fn create_binary_sort_graph(context: Context, n: u64, b: u64) -> Result<Graph> {
+    // Create a graph in a given context that will be used for sorting
+    let graph = context.create_graph()?;
+    // Define the input node with an array of n integers
+    let input = graph.input(array_type(vec![n, b], BIT))?;
+    // Create a named tuple as required by the interface.
+    let key = "key".to_string();
+    let node = graph.create_named_tuple(vec![(key.clone(), input)])?;
+    // Sort an array
+    let sorted_node = node.sort(key.clone())?;
+    // Extract the result from the tuple by key.
+    let output = sorted_node.named_tuple_get(key)?;
+
+    // Before computation every graph should be finalized, which means that it should have a designated output node
+    // This can be done by calling `g.set_output_node(output)?` or as below
+    graph.set_output_node(output)?;
+    // Finalization checks that the output node of the graph g is set. After finalization the graph can't be changed
+    graph.finalize()?;
+
+    Ok(graph)
 }
 
 #[cfg(test)]
@@ -116,11 +90,11 @@ mod tests {
     ///
     /// # Arguments
     ///
-    /// * `k` - number of elements of an array (i.e., 2<sup>k</sup>)
+    /// * `n` - number of elements of an array
     /// * `st` - scalar type of array elements
-    fn test_large_vec_batchers_sorting(k: u32, st: ScalarType) -> Result<()> {
+    fn test_large_vec_sort(n: u64, st: ScalarType) -> Result<()> {
         let context = create_context()?;
-        let graph: Graph = create_batchers_sorting_graph(context.clone(), k, st)?;
+        let graph: Graph = create_sort_graph(context.clone(), n, st)?;
         context.set_main_graph(graph.clone())?;
         context.finalize()?;
 
@@ -128,7 +102,7 @@ mod tests {
 
         let seed = b"\xB6\xD7\x1A\x2F\x88\xC1\x12\xBA\x3F\x2E\x17\xAB\xB7\x46\x15\x9A";
         let mut prng = PRNG::new(Some(seed.clone()))?;
-        let array_t: Type = array_type(vec![2_u64.pow(k)], st);
+        let array_t = array_type(vec![n], st);
         let data = prng.get_random_value(array_t.clone())?;
         if st.is_signed() {
             let data_v_i64 = data.to_flattened_array_i64(array_t.clone())?;
@@ -154,11 +128,11 @@ mod tests {
     ///
     /// # Arguments
     ///
-    /// * `k` - number of elements of an array (i.e., 2<sup>k</sup>)
+    /// * `n` - number of elements of an array
     /// * `st` - scalar type of array elements
-    fn test_batchers_sorting_graph_helper(k: u32, st: ScalarType, data: Vec<u64>) -> Result<()> {
+    fn test_sort_graph_helper(n: u64, st: ScalarType, data: Vec<u64>) -> Result<()> {
         let context = create_context()?;
-        let graph: Graph = create_batchers_sorting_graph(context.clone(), k, st)?;
+        let graph: Graph = create_sort_graph(context.clone(), n, st)?;
         context.set_main_graph(graph.clone())?;
         context.finalize()?;
 
@@ -177,26 +151,26 @@ mod tests {
     /// Parameters varied are k, st and the input data could be unsorted,
     /// sorted or sorted in a decreasing order.
     #[test]
-    fn test_wellformed_batchers_sorting_graph() -> Result<()> {
+    fn test_sort_graph() -> Result<()> {
         let mut data = vec![65535, 0, 2, 32768];
-        test_batchers_sorting_graph_helper(2, UINT16, data.clone())?;
+        test_sort_graph_helper(4, UINT16, data.clone())?;
         data.sort_unstable();
-        test_batchers_sorting_graph_helper(2, UINT16, data.clone())?;
+        test_sort_graph_helper(4, UINT16, data.clone())?;
         data.sort_by_key(|w| Reverse(*w));
-        test_batchers_sorting_graph_helper(2, UINT16, data.clone())?;
+        test_sort_graph_helper(4, UINT16, data.clone())?;
 
         let data = vec![548890456, 402403639693304868, u64::MAX, 999790788];
-        test_batchers_sorting_graph_helper(2, UINT64, data.clone())?;
+        test_sort_graph_helper(4, UINT64, data.clone())?;
 
         let data = vec![643082556];
-        test_batchers_sorting_graph_helper(0, UINT32, data.clone())?;
+        test_sort_graph_helper(1, UINT32, data.clone())?;
 
         let data = vec![1, 0, 0, 1];
-        test_batchers_sorting_graph_helper(2, BIT, data.clone())?;
+        test_sort_graph_helper(4, BIT, data.clone())?;
 
-        test_large_vec_batchers_sorting(7, BIT)?;
-        test_large_vec_batchers_sorting(4, UINT64)?;
-        test_large_vec_batchers_sorting(4, INT64)?;
+        test_large_vec_sort(1000, BIT)?;
+        test_large_vec_sort(1000, UINT64)?;
+        test_large_vec_sort(1000, INT64)?;
 
         Ok(())
     }

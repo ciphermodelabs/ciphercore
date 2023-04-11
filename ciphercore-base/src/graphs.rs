@@ -820,7 +820,6 @@ impl Node {
     /// let a = g.create_named_tuple(vec![("key".to_string(), k), ("value1".to_string(), v1), ("value2".to_string(), v2)]).unwrap();
     /// let a = a.sort("key".to_string()).unwrap();
     /// ```
-    #[doc(hidden)]
     pub fn sort(&self, key: String) -> Result<Node> {
         self.get_graph().sort(self.clone(), key)
     }
@@ -1947,7 +1946,6 @@ impl Graph {
     /// let a = g.create_named_tuple(vec![("key".to_string(), k), ("value1".to_string(), v1), ("value2".to_string(), v2)]).unwrap();
     /// let a = g.sort(a, "key".to_string()).unwrap();
     /// ```
-    #[doc(hidden)]
     pub fn sort(&self, a: Node, key: String) -> Result<Node> {
         self.add_node(vec![a], vec![], Operation::Sort(key))
     }
