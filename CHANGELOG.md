@@ -5,6 +5,7 @@
 * **Apply permutation** Primitive operation that permutes private or public data using a private or public permutation.
 * **General matrix multiplication** Primitive operation `Gemm` that generalizes `Matmul`.
 * **Division** Two algorithms implemented as custom operations: Approximate GoldschmidtDivision and slow but exact LongDivision.
+* **Sort** Efficient radix sort with O(n) complexity from <https://eprint.iacr.org/2019/695.pdf>.
 
 # Changes in CipherCore 0.1.2
 

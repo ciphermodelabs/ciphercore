@@ -1,12 +1,11 @@
 //! Various comparison functions for signed and unsigned integers including greater-than, less-than, greater-than-equal-to, less-than-equal-to, equal, not-equal.
 use crate::custom_ops::{CustomOperation, CustomOperationBody, Not};
-use crate::data_types::{scalar_type, ArrayShape, Type, BIT};
+use crate::data_types::{array_type, scalar_type, ArrayShape, Type, BIT};
+use crate::data_values::Value;
 use crate::errors::Result;
 use crate::graphs::*;
 use crate::ops::utils::pull_out_bits;
 use crate::ops::utils::{expand_dims, validate_arguments_in_broadcast_bit_ops};
-use crate::typed_value::TypedValue;
-use crate::typed_value_operations::TypedValueArrayOperations;
 use std::cmp::max;
 
 use serde::{Deserialize, Serialize};
@@ -329,7 +328,7 @@ fn expand_to_same_dims(a: Node, b: Node) -> Result<(Node, Node)> {
 ///
 /// Here we xor the MSB bit with 1 to flip it. It is more efficient than do slice + concat.
 /// We rely on broadcasting to avoid the huge constants in graph.
-fn flip_msb(ip: Node) -> Result<Node> {
+pub(super) fn flip_msb(ip: Node) -> Result<Node> {
     ip.add(get_msb_flip_constant(
         ip.get_type()?.get_shape(),
         &ip.get_graph(),
@@ -337,13 +336,15 @@ fn flip_msb(ip: Node) -> Result<Node> {
 }
 
 fn get_msb_flip_constant(shape: ArrayShape, g: &Graph) -> Result<Node> {
-    let mut msb_mask = vec![0; shape[0] as usize];
-    msb_mask[shape[0] as usize - 1] = 1;
-    let tv = TypedValue::from_ndarray(ndarray::Array::from_vec(msb_mask).into_dyn(), BIT)?;
-
-    let mut msb_mask = g.constant(tv.t, tv.value)?;
+    let n = shape[shape.len() - 1] as usize;
+    let mut msb_mask = vec![0; n];
+    msb_mask[n - 1] = 1;
+    let mut msb_mask = g.constant(
+        array_type(vec![n as u64], BIT),
+        Value::from_flattened_array(&msb_mask, BIT)?,
+    )?;
     while msb_mask.get_type()?.get_shape().len() < shape.len() {
-        msb_mask = unsqueeze(msb_mask, -1)?;
+        msb_mask = unsqueeze(msb_mask, 0)?;
     }
     Ok(msb_mask)
 }
@@ -353,13 +354,12 @@ fn get_msb_flip_constant(shape: ArrayShape, g: &Graph) -> Result<Node> {
 ///
 /// See [`flip_msb`] and [`ComparisonResult`] for details.
 fn preprocess_input(signed_comparison: bool, node: Node) -> Result<Node> {
-    let node = pull_out_bits(node)?;
-
-    if signed_comparison {
-        flip_msb(node)
+    let node = if signed_comparison {
+        flip_msb(node)?
     } else {
-        Ok(node)
-    }
+        node
+    };
+    pull_out_bits(node)
 }
 
 fn preprocess_inputs(signed_comparison: bool, a: Node, b: Node) -> Result<(Node, Node)> {
