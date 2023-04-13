@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 ///
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub(super) struct TruncateMPC {
-    pub scale: u64,
+    pub scale: u128,
 }
 
 #[typetag::serde]
@@ -293,7 +293,7 @@ impl CustomOperationBody for TruncateMPC2K {
             //    Truncate(input + modulus/4, 2^k) = Truncate(input, 2^k) + modulus/2^(k+2)
             if st.is_signed() {
                 // modulus/4
-                let mod_fraction = constant_scalar(&g, 1u64 << (st_size - 2), st)?;
+                let mod_fraction = constant_scalar(&g, 1u128 << (st_size - 2), st)?;
                 share.add(mod_fraction)?
             } else {
                 share
@@ -309,7 +309,7 @@ impl CustomOperationBody for TruncateMPC2K {
         // 2. Party 2 extracts the MSB of r in the arithmetic form (r_msb).
         let r_msb = {
             // (0,0, ..., 1)
-            let mask = constant_scalar(&g, 1u64 << (st_size - 1), unsigned_st)?.a2b()?;
+            let mask = constant_scalar(&g, 1u128 << (st_size - 1), unsigned_st)?.a2b()?;
             // (0,0, ..., r_(st_size-1)) -> r_(st_size-1)*2^(st_size-1) as unsigned integer
             let r_msb_scaled = r.a2b()?.multiply(mask)?.b2a(unsigned_st)?;
             // (r_(st_size-1), 0, ..., 0) -> r_(st_size-1) of st type
@@ -319,9 +319,12 @@ impl CustomOperationBody for TruncateMPC2K {
         // 3. Party 2 removes the MSB of r and truncates the result by k bits (r_truncated = sum_(i=k)^(st_size-2) r_i * 2^(i-k))
         let r_truncated = {
             // (0, ..., 0, 1, ..., 1, 0, ..., 0) to extract r_k, r_(k+1), ..., r_(st_size-2)
-            let mask =
-                constant_scalar(&g, (1u64 << (st_size - 1)) - (1u64 << self.k), unsigned_st)?
-                    .a2b()?;
+            let mask = constant_scalar(
+                &g,
+                (1u128 << (st_size - 1)) - (1u128 << self.k),
+                unsigned_st,
+            )?
+            .a2b()?;
             // r_k + r_(k+1) * 2 + ... + r_(st_size-2) * 2^(st_size-2-k)
             r.a2b()?.multiply(mask)?.b2a(st)?.truncate(1 << self.k)?
         };
@@ -378,7 +381,7 @@ impl CustomOperationBody for TruncateMPC2K {
             let mask = g
                 .constant(
                     scalar_type(st),
-                    Value::from_scalar((1u64 << (st_size - 1 - self.k)) - 1, st)?,
+                    Value::from_scalar((1u128 << (st_size - 1 - self.k)) - 1, st)?,
                 )?
                 .a2b()?;
             c_truncated.a2b()?.multiply(mask)?.b2a(st)?
@@ -406,7 +409,7 @@ impl CustomOperationBody for TruncateMPC2K {
         // 11. Parties 0 and 1 compute 2-out-of-2 shares of y' = c_truncated_mod - r_truncated + b * 2^(st_size-1-k).
         //     This value is equal to the desired result floor(x/2^k) + w.
         // 2^(st_size-1-k)
-        let power2 = constant_scalar(&g, 1u64 << (st_size - 1 - self.k), st)?;
+        let power2 = constant_scalar(&g, 1u128 << (st_size - 1 - self.k), st)?;
         // y' = c_truncated_mod - r_truncated + b * 2^(st_size-1-k)
         // This is 2-out-of-2 sharing of the result
         let y_prime0 = b0
@@ -431,7 +434,7 @@ impl CustomOperationBody for TruncateMPC2K {
             if st.is_signed() {
                 // 14!. If input is signed, we should remove modulus/2^(k+2) after truncation since
                 //      Truncate(input + modulus/4, 2^k) = Truncate(input, 2^k) + modulus/2^(k+2)
-                let mod_fraction = constant_scalar(&g, 1u64 << (st_size - 2 - self.k), st)?;
+                let mod_fraction = constant_scalar(&g, 1u128 << (st_size - 2 - self.k), st)?;
                 sum01.subtract(mod_fraction)?
             } else {
                 sum01
@@ -454,7 +457,7 @@ impl CustomOperationBody for TruncateMPC2K {
 mod tests {
     use super::*;
     use crate::bytes::{add_u128, subtract_vectors_u128};
-    use crate::data_types::{array_type, scalar_type, ScalarType, INT64, UINT64};
+    use crate::data_types::{array_type, scalar_type, ScalarType, INT128, UINT128};
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
     use crate::graphs::util::simple_context;
@@ -465,7 +468,7 @@ mod tests {
         t: Type,
         party_id: IOStatus,
         output_parties: Vec<IOStatus>,
-        scale: u64,
+        scale: u128,
         inline_config: InlineConfig,
     ) -> Result<Context> {
         let c = simple_context(|g| {
@@ -599,7 +602,7 @@ mod tests {
         Ok(())
     }
 
-    fn truncate_helper(st: ScalarType, scale: u64) -> Result<()> {
+    fn truncate_helper(st: ScalarType, scale: u128) -> Result<()> {
         let helper = |t: Type,
                       input: Vec<u128>,
                       input_status: IOStatus,
@@ -701,46 +704,46 @@ mod tests {
         helper_runs(vec![1000], scalar_type(st))?;
         helper_runs(vec![0, 0], array_type(vec![2], st))?;
         helper_runs(vec![2000, 255], array_type(vec![2], st))?;
-        // TODO: add tests for uint128.
+
         if scale.is_power_of_two() && !st.is_signed() {
-            // 2^63 - 1, this is a maximal UINT64 value that can be truncated without errors by TruncateMPC2K
-            helper_runs(vec![(1u128 << 63) - 1], scalar_type(st))?;
+            // 2^127 - 1, this is a maximal UINT64 value that can be truncated without errors by TruncateMPC2K
+            helper_runs(vec![(1u128 << 127) - 1], scalar_type(st))?;
         }
 
         if st.is_signed() {
             // -1
-            helper_runs(vec![u64::MAX as u128], scalar_type(st))?;
+            helper_runs(vec![u128::MAX], scalar_type(st))?;
             // -1000
-            helper_runs(vec![u64::MAX as u128 - 999], scalar_type(st))?;
+            helper_runs(vec![u128::MAX - 999], scalar_type(st))?;
             // [-10. -1024]
             helper_runs(
-                vec![u64::MAX as u128 - 9, u64::MAX as u128 - 1023],
+                vec![u128::MAX - 9, u128::MAX - 1023],
                 array_type(vec![2], st),
             )?;
             if scale.is_power_of_two() {
-                // - 2^62, this is a minimal INT32 value that can be truncated without errors by TruncateMPC2K
-                helper_runs(vec![1u128 << 62], scalar_type(st))?;
-                // 2^62-1, this is a maximal INT32 value that can be truncated without errors by TruncateMPC2K
-                helper_runs(vec![(1u128 << 62) - 1], scalar_type(st))?;
+                // - 2^126, this is a minimal INT128 value that can be truncated without errors by TruncateMPC2K
+                helper_runs(vec![-(1i128 << 126) as u128], scalar_type(st))?;
+                // 2^126-1, this is a maximal INT128 value that can be truncated without errors by TruncateMPC2K
+                helper_runs(vec![(1u128 << 126) - 1], scalar_type(st))?;
             }
         }
 
         // Probabilistic tests of TruncateMPC for big values in absolute size
         if scale != 1 && !scale.is_power_of_two() {
-            // 2^63 - 1, should fail with probability 1 - 2^(-40)
-            assert!(helper_malformed(vec![i64::MAX as u128], scalar_type(st), 40).is_err());
-            // -2^63, should fail with probability 1 - 2^(-40)
-            assert!(helper_malformed(vec![1u128 << 63], scalar_type(st), 40).is_err());
-            // [2^63 - 1, 2^63 - 2]
+            // 2^127 - 1, should fail with probability 1 - 2^(-40)
+            assert!(helper_malformed(vec![i128::MAX as u128], scalar_type(st), 40).is_err());
+            // -2^127, should fail with probability 1 - 2^(-40)
+            assert!(helper_malformed(vec![i128::MIN as u128], scalar_type(st), 40).is_err());
+            // [2^127 - 1, 2^127 - 2]
             assert!(helper_malformed(
-                vec![i64::MAX as u128, i64::MAX as u128 - 1],
+                vec![i128::MAX as u128, i128::MAX as u128 - 1],
                 array_type(vec![2], st),
                 40
             )
             .is_err());
-            // [-2^63, -2^63 + 1]
+            // [-2^127, -2^127 + 1]
             assert!(helper_malformed(
-                vec![1u128 << 63, (1u128 << 63) + 1],
+                vec![1u128 << 127, (1u128 << 127) + 1],
                 array_type(vec![2], st),
                 40
             )
@@ -751,20 +754,20 @@ mod tests {
 
     #[test]
     fn test_truncate() -> Result<()> {
-        truncate_helper(UINT64, 1)?;
-        truncate_helper(UINT64, 1 << 3)?;
-        truncate_helper(UINT64, 1 << 7)?;
-        truncate_helper(UINT64, 1 << 29)?;
-        truncate_helper(UINT64, 1 << 31)?;
+        truncate_helper(UINT128, 1)?;
+        truncate_helper(UINT128, 1 << 3)?;
+        truncate_helper(UINT128, 1 << 7)?;
+        truncate_helper(UINT128, 1 << 29)?;
+        truncate_helper(UINT128, 1 << 31)?;
 
-        truncate_helper(INT64, 1)?;
-        truncate_helper(INT64, 15)?;
-        truncate_helper(INT64, 1 << 3)?;
-        truncate_helper(INT64, 1 << 7)?;
-        truncate_helper(INT64, 1 << 29)?;
-        truncate_helper(INT64, (1 << 29) - 1)?;
+        truncate_helper(INT128, 1)?;
+        truncate_helper(INT128, 15)?;
+        truncate_helper(INT128, 1 << 3)?;
+        truncate_helper(INT128, 1 << 7)?;
+        truncate_helper(INT128, 1 << 29)?;
+        truncate_helper(INT128, (1 << 29) - 1)?;
 
-        assert!(truncate_helper(UINT64, 15).is_err());
+        assert!(truncate_helper(UINT128, 15).is_err());
         Ok(())
     }
 }

@@ -118,7 +118,7 @@ pub(crate) fn evaluate_add_subtract_multiply(
                 )?,
                 _ => panic!("Should not be here"),
             };
-            //unpack bytes from vectors of u64
+            //unpack bytes from vectors of u128
             vec_to_bytes(&result_u128, st)?
         }
         _ => {
@@ -313,9 +313,9 @@ fn evaluate_permute_axes(
     perm: ArrayShape,
     output_shape: ArrayShape,
 ) -> Result<Value> {
-    let values = value.to_flattened_array_u64(t.clone())?;
+    let values = value.to_flattened_array_u128(t.clone())?;
     let cur_shape = t.get_shape();
-    let mut result = vec![0u64; values.len()];
+    let mut result = vec![0u128; values.len()];
     for i in 0..values.len() as u64 {
         let old_index = number_to_index(i, &cur_shape);
         let mut new_index = vec![];
@@ -949,26 +949,26 @@ impl Evaluator for SimpleEvaluator {
                 let scalar_type = dependency_type.get_scalar_type();
                 let dependency_value = dependencies_values[0].clone();
                 let mut entries = if dependency_type.is_scalar() {
-                    vec![dependency_value.to_u64(scalar_type)?]
+                    vec![dependency_value.to_u128(scalar_type)?]
                 } else {
-                    dependency_value.to_flattened_array_u64(dependency_type.clone())?
+                    dependency_value.to_flattened_array_u128(dependency_type.clone())?
                 };
                 for entry in &mut entries {
                     if scalar_type.is_signed() {
                         match scalar_type.get_modulus() {
                             Some(modulus) => {
-                                let mut val = *entry as i64;
-                                if val >= (modulus / 2) as i64 {
-                                    val -= modulus as i64;
+                                let mut val = *entry as i128;
+                                if val >= (modulus / 2) as i128 {
+                                    val -= modulus as i128;
                                 }
-                                let mut res = val / (scale as i64);
+                                let mut res = val / (scale as i128);
                                 if res < 0 {
-                                    res += modulus as i64;
+                                    res += modulus as i128;
                                 }
-                                *entry = res as u64;
+                                *entry = res as u128;
                             }
                             None => {
-                                *entry = ((*entry as i64) / (scale as i64)) as u64;
+                                *entry = ((*entry as i128) / (scale as i128)) as u128;
                             }
                         }
                     } else {

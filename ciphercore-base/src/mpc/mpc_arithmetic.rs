@@ -599,7 +599,8 @@ mod tests {
     use crate::bytes::subtract_vectors_u128;
     use crate::custom_ops::run_instantiation_pass;
     use crate::data_types::{
-        array_type, scalar_type, tuple_type, ArrayShape, ScalarType, BIT, INT32, UINT32,
+        array_type, scalar_type, tuple_type, ArrayShape, ScalarType, BIT, INT128, INT32, UINT128,
+        UINT32,
     };
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
@@ -733,7 +734,7 @@ mod tests {
         let out = if let Some(m) = st.get_modulus() {
             out.iter().map(|x| x % m).collect::<Vec<_>>()
         } else {
-            out.iter().map(|x| x % 2_u128.pow(64)).collect::<Vec<_>>()
+            out
         };
         assert_eq!(out, expected);
         Ok(())
@@ -875,6 +876,24 @@ mod tests {
             vec![2],
         )
         .unwrap();
+        helper_add_subtract(
+            Operation::Add,
+            UINT128,
+            vec![vec![2, 2], vec![0, 2], vec![u128::MAX - 2, u128::MAX - 5]],
+            vec![u128::MAX, u128::MAX - 1],
+            vec![vec![2]; 3],
+            vec![2],
+        )
+        .unwrap();
+        helper_add_subtract(
+            Operation::Add,
+            INT128,
+            vec![vec![1, 2], vec![i128::MAX as u128; 2], vec![1, 1]],
+            vec![i128::MIN as u128 + 1, i128::MIN as u128 + 2],
+            vec![vec![2]; 3],
+            vec![2],
+        )
+        .unwrap();
     }
 
     #[test]
@@ -924,11 +943,29 @@ mod tests {
             vec![2],
         )
         .unwrap();
+
+        helper_add_subtract(
+            Operation::Subtract,
+            UINT128,
+            vec![vec![u128::MAX, 10], vec![5], vec![4]],
+            vec![u128::MAX - 9, 1],
+            vec![vec![2], vec![1], vec![1]],
+            vec![2],
+        )
+        .unwrap();
+        helper_add_subtract(
+            Operation::Subtract,
+            INT128,
+            vec![vec![10, 9], vec![4, 5], vec![7, 6]],
+            vec![u128::MAX, u128::MAX - 1],
+            vec![vec![2]; 3],
+            vec![2],
+        )
+        .unwrap();
     }
 
-    fn bilinear_product_helper(op: Operation, dims: ArrayShape) -> Result<()> {
+    fn bilinear_product_helper(op: Operation, dims: ArrayShape, st: ScalarType) -> Result<()> {
         let helper = |input_status: Vec<IOStatus>, output_parties: Vec<IOStatus>| -> Result<()> {
-            let st = INT32;
             let mpc_context = prepare_arithmetic_context(
                 input_status.clone(),
                 output_parties.clone(),
@@ -1004,141 +1041,142 @@ mod tests {
 
     #[test]
     fn test_multiply() {
-        bilinear_product_helper(Operation::Multiply, vec![2]).unwrap();
+        bilinear_product_helper(Operation::Multiply, vec![2], INT32).unwrap();
+        bilinear_product_helper(Operation::Multiply, vec![2], INT128).unwrap();
     }
 
     #[test]
     fn test_dot() {
-        bilinear_product_helper(Operation::Dot, vec![2]).unwrap();
+        bilinear_product_helper(Operation::Dot, vec![2], INT32).unwrap();
+        bilinear_product_helper(Operation::Dot, vec![2], INT128).unwrap();
     }
 
     #[test]
     fn test_matmul() {
-        bilinear_product_helper(Operation::Matmul, vec![2, 2]).unwrap();
+        bilinear_product_helper(Operation::Matmul, vec![2, 2], INT32).unwrap();
+        bilinear_product_helper(Operation::Matmul, vec![2, 2], INT128).unwrap();
     }
 
     #[test]
     fn test_gemm() {
-        bilinear_product_helper(Operation::Gemm(false, false), vec![2, 2]).unwrap();
+        bilinear_product_helper(Operation::Gemm(false, false), vec![2, 2], INT32).unwrap();
+        bilinear_product_helper(Operation::Gemm(false, false), vec![2, 2], INT128).unwrap();
     }
 
-    #[test]
-    fn test_mixed_multiply_correctness() {
-        || -> Result<()> {
-            let dims = vec![2, 2];
-            let helper =
-                |input_status: Vec<IOStatus>, output_parties: Vec<IOStatus>| -> Result<()> {
-                    let st = INT32;
-                    let mpc_context = prepare_arithmetic_context(
-                        input_status.clone(),
-                        output_parties.clone(),
-                        Operation::MixedMultiply,
-                        st,
-                        vec![dims.clone(); 3],
-                    )?;
-                    let mpc_graph = mpc_context.get_main_graph()?;
-
-                    let inputs = prepare_arithmetic_input(
-                        vec![vec![2, 3, 4, 5], vec![1, 1, 0, 1], vec![0, 1, 1, 1]],
-                        input_status,
-                        vec![st, BIT, BIT],
-                    )?;
-
-                    let expected = vec![0, 3, 0, 5];
-
-                    check_arithmetic_output(
-                        mpc_graph,
-                        inputs,
-                        expected,
-                        st,
-                        dims.clone(),
-                        output_parties,
-                    )?;
-
-                    Ok(())
-                };
-
-            helper(
-                vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
-                vec![IOStatus::Party(0)],
+    fn mixed_multiply_helper(st: ScalarType) -> Result<()> {
+        let dims = vec![2, 2];
+        let helper = |input_status: Vec<IOStatus>, output_parties: Vec<IOStatus>| -> Result<()> {
+            let mpc_context = prepare_arithmetic_context(
+                input_status.clone(),
+                output_parties.clone(),
+                Operation::MixedMultiply,
+                st,
+                vec![dims.clone(); 3],
             )?;
-            helper(
-                vec![IOStatus::Public, IOStatus::Party(0), IOStatus::Public],
-                vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
+            let mpc_graph = mpc_context.get_main_graph()?;
+
+            let inputs = prepare_arithmetic_input(
+                vec![vec![2, 3, 4, 5], vec![1, 1, 0, 1], vec![0, 1, 1, 1]],
+                input_status,
+                vec![st, BIT, BIT],
             )?;
-            helper(
-                vec![IOStatus::Public, IOStatus::Public, IOStatus::Party(0)],
-                vec![IOStatus::Party(0), IOStatus::Party(1)],
-            )?;
-            helper(
-                vec![IOStatus::Public, IOStatus::Public, IOStatus::Public],
-                vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
-            )?;
-            helper(
-                vec![IOStatus::Public, IOStatus::Party(0), IOStatus::Public],
-                vec![],
-            )?;
-            helper(
-                vec![IOStatus::Public, IOStatus::Public, IOStatus::Public],
-                vec![],
+
+            let expected = vec![0, 3, 0, 5];
+
+            check_arithmetic_output(
+                mpc_graph,
+                inputs,
+                expected,
+                st,
+                dims.clone(),
+                output_parties,
             )?;
 
             Ok(())
-        }()
-        .unwrap();
+        };
+
+        helper(
+            vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
+            vec![IOStatus::Party(0)],
+        )?;
+        helper(
+            vec![IOStatus::Public, IOStatus::Party(0), IOStatus::Public],
+            vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
+        )?;
+        helper(
+            vec![IOStatus::Public, IOStatus::Public, IOStatus::Party(0)],
+            vec![IOStatus::Party(0), IOStatus::Party(1)],
+        )?;
+        helper(
+            vec![IOStatus::Public, IOStatus::Public, IOStatus::Public],
+            vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
+        )?;
+        helper(
+            vec![IOStatus::Public, IOStatus::Party(0), IOStatus::Public],
+            vec![],
+        )?;
+        helper(
+            vec![IOStatus::Public, IOStatus::Public, IOStatus::Public],
+            vec![],
+        )?;
+
+        Ok(())
     }
 
     #[test]
-    fn test_mixed_multiply_communication() {
-        || -> Result<()> {
-            let c = simple_context(|g| {
-                let input_type1 = tuple_type(vec![scalar_type(INT32); 3]);
-                let input_type2 = tuple_type(vec![scalar_type(BIT); 3]);
-                let i1 = g.input(input_type1)?;
-                let i2 = g.input(input_type2)?;
-                let prf_keys = {
-                    let keys_vec = generate_prf_key_triple(g.clone())?;
-                    g.create_tuple(keys_vec)?
-                };
-                g.custom_op(
-                    CustomOperation::new(MixedMultiplyMPC {}),
-                    vec![i1, i2, prf_keys],
-                )
-            })?;
+    fn test_mixed_multiply_correctness() -> Result<()> {
+        mixed_multiply_helper(INT32)?;
+        mixed_multiply_helper(INT128)
+    }
 
-            let instantiated_c = run_instantiation_pass(c)?.context;
-            let inlined_c = inline_operations(
-                instantiated_c.clone(),
-                InlineConfig {
-                    default_mode: InlineMode::Simple,
-                    ..Default::default()
-                },
-            )?;
-            let result_class = generate_equivalence_class(
-                inlined_c.clone(),
-                vec![vec![IOStatus::Shared, IOStatus::Shared]],
-            )?;
+    #[test]
+    fn test_mixed_multiply_communication() -> Result<()> {
+        let c = simple_context(|g| {
+            let input_type1 = tuple_type(vec![scalar_type(INT128); 3]);
+            let input_type2 = tuple_type(vec![scalar_type(BIT); 3]);
+            let i1 = g.input(input_type1)?;
+            let i2 = g.input(input_type2)?;
+            let prf_keys = {
+                let keys_vec = generate_prf_key_triple(g.clone())?;
+                g.create_tuple(keys_vec)?
+            };
+            g.custom_op(
+                CustomOperation::new(MixedMultiplyMPC {}),
+                vec![i1, i2, prf_keys],
+            )
+        })?;
 
-            let share0_12 = EquivalenceClasses::Atomic(vec![vec![0], vec![1, 2]]);
-            let share1_02 = EquivalenceClasses::Atomic(vec![vec![1], vec![0, 2]]);
-            let share2_01 = EquivalenceClasses::Atomic(vec![vec![2], vec![0, 1]]);
-            let shared = EquivalenceClasses::Vector(vec![
-                Arc::new(share1_02.clone()),
-                Arc::new(share2_01.clone()),
-                Arc::new(share0_12.clone()),
-            ]);
+        let instantiated_c = run_instantiation_pass(c)?.context;
+        let inlined_c = inline_operations(
+            instantiated_c.clone(),
+            InlineConfig {
+                default_mode: InlineMode::Simple,
+                ..Default::default()
+            },
+        )?;
+        let result_class = generate_equivalence_class(
+            inlined_c.clone(),
+            vec![vec![IOStatus::Shared, IOStatus::Shared]],
+        )?;
 
-            let main_graph = inlined_c.get_main_graph()?;
-            let output_node_id = main_graph.get_output_node()?.get_id();
+        let share0_12 = EquivalenceClasses::Atomic(vec![vec![0], vec![1, 2]]);
+        let share1_02 = EquivalenceClasses::Atomic(vec![vec![1], vec![0, 2]]);
+        let share2_01 = EquivalenceClasses::Atomic(vec![vec![2], vec![0, 1]]);
+        let shared = EquivalenceClasses::Vector(vec![
+            Arc::new(share1_02.clone()),
+            Arc::new(share2_01.clone()),
+            Arc::new(share0_12.clone()),
+        ]);
 
-            // Output should be shared. TODO: test other nodes
-            assert_eq!(
-                *result_class.get(&(0, output_node_id)).unwrap(),
-                shared.clone()
-            );
+        let main_graph = inlined_c.get_main_graph()?;
+        let output_node_id = main_graph.get_output_node()?.get_id();
 
-            Ok(())
-        }()
-        .unwrap();
+        // Output should be shared. TODO: test other nodes
+        assert_eq!(
+            *result_class.get(&(0, output_node_id)).unwrap(),
+            shared.clone()
+        );
+
+        Ok(())
     }
 }

@@ -791,7 +791,7 @@ impl TypeInferenceWorker {
                 if !t.is_array() && !t.is_scalar() {
                     return Err(runtime_error!("Can't truncate this type: {t:?}"));
                 }
-                if t.get_scalar_type().is_signed() && d > i64::MAX as u64 {
+                if t.get_scalar_type().is_signed() && d > i128::MAX as u128 {
                     return Err(runtime_error!("Scale for truncation is too large: {d}"));
                 }
                 self.register_result(node, t.clone())?;
@@ -1701,7 +1701,7 @@ impl TypeInferenceWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data_types::{ArrayShape, Type, BIT, INT32, INT8, UINT16, UINT32, UINT8};
+    use crate::data_types::{ArrayShape, Type, BIT, INT32, INT8, UINT128, UINT16, UINT32, UINT8};
     use crate::data_values::Value;
     use crate::graphs::{
         create_unchecked_context, Graph, JoinType, ShardConfig, Slice, SliceElement,
@@ -1734,6 +1734,10 @@ mod tests {
         let context = create_unchecked_context()?;
         let mut worker = create_type_inference_worker(context.clone());
         let graph = context.create_graph()?;
+        assert_eq!(
+            worker.process_node(graph.zeros(scalar_type(UINT128))?)?,
+            scalar_type(UINT128)
+        );
         assert_eq!(
             worker.process_node(graph.zeros(scalar_type(UINT64))?)?,
             scalar_type(UINT64)
@@ -1975,7 +1979,7 @@ mod tests {
         test_matmul_worker_fail(scalar_type(INT32), scalar_type(INT32));
     }
 
-    fn test_truncate_worker(t: Type, scale: u64) {
+    fn test_truncate_worker(t: Type, scale: u128) {
         let context = create_unchecked_context().unwrap();
         let mut worker = create_type_inference_worker(context.clone());
         let graph = context.create_graph().unwrap();
@@ -1985,7 +1989,7 @@ mod tests {
         assert_eq!(t_result, t);
     }
 
-    fn test_truncate_worker_fail(t: Type, scale: u64) {
+    fn test_truncate_worker_fail(t: Type, scale: u128) {
         let context = create_unchecked_context().unwrap();
         let mut worker = create_type_inference_worker(context.clone());
         let graph = context.create_graph().unwrap();
@@ -1999,12 +2003,12 @@ mod tests {
     fn test_truncate() {
         test_truncate_worker(array_type(vec![10, 20], INT32), 1000);
         test_truncate_worker(scalar_type(INT32), 1000);
-        test_truncate_worker(scalar_type(INT32), i64::MAX as u64);
-        test_truncate_worker(scalar_type(UINT64), 1u64 << 32);
+        test_truncate_worker(scalar_type(INT32), i128::MAX as u128);
+        test_truncate_worker(scalar_type(UINT128), 1u128 << 64);
         test_truncate_worker_fail(array_type(vec![10, 20], INT32), 0);
         test_truncate_worker_fail(scalar_type(INT32), 0);
         test_truncate_worker_fail(tuple_type(vec![]), 1000);
-        test_truncate_worker_fail(scalar_type(INT32), i64::MAX as u64 + 1);
+        test_truncate_worker_fail(scalar_type(INT32), i128::MAX as u128 + 1);
     }
 
     fn test_sum_worker(t0: Type, s: ArrayShape, t1: Type) {

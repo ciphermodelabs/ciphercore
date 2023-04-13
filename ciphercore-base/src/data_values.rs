@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::bytes::{vec_from_bytes, vec_to_bytes, vec_u128_from_bytes, vec_u64_to_bytes};
+use crate::bytes::{vec_to_bytes, vec_u128_from_bytes, vec_u64_to_bytes};
 use crate::data_types::{array_type, get_size_in_bits, get_types_vector, ScalarType, Type, BIT};
 use crate::errors::Result;
 
@@ -423,7 +423,7 @@ impl Value {
     /// assert_eq!(v.to_u8(INT32).unwrap(), -123456i32 as u8);
     /// ```
     pub fn to_u8(&self, st: ScalarType) -> Result<u8> {
-        Ok(self.to_u64(st)? as u8)
+        Ok(self.to_u128(st)? as u8)
     }
 
     /// Converts `self` to a scalar if it is a byte vector, then casts the result to `bool`.
@@ -463,7 +463,7 @@ impl Value {
     /// assert_eq!(v.to_i8(INT32).unwrap(), -123456i32 as i8);
     /// ```
     pub fn to_i8(&self, st: ScalarType) -> Result<i8> {
-        Ok(self.to_u64(st)? as i8)
+        Ok(self.to_u128(st)? as i8)
     }
 
     /// Converts `self` to a scalar if it is a byte vector, then casts the result to `u16`.
@@ -485,7 +485,7 @@ impl Value {
     /// assert_eq!(v.to_u16(INT32).unwrap(), -123456i32 as u16);
     /// ```
     pub fn to_u16(&self, st: ScalarType) -> Result<u16> {
-        Ok(self.to_u64(st)? as u16)
+        Ok(self.to_u128(st)? as u16)
     }
 
     /// Converts `self` to a scalar if it is a byte vector, then casts the result to `i16`.
@@ -507,7 +507,7 @@ impl Value {
     /// assert_eq!(v.to_i16(INT32).unwrap(), -123456i32 as i16);
     /// ```
     pub fn to_i16(&self, st: ScalarType) -> Result<i16> {
-        Ok(self.to_u64(st)? as i16)
+        Ok(self.to_u128(st)? as i16)
     }
 
     /// Converts `self` to a scalar if it is a byte vector, then casts the result to `u32`.
@@ -529,7 +529,7 @@ impl Value {
     /// assert_eq!(v.to_u32(INT32).unwrap(), -123456i32 as u32);
     /// ```
     pub fn to_u32(&self, st: ScalarType) -> Result<u32> {
-        Ok(self.to_u64(st)? as u32)
+        Ok(self.to_u128(st)? as u32)
     }
 
     /// Converts `self` to a scalar if it is a byte vector, then casts the result to `i32`.
@@ -551,7 +551,7 @@ impl Value {
     /// assert_eq!(v.to_i32(INT32).unwrap(), -123456i32 as i32);
     /// ```
     pub fn to_i32(&self, st: ScalarType) -> Result<i32> {
-        Ok(self.to_u64(st)? as i32)
+        Ok(self.to_u128(st)? as i32)
     }
 
     /// Converts `self` to a scalar if it is a byte vector, then casts the result to `u64`.
@@ -573,11 +573,29 @@ impl Value {
     /// assert_eq!(v.to_u64(INT32).unwrap(), -123456i32 as u64);
     /// ```
     pub fn to_u64(&self, st: ScalarType) -> Result<u64> {
-        let v = self.access_bytes(|bytes| vec_from_bytes(bytes, st))?;
-        if v.len() != 1 && (v.len() != 8 || st != BIT) {
-            return Err(runtime_error!("Not a scalar"));
-        }
-        Ok(v[0])
+        Ok(self.to_u128(st)? as u64)
+    }
+
+    /// Converts `self` to a scalar if it is a byte vector, then cast the result to `i64`.
+    ///
+    /// # Arguments
+    ///
+    /// `st` - scalar type used to interpret `self`
+    ///
+    /// # Result
+    ///
+    /// Resulting scalar cast to `i64`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::data_values::Value;
+    /// # use ciphercore_base::data_types::INT32;
+    /// let v = Value::from_scalar(-123456, INT32).unwrap();
+    /// assert_eq!(v.to_i64(INT32).unwrap(), -123456i32 as i64);
+    /// ```
+    pub fn to_i64(&self, st: ScalarType) -> Result<i64> {
+        Ok(self.to_u128(st)? as i64)
     }
 
     /// Converts `self` to a scalar if it is a byte vector, then casts the result to `u128`.
@@ -606,7 +624,7 @@ impl Value {
         Ok(v[0])
     }
 
-    /// Converts `self` to a scalar if it is a byte vector, then cast the result to `i64`.
+    /// Converts `self` to a scalar if it is a byte vector, then cast the result to `i128`.
     ///
     /// # Arguments
     ///
@@ -614,7 +632,7 @@ impl Value {
     ///
     /// # Result
     ///
-    /// Resulting scalar cast to `i64`
+    /// Resulting scalar cast to `i128`
     ///
     /// # Examples
     ///
@@ -622,10 +640,10 @@ impl Value {
     /// # use ciphercore_base::data_values::Value;
     /// # use ciphercore_base::data_types::INT32;
     /// let v = Value::from_scalar(-123456, INT32).unwrap();
-    /// assert_eq!(v.to_i64(INT32).unwrap(), -123456i32 as i64);
+    /// assert_eq!(v.to_i128(INT32).unwrap(), -123456i32 as i128);
     /// ```
-    pub fn to_i64(&self, st: ScalarType) -> Result<i64> {
-        Ok(self.to_u64(st)? as i64)
+    pub fn to_i128(&self, st: ScalarType) -> Result<i128> {
+        Ok(self.to_u128(st)? as i128)
     }
 
     /// Converts `self` to a vector of values or return an error if `self` is a byte vector.
@@ -682,7 +700,7 @@ impl Value {
     /// ```
     pub fn to_flattened_array_u8(&self, t: Type) -> Result<Vec<u8>> {
         Ok(self
-            .to_flattened_array_u64(t)?
+            .to_flattened_array_u128(t)?
             .into_iter()
             .map(|x| x as u8)
             .collect())
@@ -709,7 +727,7 @@ impl Value {
     /// ```
     pub fn to_flattened_array_i8(&self, t: Type) -> Result<Vec<i8>> {
         Ok(self
-            .to_flattened_array_u64(t)?
+            .to_flattened_array_u128(t)?
             .into_iter()
             .map(|x| x as i8)
             .collect())
@@ -736,7 +754,7 @@ impl Value {
     /// ```
     pub fn to_flattened_array_u16(&self, t: Type) -> Result<Vec<u16>> {
         Ok(self
-            .to_flattened_array_u64(t)?
+            .to_flattened_array_u128(t)?
             .into_iter()
             .map(|x| x as u16)
             .collect())
@@ -763,7 +781,7 @@ impl Value {
     /// ```
     pub fn to_flattened_array_i16(&self, t: Type) -> Result<Vec<i16>> {
         Ok(self
-            .to_flattened_array_u64(t)?
+            .to_flattened_array_u128(t)?
             .into_iter()
             .map(|x| x as i16)
             .collect())
@@ -790,7 +808,7 @@ impl Value {
     /// ```
     pub fn to_flattened_array_u32(&self, t: Type) -> Result<Vec<u32>> {
         Ok(self
-            .to_flattened_array_u64(t)?
+            .to_flattened_array_u128(t)?
             .into_iter()
             .map(|x| x as u32)
             .collect())
@@ -817,7 +835,7 @@ impl Value {
     /// ```
     pub fn to_flattened_array_i32(&self, t: Type) -> Result<Vec<i32>> {
         Ok(self
-            .to_flattened_array_u64(t)?
+            .to_flattened_array_u128(t)?
             .into_iter()
             .map(|x| x as i32)
             .collect())
@@ -843,25 +861,38 @@ impl Value {
     /// assert_eq!(a, vec![-123i32 as u64, 123i32 as u64]);
     /// ```
     pub fn to_flattened_array_u64(&self, t: Type) -> Result<Vec<u64>> {
-        if !t.is_array() {
-            return Err(runtime_error!(
-                "Trying to extract array from a value of a wrong type"
-            ));
-        }
-        if !self.check_type(t.clone())? {
-            return Err(runtime_error!("Type and value mismatch"));
-        }
-        let st = t.get_scalar_type();
-        if let ValueBody::Bytes(bytes) = self.body.as_ref() {
-            let mut result = vec_from_bytes(bytes, st)?;
-            if st == BIT {
-                let num_values: u64 = t.get_dimensions().iter().product();
-                result.truncate(num_values as usize);
-            }
-            Ok(result)
-        } else {
-            Err(runtime_error!("Invalid Value"))
-        }
+        Ok(self
+            .to_flattened_array_u128(t)?
+            .into_iter()
+            .map(|x| x as u64)
+            .collect())
+    }
+
+    /// Converts `self` to a flattened array if it is a byte vector, then cast the array entries to `i64`.
+    ///
+    /// # Arguments
+    ///
+    /// `t` - array type used to interpret `self`
+    ///
+    /// # Result
+    ///
+    /// Resulting flattened array with entries cast to `i64`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::data_values::Value;
+    /// # use ciphercore_base::data_types::{array_type, INT32};
+    /// let v = Value::from_flattened_array(&[-123, 123], INT32).unwrap();
+    /// let a = v.to_flattened_array_i64(array_type(vec![2], INT32)).unwrap();
+    /// assert_eq!(a, vec![-123, 123]);
+    /// ```
+    pub fn to_flattened_array_i64(&self, t: Type) -> Result<Vec<i64>> {
+        Ok(self
+            .to_flattened_array_u128(t)?
+            .into_iter()
+            .map(|x| x as i64)
+            .collect())
     }
 
     /// Converts `self` to a flattened array if it is a byte vector, then cast the array entries to `u128`.
@@ -905,7 +936,7 @@ impl Value {
         }
     }
 
-    /// Converts `self` to a flattened array if it is a byte vector, then cast the array entries to `i64`.
+    /// Converts `self` to a flattened array if it is a byte vector, then cast the array entries to `i128`.
     ///
     /// # Arguments
     ///
@@ -913,7 +944,7 @@ impl Value {
     ///
     /// # Result
     ///
-    /// Resulting flattened array with entries cast to `i64`
+    /// Resulting flattened array with entries cast to `i128`
     ///
     /// # Examples
     ///
@@ -921,14 +952,14 @@ impl Value {
     /// # use ciphercore_base::data_values::Value;
     /// # use ciphercore_base::data_types::{array_type, INT32};
     /// let v = Value::from_flattened_array(&[-123, 123], INT32).unwrap();
-    /// let a = v.to_flattened_array_i64(array_type(vec![2], INT32)).unwrap();
+    /// let a = v.to_flattened_array_i128(array_type(vec![2], INT32)).unwrap();
     /// assert_eq!(a, vec![-123, 123]);
     /// ```
-    pub fn to_flattened_array_i64(&self, t: Type) -> Result<Vec<i64>> {
+    pub fn to_flattened_array_i128(&self, t: Type) -> Result<Vec<i128>> {
         Ok(self
-            .to_flattened_array_u64(t)?
+            .to_flattened_array_u128(t)?
             .into_iter()
-            .map(|x| x as i64)
+            .map(|x| x as i128)
             .collect())
     }
 

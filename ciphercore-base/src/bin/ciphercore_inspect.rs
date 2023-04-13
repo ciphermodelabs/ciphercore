@@ -2,7 +2,8 @@
 extern crate ciphercore_base;
 
 use ciphercore_base::data_types::{
-    get_size_in_bits, Type, BIT, INT16, INT32, INT64, INT8, UINT16, UINT32, UINT64, UINT8,
+    get_size_in_bits, Type, BIT, INT128, INT16, INT32, INT64, INT8, UINT128, UINT16, UINT32,
+    UINT64, UINT8,
 };
 use ciphercore_base::errors::Result;
 use ciphercore_base::evaluators::simple_evaluator::SimpleEvaluator;
@@ -174,6 +175,7 @@ pub(crate) fn print_stats(graph: Graph) -> Result<()> {
     let mut total_16bits_operations = 0;
     let mut total_32bits_operations = 0;
     let mut total_64bits_operations = 0;
+    let mut total_128bits_operations = 0;
     for node in graph.get_nodes() {
         let op = node.get_operation();
         let op_name = format!("{op}");
@@ -206,6 +208,7 @@ pub(crate) fn print_stats(graph: Graph) -> Result<()> {
                     UINT16 | INT16 => total_16bits_operations += ops,
                     UINT32 | INT32 => total_32bits_operations += ops,
                     UINT64 | INT64 => total_64bits_operations += ops,
+                    UINT128 | INT128 => total_128bits_operations += ops,
                 };
                 total_integer_operations += ops;
             }
@@ -260,6 +263,10 @@ pub(crate) fn print_stats(graph: Graph) -> Result<()> {
     println!(
         "  Total number of 64-bit arithmetic operations:  {}",
         format_operations(total_64bits_operations)
+    );
+    println!(
+        "  Total number of 128-bit arithmetic operations:  {}",
+        format_operations(total_128bits_operations)
     );
     println!("Total operations: {}", graph.get_nodes().len());
     println!("Operations: ",);

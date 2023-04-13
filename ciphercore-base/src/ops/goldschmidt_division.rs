@@ -1,6 +1,6 @@
 //! Division via [the Goldschmidt method](https://en.wikipedia.org/wiki/Division_algorithm#Goldschmidt_division).
 use crate::custom_ops::CustomOperationBody;
-use crate::data_types::{Type, INT64, UINT64};
+use crate::data_types::Type;
 use crate::errors::Result;
 use crate::graphs::{Context, Graph};
 
@@ -86,9 +86,9 @@ impl CustomOperationBody for GoldschmidtDivision {
         }
 
         let sc = dividend_type.get_scalar_type();
-        if sc != UINT64 && sc != INT64 {
+        if sc.size_in_bits() < 64 {
             return Err(runtime_error!(
-                "Divisor in GoldshmidtDivision must consist of either INT64s or UINT64s"
+                "Divisor in GoldshmidtDivision supported only for 64-bit+ types: INT64, UINT64, INT128, UINT128"
             ));
         }
         let has_initial_approximation = arguments_types.len() == 3;
@@ -118,7 +118,8 @@ impl CustomOperationBody for GoldschmidtDivision {
         // a_i = a_{i-1} * w_i
         // b_i = b_{i-1} * w_i
         // w_i = 2 - b_i
-        let two_power_cap_plus_one = constant_scalar(&g, 1 << (self.denominator_cap_2k + 1), sc)?;
+        let two_power_cap_plus_one =
+            constant_scalar(&g, 1u128 << (self.denominator_cap_2k + 1), sc)?;
         let mut w = approximation;
         let mut a = dividend.multiply(w.clone())?;
         let mut b = divisor.multiply(w.clone())?;
@@ -146,6 +147,7 @@ mod tests {
     use crate::custom_ops::run_instantiation_pass;
     use crate::custom_ops::CustomOperation;
     use crate::data_types::{array_type, scalar_type, ScalarType};
+    use crate::data_types::{INT128, INT64, UINT128, UINT64};
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
     use crate::graphs::util::simple_context;
@@ -161,6 +163,7 @@ mod tests {
         divisor: u64,
         initial_approximation: Option<u64>,
         st: ScalarType,
+        denominator_cap_2k: u64,
     ) -> Result<Value> {
         let c = simple_context(|g| {
             let dividend_node = g.input(scalar_type(st))?;
@@ -170,7 +173,7 @@ mod tests {
                 g.custom_op(
                     CustomOperation::new(GoldschmidtDivision {
                         iterations: 5,
-                        denominator_cap_2k: 10,
+                        denominator_cap_2k,
                     }),
                     vec![dividend_node, divisor_node, approx_const],
                 )
@@ -178,7 +181,7 @@ mod tests {
                 g.custom_op(
                     CustomOperation::new(GoldschmidtDivision {
                         iterations: 5,
-                        denominator_cap_2k: 10,
+                        denominator_cap_2k,
                     }),
                     vec![dividend_node, divisor_node],
                 )
@@ -284,11 +287,11 @@ mod tests {
         let dividend = 123456;
         let div_v = vec![1, 2, 3, 123, 300, 500, 700];
         for i in div_v.clone() {
-            let result_int64 = scalar_division_helper(dividend, i, None, INT64)
+            let result_int64 = scalar_division_helper(dividend, i, None, INT64, 10)
                 .unwrap()
                 .to_i64(INT64)
                 .unwrap() as i64;
-            let result_uint64 = scalar_division_helper(dividend, i, None, UINT64)
+            let result_uint64 = scalar_division_helper(dividend, i, None, UINT64, 10)
                 .unwrap()
                 .to_u64(UINT64)
                 .unwrap() as i64;
@@ -296,6 +299,32 @@ mod tests {
 
             assert!(((result_int64 - actual_result).abs() * 100) / actual_result <= 1);
             assert!(((result_uint64 - actual_result).abs() * 100) / actual_result <= 1);
+        }
+    }
+
+    #[test]
+    fn test_goldschmidt_division_128_bit() {
+        let dividend = 1234567890123456789;
+        let div_v = vec![1, 2, 3, 123, 300, 500, 700];
+        for denominator_cap_2k in [10, 20, 30] {
+            for i in div_v.clone() {
+                let result_int128 =
+                    scalar_division_helper(dividend, i, None, INT128, denominator_cap_2k)
+                        .unwrap()
+                        .to_i128(INT128)
+                        .unwrap();
+                let result_uint128 =
+                    scalar_division_helper(dividend, i, None, UINT128, denominator_cap_2k)
+                        .unwrap()
+                        .to_u128(UINT128)
+                        .unwrap();
+                let actual_result = dividend as i128 * (1 << denominator_cap_2k) / i as i128;
+
+                assert!(((result_int128 - actual_result).abs() * 100) / actual_result <= 1);
+                assert!(
+                    ((result_uint128 as i128 - actual_result).abs() * 100) / actual_result <= 1
+                );
+            }
         }
     }
 

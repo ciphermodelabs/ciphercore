@@ -122,7 +122,7 @@ pub enum Operation {
     // In particular, unlike Dot, it doesn't support scalar inputs.
     Matmul,
     Gemm(bool, bool),
-    Truncate(u64),
+    Truncate(u128),
     Sum(ArrayShape),
     CumSum(u64),
     PermuteAxes(ArrayShape),
@@ -839,7 +839,7 @@ impl Node {
     /// let n1 = g.input(t).unwrap();
     /// let n2 = n1.truncate(4).unwrap();
     /// ```
-    pub fn truncate(&self, scale: u64) -> Result<Node> {
+    pub fn truncate(&self, scale: u128) -> Result<Node> {
         self.get_graph().truncate(self.clone(), scale)
     }
 
@@ -1972,7 +1972,7 @@ impl Graph {
     /// let n1 = g.input(t).unwrap();
     /// let n2 = g.truncate(n1, 4).unwrap();
     /// ```
-    pub fn truncate(&self, a: Node, scale: u64) -> Result<Node> {
+    pub fn truncate(&self, a: Node, scale: u128) -> Result<Node> {
         self.add_node(vec![a], vec![], Operation::Truncate(scale))
     }
 
