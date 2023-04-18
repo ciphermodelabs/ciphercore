@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 
 use crate::{
-    data_types::{array_type, get_named_types, named_tuple_type, HeadersTypes, Type},
+    data_types::{get_named_types, named_tuple_type, HeadersTypes, Type, BIT},
     data_values::Value,
     errors::Result,
     graphs::JoinType,
+    join_utils::ColumnType,
     type_inference::NULL_HEADER,
     typed_value::TypedValue,
 };
@@ -12,8 +13,12 @@ use crate::{
 struct ColumnsMap {
     // column header -> column array index
     header_index_map: HashMap<String, usize>,
+    // Null column
+    null_column: Vec<u8>,
+    // arrays containing masks of all columns
+    columns_masks: Vec<Vec<u8>>,
     // arrays containing data of all columns
-    columns_data: Vec<Vec<u64>>,
+    columns_data: Vec<Vec<u128>>,
     // number of scalar elements per row of each column
     elements_per_row: Vec<usize>,
 }
@@ -22,206 +27,332 @@ impl ColumnsMap {
     fn get_row_size(&self, header: &str) -> usize {
         self.elements_per_row[self.header_index_map[header]]
     }
-    fn get_data(&self, header: &str) -> Vec<u64> {
+    fn get_data(&self, header: &str) -> Vec<u128> {
         self.columns_data[self.header_index_map[header]].clone()
+    }
+    fn has_column_masks(&self) -> bool {
+        !self.columns_masks.is_empty()
+    }
+    fn get_mask_entry(&self, header: &str, row_index: usize) -> u8 {
+        self.columns_masks[self.header_index_map[header]][row_index]
+    }
+    fn get_num_rows(&self) -> usize {
+        self.null_column.len()
+    }
+    // Checks that the row with a given index has 0 in the null column or contains entries with the zero mask in given columns
+    fn row_has_empty_entries(&self, row_index: usize, headers: &[String]) -> bool {
+        if self.null_column[row_index] == 0 {
+            return true;
+        }
+        if !self.has_column_masks() {
+            return false;
+        }
+        for h in headers {
+            if self.get_mask_entry(h, row_index) == 0 {
+                return true;
+            }
+        }
+        false
+    }
+
+    // Merges given columns of the row with a given index.
+    fn get_flattened_row(&self, row_index: usize, headers: &[String]) -> Vec<u128> {
+        let mut row = vec![];
+        for header in headers {
+            let row_data = self.get_data(header);
+            let row_size = self.get_row_size(header);
+            row.extend(row_data[row_index * row_size..(row_index + 1) * row_size].to_vec());
+        }
+        row
+    }
+
+    fn get_entry(&self, row_index: usize, header: &str) -> Vec<u128> {
+        self.get_flattened_row(row_index, &[header.to_owned()])
     }
 }
 
-fn extract_columns(set: &TypedValue, headers_types: &HeadersTypes) -> Result<ColumnsMap> {
+fn extract_columns(
+    set: &TypedValue,
+    headers_types: &HeadersTypes,
+    has_column_masks: bool,
+) -> Result<ColumnsMap> {
     let mut header_index_map = HashMap::new();
     let mut columns_data = vec![];
+    let mut columns_masks = vec![];
     let mut elements_per_row = vec![];
+    let mut null_column = vec![];
     let set_columns = set.value.to_vector()?;
-    for (i, (header, column_t)) in headers_types.iter().enumerate() {
-        let column_array = set_columns[i].to_flattened_array_u64((**column_t).clone())?;
-        columns_data.push(column_array);
-        let column_shape = column_t.get_shape();
-        elements_per_row.push(column_shape.iter().skip(1).product::<u64>() as usize);
-        header_index_map.insert((*header).clone(), i);
+    let mut ind = 0;
+    for (i, (header, sub_t)) in headers_types.iter().enumerate() {
+        if header == NULL_HEADER {
+            null_column = set_columns[i].to_flattened_array_u8((**sub_t).clone())?;
+            continue;
+        }
+        let column_type = ColumnType::new((**sub_t).clone(), has_column_masks, header)?;
+        if has_column_masks {
+            let column_mask_data = set_columns[i].to_vector()?;
+            let mask = column_mask_data[0].clone();
+            let data = column_mask_data[1].clone();
+            let column_mask = mask.to_flattened_array_u8(column_type.get_mask_type()?)?;
+            let column_data = data.to_flattened_array_u128(column_type.get_data_type())?;
+            columns_masks.push(column_mask);
+            columns_data.push(column_data);
+        } else {
+            let column_data =
+                set_columns[i].to_flattened_array_u128(column_type.get_data_type())?;
+            columns_data.push(column_data);
+        }
+        elements_per_row.push(column_type.get_row_size_in_elements());
+        header_index_map.insert((*header).clone(), ind);
+        ind += 1;
     }
 
     Ok(ColumnsMap {
         header_index_map,
+        null_column,
+        columns_masks,
         columns_data,
         elements_per_row,
     })
 }
 
-fn append_zero_row(columns: &mut [Vec<u64>], join_input: &JoinInput) {
-    // Add columns of the first set
-    for (col_i, (header0, _)) in join_input.headers_types0.iter().enumerate() {
-        let row_size = join_input.columns0.get_row_size(header0);
-        columns[col_i].extend(vec![0; row_size]);
+impl ColumnsMap {
+    fn init_result_columns(join_input: &JoinInput) -> Result<Self> {
+        let has_column_masks = join_input.set0.has_column_masks();
+
+        let num_columns = join_input.result_headers_types.len() - 1;
+        let mut header_index_map: HashMap<String, usize> = HashMap::new();
+        let mut elements_per_row = vec![];
+        let mut ind = 0;
+        for (h, sub_t) in join_input.result_headers_types.iter() {
+            if h == NULL_HEADER {
+                continue;
+            }
+            let column_type = ColumnType::new((**sub_t).clone(), has_column_masks, h)?;
+            elements_per_row.push(column_type.get_row_size_in_elements());
+            header_index_map.insert((*h).clone(), ind);
+            ind += 1;
+        }
+
+        let columns_masks = if has_column_masks {
+            vec![vec![]; num_columns]
+        } else {
+            vec![]
+        };
+
+        Ok(ColumnsMap {
+            header_index_map,
+            null_column: vec![],
+            columns_masks,
+            columns_data: vec![vec![]; num_columns],
+            elements_per_row,
+        })
     }
-    // Add remaining columns of the second set
-    for (col_i, column) in columns
-        .iter_mut()
-        .enumerate()
-        .take(join_input.result_headers_types.len())
-        .skip(join_input.headers_types0.len())
-    {
-        let header = join_input.result_headers_types[col_i].0.clone();
-        let row_size = join_input.columns1.get_row_size(&header);
-        column.extend(vec![0; row_size]);
+
+    fn append_zero_row(&mut self) {
+        // Add 0 to the null column
+        self.null_column.push(0);
+        // Add zero data columns
+        for (col_i, column_data) in self.columns_data.iter_mut().enumerate() {
+            column_data.extend(vec![0; self.elements_per_row[col_i]]);
+            if !self.columns_masks.is_empty() {
+                self.columns_masks[col_i].push(0);
+            }
+        }
+    }
+
+    fn append_zero_entry(&mut self, header: &str) {
+        let row_size = self.get_row_size(header);
+        let col_ind = self.header_index_map[header];
+        self.columns_data[col_ind].extend(vec![0; row_size]);
+        if !self.columns_masks.is_empty() {
+            self.columns_masks[col_ind].push(0);
+        }
+    }
+
+    // Add new elements from a column with a given header to another
+    fn copy_entry_from_column(
+        &mut self,
+        target_header: &str,
+        source_header: &str,
+        source_columns: &ColumnsMap,
+        row_index: usize,
+    ) {
+        if target_header == NULL_HEADER && source_header == NULL_HEADER {
+            self.null_column.push(source_columns.null_column[row_index]);
+            return;
+        }
+        let target_index = self.header_index_map[target_header];
+        if source_columns.has_column_masks() {
+            let source_mask_entry = source_columns.get_mask_entry(source_header, row_index);
+            if source_mask_entry == 1 {
+                self.columns_masks[target_index].push(source_mask_entry);
+                let source_entry = source_columns.get_entry(row_index, source_header);
+                self.columns_data[target_index].extend(source_entry);
+            } else {
+                self.append_zero_entry(target_header);
+            }
+        } else {
+            let source_entry = source_columns.get_entry(row_index, source_header);
+            self.columns_data[target_index].extend(source_entry);
+        }
+    }
+
+    fn to_value(&self, join_input: JoinInput) -> Result<Value> {
+        // Collect all columns
+        let mut res_value_vec = vec![];
+        for (h, t) in join_input.result_headers_types.iter() {
+            if h == NULL_HEADER {
+                res_value_vec.push(Value::from_flattened_array(&self.null_column, BIT)?);
+                continue;
+            }
+            let col_ind = self.header_index_map[h];
+            let column_t = ColumnType::new((**t).clone(), self.has_column_masks(), h)?;
+            let data_val = Value::from_flattened_array(
+                &self.columns_data[col_ind],
+                column_t.get_scalar_type(),
+            )?;
+            if self.has_column_masks() {
+                let mask_val = Value::from_flattened_array(&self.columns_masks[col_ind], BIT)?;
+                res_value_vec.push(Value::from_vector(vec![mask_val, data_val]));
+            } else {
+                res_value_vec.push(data_val);
+            }
+        }
+        Ok(Value::from_vector(res_value_vec))
     }
 }
 
-// Merges given columns of the row with a given index
-fn flatten_row(row_index: usize, headers: &[String], headers_values: &ColumnsMap) -> Vec<u64> {
-    let mut row = vec![];
-    for header in headers {
-        let row_data = headers_values.get_data(header);
-        let row_size = headers_values.get_row_size(header);
-        row.extend(row_data[row_index * row_size..(row_index + 1) * row_size].to_vec());
-    }
-    row
-}
-
-// Add new elements from a column with a given header to another
-fn extend_column(
-    target_column: &mut Vec<u64>,
-    source_header: &str,
-    columns: &ColumnsMap,
-    row_index: usize,
-) {
-    let source_column = columns.get_data(source_header);
-    let row_size = columns.get_row_size(source_header);
-    target_column.extend(source_column[row_index * row_size..(row_index + 1) * row_size].to_vec());
-}
-
-type KeyColumnsMap = HashMap<Vec<u64>, Vec<Vec<u64>>>;
+// (row_hash_key, row_index)
+type KeyColumnsMap = HashMap<Vec<u128>, usize>;
 
 // Creates a hashmap of the input rows with keys corresponding to the content of key columns
 fn get_hashmap_from_key_columns(
     headers_values: &ColumnsMap,
-    headers_types: &HeadersTypes,
     key_headers: &[String],
 ) -> Result<KeyColumnsMap> {
-    // Extract the null column of the second set
-    let null_column = headers_values.get_data(NULL_HEADER);
-    // Key columns of the second set are merged and added to the hash map along with the corresponding rows
     let mut key_data_hashmap = HashMap::new();
-    for (i, null_bit) in null_column.iter().enumerate() {
-        if *null_bit == 0 {
+    for i in 0..headers_values.get_num_rows() {
+        if headers_values.row_has_empty_entries(i, key_headers) {
             continue;
         }
-        let row_key = flatten_row(i, key_headers, headers_values);
-        let mut row = vec![];
-        for (header, _) in headers_types {
-            if !key_headers.contains(header) && header != NULL_HEADER {
-                let row_data = headers_values.get_data(header);
-                let row_size = headers_values.get_row_size(header);
-                row.push(row_data[i * row_size..(i + 1) * row_size].to_vec());
-            }
-        }
-        key_data_hashmap.insert(row_key, row);
+        let row_key = headers_values.get_flattened_row(i, key_headers);
+        key_data_hashmap.insert(row_key, i);
     }
     Ok(key_data_hashmap)
 }
 
 // Computes the inner join of given sets.
-// These sets and necessary precomputations should be contained in the join input.
-fn get_inner_join_columns(join_input: &JoinInput) -> Vec<Vec<u64>> {
-    // The resulting null column is derived from the null column of the first set
-    let mut res_null_column = join_input.columns0.get_data(NULL_HEADER);
-    // Merge key columns of the first set and check if the corresponding rows belong to the second set
-    let num_res_columns = join_input.result_headers_types.len();
-    let mut res_columns = vec![vec![]; num_res_columns];
+fn get_inner_join_columns(join_input: &JoinInput) -> Result<ColumnsMap> {
+    let mut result_columns = ColumnsMap::init_result_columns(join_input)?;
 
     // Check row by row that the content of the key columns of the first set intersects with the second set
-    for (i, null_bit) in res_null_column.iter_mut().enumerate() {
-        // If the null bit is zero, just insert a zero row
-        if *null_bit == 0 {
-            append_zero_row(&mut res_columns, join_input);
+    for row_ind0 in 0..join_input.number_of_rows_set_0() {
+        // If the null column entry is zero or there are empty entries, just insert a zero row
+        if join_input.row_has_empty_entries(row_ind0) {
+            result_columns.append_zero_row();
             continue;
         }
         // Merge the key columns of the first set
-        let row_key = flatten_row(i, &join_input.key_headers0, &join_input.columns0);
+        let row_key = join_input
+            .set0
+            .get_flattened_row(row_ind0, &join_input.key_headers0);
         // Check that the row key of the first set is contained in the second set
         if join_input.key_data_hashmap1.contains_key(&row_key) {
             // Add the columns of the first set first
-            for (col_i, (header0, _)) in join_input.headers_types0.iter().enumerate() {
-                extend_column(&mut res_columns[col_i], header0, &join_input.columns0, i);
+            for (header0, _) in join_input.headers_types0 {
+                result_columns.copy_entry_from_column(header0, header0, &join_input.set0, row_ind0);
             }
             // Extract the corresponding row of the second set
-            let row_data1 = join_input.key_data_hashmap1[&row_key].clone();
-            for col_i in 0..row_data1.len() {
-                res_columns[join_input.headers_types0.len() + col_i]
-                    .extend(row_data1[col_i].clone());
+            let row_ind1 = join_input.key_data_hashmap1[&row_key];
+            for header1 in &join_input.nonkey_headers1 {
+                result_columns.copy_entry_from_column(header1, header1, &join_input.set1, row_ind1);
             }
         } else {
-            *null_bit = 0;
-            append_zero_row(&mut res_columns, join_input);
+            result_columns.append_zero_row();
         }
     }
-    res_columns
+    Ok(result_columns)
 }
 
 // Preprocessed input of join algorithms.
 // Note that it contains a hashmap of the rows of the second set hashed by their key columns, which simplifies computation of the set intersection
 struct JoinInput<'a> {
     // Columns of the first set
-    columns0: ColumnsMap,
+    set0: ColumnsMap,
     // Columns of the second set
-    columns1: ColumnsMap,
+    set1: ColumnsMap,
     // Headers and types of the first set
     headers_types0: &'a HeadersTypes,
     // Key headers of the first set
     key_headers0: Vec<String>,
+    // Header of the second set without NULL_HEADER and key headers
+    nonkey_headers1: Vec<String>,
     // Map of key headers: first set header -> second set header
     key_headers_map: HashMap<String, String>,
     // Keys of the second set with the corresponding rows kept in a hashmap
-    key_data_hashmap1: HashMap<Vec<u64>, Vec<Vec<u64>>>,
+    key_data_hashmap1: KeyColumnsMap,
     // Headers and types of the result
     result_headers_types: &'a HeadersTypes,
+    // Headers of non-key columns having the same name in both sets
+    // WARNING: these are used in union join only while computing full join! Keep it empty for other types of joins!
+    same_headers: Vec<String>,
+}
+
+impl<'a> JoinInput<'a> {
+    fn number_of_rows_set_0(&self) -> usize {
+        self.set0.get_num_rows()
+    }
+    fn row_has_empty_entries(&self, row_index: usize) -> bool {
+        self.set0
+            .row_has_empty_entries(row_index, &self.key_headers0)
+    }
 }
 
 // Computes the left join of given sets.
 // These sets and necessary precomputations should be contained in the join input.
-fn get_left_join_columns(join_input: &JoinInput) -> Vec<Vec<u64>> {
-    // The resulting null column is derived from the null column of the first set
-    let mut res_null_column = join_input.columns0.get_data(NULL_HEADER);
-    // Merge key columns of the first set and check if the corresponding rows belong to the second set
-    let num_res_columns = join_input.result_headers_types.len();
-    let mut res_columns = vec![vec![]; num_res_columns];
+fn get_left_join_columns(join_input: &JoinInput) -> Result<ColumnsMap> {
+    let mut result_columns = ColumnsMap::init_result_columns(join_input)?;
 
     // Check row by row that the content of the key columns of the first set intersects with the second one.
     // If yes, append the row of the first set with the columns of the second one.
     // If no, append it with zeros.
-    for (i, null_bit) in res_null_column.iter_mut().enumerate() {
-        // If the null bit is zero, just insert a zero row
-        if *null_bit == 0 {
-            append_zero_row(&mut res_columns, join_input);
+    for row_ind0 in 0..join_input.number_of_rows_set_0() {
+        // If the null column entry is zero, just insert a zero row
+        if join_input.set0.null_column[row_ind0] == 0 {
+            result_columns.append_zero_row();
             continue;
         }
         // Add the columns of the first set first
-        for (col_i, (header0, _)) in join_input.headers_types0.iter().enumerate() {
-            extend_column(&mut res_columns[col_i], header0, &join_input.columns0, i);
+        for (header0, _) in join_input.headers_types0.iter() {
+            result_columns.copy_entry_from_column(header0, header0, &join_input.set0, row_ind0);
+        }
+        // If there are empty entries in the key columns, append the current row with zeros
+        if join_input.row_has_empty_entries(row_ind0) {
+            for header1 in &join_input.nonkey_headers1 {
+                result_columns.append_zero_entry(header1);
+            }
+            continue;
         }
         // Merge the key columns of the first set
-        let row_key = flatten_row(i, &join_input.key_headers0, &join_input.columns0);
+        let row_key = join_input
+            .set0
+            .get_flattened_row(row_ind0, &join_input.key_headers0);
         // Check that the row key of the first set is contained in the second set
         if join_input.key_data_hashmap1.contains_key(&row_key) {
             // Extract the corresponding row of the second set and attach to the row of the first set
-            let row_data1 = join_input.key_data_hashmap1[&row_key].clone();
-            for col_i in 0..row_data1.len() {
-                res_columns[join_input.headers_types0.len() + col_i]
-                    .extend(row_data1[col_i].clone());
+            let row_ind1 = join_input.key_data_hashmap1[&row_key];
+            for header1 in &join_input.nonkey_headers1 {
+                result_columns.copy_entry_from_column(header1, header1, &join_input.set1, row_ind1);
             }
         } else {
             // Append the current row with zeros
-            for (col_i, column) in res_columns
-                .iter_mut()
-                .enumerate()
-                .skip(join_input.headers_types0.len())
-            {
-                let header = &join_input.result_headers_types[col_i].0;
-                let row_size = join_input.columns1.get_row_size(header);
-                column.extend(vec![0; row_size]);
+            for header1 in &join_input.nonkey_headers1 {
+                result_columns.append_zero_entry(header1);
             }
         }
     }
-    res_columns
+    Ok(result_columns)
 }
 
 // Computes the union join of given sets.
@@ -229,73 +360,76 @@ fn get_left_join_columns(join_input: &JoinInput) -> Vec<Vec<u64>> {
 // In contrast to the SQL union, this operation does not require that input datasets have respective columns of the same type.
 // This means that columns of both datasets are included and filled with zeros where no data can be retrieved.
 // Namely, the rows of the second set in the union join will contain zeros in non-key columns of the first set and vice versa.
-fn get_union_columns(join_input: &JoinInput) -> Vec<Vec<u64>> {
-    // The first part of the resulting null column is derived from the null column of the first set
-    let mut x_null_column = join_input.columns0.get_data(NULL_HEADER);
-    // Merge key columns of the first set and check if the corresponding rows belong to the second set
-    let num_res_columns = join_input.result_headers_types.len();
-    let mut res_columns = vec![vec![]; num_res_columns];
+fn get_union_columns(join_input: &JoinInput) -> Result<ColumnsMap> {
+    let mut result_columns = ColumnsMap::init_result_columns(join_input)?;
 
     // Add all the rows of the first set that don't belong to the inner join
-    for (i, null_bit) in x_null_column.iter_mut().enumerate() {
+    for row_ind0 in 0..join_input.set0.get_num_rows() {
         // If the null bit is zero, just insert a zero row
-        if *null_bit == 0 {
-            append_zero_row(&mut res_columns, join_input);
+        if join_input.set0.null_column[row_ind0] == 0 {
+            result_columns.append_zero_row();
+            continue;
+        }
+
+        if join_input.row_has_empty_entries(row_ind0) {
+            // Extract the rows of the first set
+            for (header0, _) in join_input.headers_types0.iter() {
+                result_columns.copy_entry_from_column(header0, header0, &join_input.set0, row_ind0);
+            }
+            // Append the current row with zeros in the remaining unique columns of the second set
+            for h in &join_input.nonkey_headers1 {
+                if !join_input.same_headers.contains(h) {
+                    result_columns.append_zero_entry(h);
+                }
+            }
             continue;
         }
         // Merge the key columns of the first set
-        let row_key = flatten_row(i, &join_input.key_headers0, &join_input.columns0);
+        let row_key = join_input
+            .set0
+            .get_flattened_row(row_ind0, &join_input.key_headers0);
         // Check that the row key of the first set is contained in the second set
         if join_input.key_data_hashmap1.contains_key(&row_key) {
             // Fill the current row with zeros
-            *null_bit = 0;
-            append_zero_row(&mut res_columns, join_input);
+            result_columns.append_zero_row();
         } else {
             // Extract the rows of the first set
-            for (col_i, (header0, _)) in join_input.headers_types0.iter().enumerate() {
-                extend_column(&mut res_columns[col_i], header0, &join_input.columns0, i);
+            for (header0, _) in join_input.headers_types0.iter() {
+                result_columns.copy_entry_from_column(header0, header0, &join_input.set0, row_ind0);
             }
-            // Append the current row with zeros in the remaining columns of the second set
-            for (col_i, column) in res_columns
-                .iter_mut()
-                .enumerate()
-                .skip(join_input.headers_types0.len())
-            {
-                let header = &join_input.result_headers_types[col_i].0;
-                let row_size = join_input.columns1.get_row_size(header);
-                column.extend(vec![0; row_size]);
+            // Append the current row with zeros in the remaining unique columns of the second set
+            for h in &join_input.nonkey_headers1 {
+                if !join_input.same_headers.contains(h) {
+                    result_columns.append_zero_entry(h);
+                }
             }
         }
     }
 
-    // The second part of the resulting null column is derived from the null column of the second set
-    let y_null_column = join_input.columns1.get_data(NULL_HEADER);
     // Add all the rows of the second set
-    for (i, null_bit) in y_null_column.iter().enumerate() {
-        if *null_bit == 0 {
-            append_zero_row(&mut res_columns, join_input);
+    for row_ind1 in 0..join_input.set1.get_num_rows() {
+        if join_input.set1.null_column[row_ind1] == 0 {
+            result_columns.append_zero_row();
             continue;
         }
-        for (col_i, column) in res_columns.iter_mut().enumerate() {
-            let header = &join_input.result_headers_types[col_i].0;
-            if header == NULL_HEADER {
+        for (h, _) in join_input.result_headers_types {
+            if h == NULL_HEADER {
                 // the null bit will be always 1 here
-                column.push(*null_bit);
-            } else if join_input.key_headers0.contains(header) {
+                result_columns.null_column.push(1);
+            } else if join_input.key_headers0.contains(h) {
                 // extract the content of a key column of the second set
-                let y_header = &join_input.key_headers_map[header];
-                extend_column(column, y_header, &join_input.columns1, i);
-            } else if col_i < join_input.headers_types0.len() {
-                // non-key columns of the first set. Fill them with zeros.
-                let row_size = join_input.columns0.get_row_size(header);
-                column.extend(vec![0; row_size]);
-            } else {
+                let header1 = &join_input.key_headers_map[h];
+                result_columns.copy_entry_from_column(h, header1, &join_input.set1, row_ind1);
+            } else if join_input.nonkey_headers1.contains(h) {
                 // non-key columns of the second set
-                extend_column(column, header, &join_input.columns1, i);
+                result_columns.copy_entry_from_column(h, h, &join_input.set1, row_ind1);
+            } else {
+                // non-key columns of the first set. Fill them with zeros.
+                result_columns.append_zero_entry(h);
             }
         }
     }
-    res_columns
+    Ok(result_columns)
 }
 
 fn get_number_of_rows(set_t: &Type) -> Result<u64> {
@@ -303,36 +437,32 @@ fn get_number_of_rows(set_t: &Type) -> Result<u64> {
     if headers_types.is_empty() {
         return Err(runtime_error!("The set is empty"));
     }
-    Ok(headers_types[0].1.get_shape()[0])
+    let first_column_t = ColumnType::new((*headers_types[0].1).clone(), true, &headers_types[0].0)?;
+    Ok(first_column_t.get_num_entries())
 }
 
 fn evaluate_full_join(
     set0: TypedValue,
     set1: TypedValue,
+    has_column_masks: bool,
     headers: &HashMap<String, String>,
     res_t: Type,
 ) -> Result<Value> {
     // First, evaluate the left join of set1 and set0.
     let num_rows1 = get_number_of_rows(&set1.t)?;
+    let headers_types0 = get_named_types(&set0.t)?;
     // Resulting type of this left join. The columns of set1 go first, then the remaining columns of set0.
     let left_join_t = {
         let mut result_types_vec = vec![];
         let headers_types1 = get_named_types(&set1.t)?;
         for (h, sub_t) in headers_types1 {
-            let mut shape = sub_t.get_shape();
-            shape[0] = num_rows1;
-            let st = sub_t.get_scalar_type();
-            let res_sub_t = array_type(shape, st);
-            result_types_vec.push((h.clone(), res_sub_t));
+            result_types_vec.push((h.clone(), (**sub_t).clone()));
         }
-        let headers_types0 = get_named_types(&set0.t)?;
         for (h, sub_t) in headers_types0 {
             if h != NULL_HEADER && !headers.contains_key(h) {
-                let mut shape = sub_t.get_shape();
-                shape[0] = num_rows1;
-                let st = sub_t.get_scalar_type();
-                let res_sub_t = array_type(shape, st);
-                result_types_vec.push((h.clone(), res_sub_t));
+                let column_t = ColumnType::new((**sub_t).clone(), has_column_masks, h)?;
+                let res_t = column_t.clone_with_number_of_entries(num_rows1);
+                result_types_vec.push((h.clone(), res_t.into()));
             }
         }
 
@@ -343,10 +473,12 @@ fn evaluate_full_join(
     for (h0, h1) in headers {
         left_join_headers.insert(h1.clone(), h0.clone());
     }
+
     let left_join_value = evaluate_join(
         JoinType::Left,
         set1,
         set0.clone(),
+        has_column_masks,
         &left_join_headers,
         left_join_t.clone(),
     )?;
@@ -356,74 +488,74 @@ fn evaluate_full_join(
         name: None,
     };
     // Then, evaluate the union of set0 and the left join result
-    // The headers for union should contain the input headers and the remaining headers of set0 except for NULL_HEADER.
-    // This avoids an error triggered on non-key columns with the same header.
-    let mut union_headers = headers.clone();
-    let headers0: Vec<String> = get_named_types(&set0.t)?
-        .iter()
-        .map(|ht| ht.0.clone())
-        .collect();
-    for h in &headers0 {
-        if h == NULL_HEADER {
-            continue;
-        }
-        if !headers.contains_key(h) {
-            union_headers.insert(h.clone(), h.clone());
-        }
-    }
-    evaluate_join(JoinType::Union, set0, left_join, &union_headers, res_t)
+    evaluate_join(
+        JoinType::Union,
+        set0,
+        left_join,
+        has_column_masks,
+        headers,
+        res_t,
+    )
 }
 
 pub(crate) fn evaluate_join(
     join_t: JoinType,
-    set0: TypedValue,
-    set1: TypedValue,
+    set0_tv: TypedValue,
+    set1_tv: TypedValue,
+    has_column_masks: bool,
     headers: &HashMap<String, String>,
     res_t: Type,
 ) -> Result<Value> {
     if join_t == JoinType::Full {
-        return evaluate_full_join(set0, set1, headers, res_t);
+        return evaluate_full_join(set0_tv, set1_tv, has_column_masks, headers, res_t);
     }
-    let headers_types1 = get_named_types(&set1.t)?;
+    let headers_types1 = get_named_types(&set1_tv.t)?;
     // Extract columns of the second set
-    let columns1 = extract_columns(&set1, headers_types1)?;
+    let set1 = extract_columns(&set1_tv, headers_types1, has_column_masks)?;
 
     let (key_headers0, key_headers1): (Vec<_>, Vec<_>) = headers.clone().into_iter().unzip();
     // Key columns of the second set are merged and added to the hash map along with the corresponding rows
-    let key_data_hashmap1 = get_hashmap_from_key_columns(&columns1, headers_types1, &key_headers1)?;
+    let key_data_hashmap1 = get_hashmap_from_key_columns(&set1, &key_headers1)?;
 
-    let headers_types0 = get_named_types(&set0.t)?;
+    let headers_types0 = get_named_types(&set0_tv.t)?;
     // Extract columns of the first set
-    let columns0 = extract_columns(&set0, headers_types0)?;
+    let set0 = extract_columns(&set0_tv, headers_types0, has_column_masks)?;
 
     let result_headers_types = get_named_types(&res_t)?;
 
+    let mut nonkey_headers1 = vec![];
+    for (h, _) in headers_types1 {
+        if h != NULL_HEADER && !key_headers1.contains(h) {
+            nonkey_headers1.push((*h).clone());
+        }
+    }
+    let mut same_headers = vec![];
+    for (h, _) in headers_types0 {
+        if nonkey_headers1.contains(h) {
+            same_headers.push((*h).clone());
+        }
+    }
+
     let join_input = JoinInput {
-        columns0,
-        columns1,
+        set0,
+        set1,
         headers_types0,
         key_headers0,
+        nonkey_headers1,
         key_headers_map: headers.clone(),
         key_data_hashmap1,
         result_headers_types,
+        same_headers,
     };
 
     let res_columns = match join_t {
-        JoinType::Inner => get_inner_join_columns(&join_input),
-        JoinType::Left => get_left_join_columns(&join_input),
-        JoinType::Union => get_union_columns(&join_input),
+        JoinType::Inner => get_inner_join_columns(&join_input)?,
+        JoinType::Left => get_left_join_columns(&join_input)?,
+        JoinType::Union => get_union_columns(&join_input)?,
         JoinType::Full => {
             // Full join is computed via left and union joins
             return Err(runtime_error!("Shouldn't be here"));
         }
     };
-    // Collect all columns
-    let mut res_value_vec = vec![];
-    for (i, (_, t)) in join_input.result_headers_types.iter().enumerate() {
-        res_value_vec.push(Value::from_flattened_array(
-            &res_columns[i],
-            t.get_scalar_type(),
-        )?);
-    }
-    Ok(Value::from_vector(res_value_vec))
+    res_columns.to_value(join_input)
 }

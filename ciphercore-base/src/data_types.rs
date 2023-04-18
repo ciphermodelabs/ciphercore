@@ -830,6 +830,18 @@ impl Type {
             ))
         }
     }
+
+    #[doc(hidden)]
+    pub fn get_names(&self) -> Result<Vec<String>> {
+        if let Type::NamedTuple(strings_types) = self.clone() {
+            let v = strings_types.iter().map(|st| st.0.clone()).collect();
+            Ok(v)
+        } else {
+            Err(runtime_error!(
+                "Can't get named types. Input type must be NamedTuple."
+            ))
+        }
+    }
 }
 
 // column header -> column type
