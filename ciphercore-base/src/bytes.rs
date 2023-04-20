@@ -319,13 +319,6 @@ pub fn vec_as_u128<T: TryInto<u128> + Not<Output = T> + Copy>(x: &[T]) -> Result
 
 /// Can return excess zero elements when ScalarType = BIT and
 /// the number of bits in bytes is bigger than the actual number of packed bits
-/// TODO(anna): remove it in the future.
-pub fn vec_from_bytes(x: &[u8], st: ScalarType) -> Result<Vec<u64>> {
-    vec_u64_from_bytes(x, st)
-}
-
-/// Can return excess zero elements when ScalarType = BIT and
-/// the number of bits in bytes is bigger than the actual number of packed bits
 pub fn vec_u64_from_bytes(x: &[u8], st: ScalarType) -> Result<Vec<u64>> {
     let mut x_u64s = vec![];
     match st {
@@ -580,7 +573,7 @@ mod tests {
         assert!(e.is_err());
     }
 
-    fn vec_from_bytes_helper(bytes: &Vec<u8>, ints: &Vec<u64>, st: ScalarType) {
+    fn vec_u64_from_bytes_helper(bytes: &Vec<u8>, ints: &Vec<u64>, st: ScalarType) {
         let bytes_ints = vec_u64_from_bytes(&bytes, st).unwrap();
         assert_eq!(bytes_ints, *ints);
     }
@@ -588,32 +581,32 @@ mod tests {
     #[test]
     fn test_vec_u64_from_bytes() {
         // correct input
-        vec_from_bytes_helper(&vec![0u8], &vec![0; 8], BIT);
-        vec_from_bytes_helper(
+        vec_u64_from_bytes_helper(&vec![0u8], &vec![0; 8], BIT);
+        vec_u64_from_bytes_helper(
             &vec![129u8, 2u8],
             &vec![1, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0, 0],
             BIT,
         );
 
-        vec_from_bytes_helper(&vec![0u8, 0u8], &vec![0u64, 0u64], UINT8);
-        vec_from_bytes_helper(&vec![255u8, 128u8], &vec![255u64, 128u64], UINT8);
+        vec_u64_from_bytes_helper(&vec![0u8, 0u8], &vec![0u64, 0u64], UINT8);
+        vec_u64_from_bytes_helper(&vec![255u8, 128u8], &vec![255u64, 128u64], UINT8);
 
-        vec_from_bytes_helper(&vec![0u8; 4], &vec![0u64; 2], UINT16);
-        vec_from_bytes_helper(
+        vec_u64_from_bytes_helper(&vec![0u8; 4], &vec![0u64; 2], UINT16);
+        vec_u64_from_bytes_helper(
             &vec![255u8, 255u8, 10u8, 100u8],
             &vec![(1u64 << 16) - 1, 25610u64],
             UINT16,
         );
 
-        vec_from_bytes_helper(&vec![0u8; 8], &vec![0u64; 2], UINT32);
-        vec_from_bytes_helper(
+        vec_u64_from_bytes_helper(&vec![0u8; 8], &vec![0u64; 2], UINT32);
+        vec_u64_from_bytes_helper(
             &vec![255u8, 255u8, 255u8, 255u8, 128u8, 119u8, 142u8, 6u8],
             &vec![(1u64 << 32) - 1u64, 110_000_000u64],
             UINT32,
         );
 
-        vec_from_bytes_helper(&vec![0u8; 16], &vec![0u64; 2], UINT64);
-        vec_from_bytes_helper(
+        vec_u64_from_bytes_helper(&vec![0u8; 16], &vec![0u64; 2], UINT64);
+        vec_u64_from_bytes_helper(
             &vec![
                 255u8, 255u8, 255u8, 255u8, 255u8, 255u8, 255u8, 255u8, 1u8, 0u8, 75u8, 205u8,
                 106u8, 204u8, 134u8, 1u8,
@@ -622,35 +615,35 @@ mod tests {
             UINT64,
         );
 
-        vec_from_bytes_helper(&vec![0u8, 0u8], &vec![0u64, 0u64], INT8);
-        vec_from_bytes_helper(&vec![255u8, 128u8], &vec![-1i8 as u64, -128i8 as u64], INT8);
+        vec_u64_from_bytes_helper(&vec![0u8, 0u8], &vec![0u64, 0u64], INT8);
+        vec_u64_from_bytes_helper(&vec![255u8, 128u8], &vec![-1i8 as u64, -128i8 as u64], INT8);
 
-        vec_from_bytes_helper(&vec![0u8; 4], &vec![0u64; 2], INT16);
-        vec_from_bytes_helper(
+        vec_u64_from_bytes_helper(&vec![0u8; 4], &vec![0u64; 2], INT16);
+        vec_u64_from_bytes_helper(
             &vec![255u8, 255u8, 10u8, 100u8],
             &vec![-1i16 as u64, 25610u64],
             INT16,
         );
-        vec_from_bytes_helper(
+        vec_u64_from_bytes_helper(
             &vec![156u8, 254u8, 10u8, 100u8],
             &vec![-356i16 as u64, 25610u64],
             INT16,
         );
 
-        vec_from_bytes_helper(&vec![0u8; 8], &vec![0u64; 2], INT32);
-        vec_from_bytes_helper(
+        vec_u64_from_bytes_helper(&vec![0u8; 8], &vec![0u64; 2], INT32);
+        vec_u64_from_bytes_helper(
             &vec![255u8, 255u8, 255u8, 255u8, 128u8, 119u8, 142u8, 6u8],
             &vec![-1i32 as u64, 110_000_000u64],
             INT32,
         );
-        vec_from_bytes_helper(
+        vec_u64_from_bytes_helper(
             &vec![155u8, 200u8, 250u8, 185u8, 128u8, 119u8, 142u8, 6u8],
             &vec![-1_174_746_981i32 as u64, 110_000_000u64],
             INT32,
         );
 
-        vec_from_bytes_helper(&vec![0u8; 16], &vec![0u64; 2], INT64);
-        vec_from_bytes_helper(
+        vec_u64_from_bytes_helper(&vec![0u8; 16], &vec![0u64; 2], INT64);
+        vec_u64_from_bytes_helper(
             &vec![
                 255u8, 255u8, 255u8, 255u8, 255u8, 255u8, 255u8, 255u8, 1u8, 0u8, 75u8, 205u8,
                 106u8, 204u8, 134u8, 1u8,
@@ -658,7 +651,7 @@ mod tests {
             &vec![u64::MAX, 110_000_000_000_000_001u64],
             INT64,
         );
-        vec_from_bytes_helper(
+        vec_u64_from_bytes_helper(
             &vec![
                 206u8, 254u8, 155u8, 156u8, 205u8, 252u8, 200u8, 245u8, 1u8, 0u8, 75u8, 205u8,
                 106u8, 204u8, 134u8, 1u8,
@@ -668,7 +661,7 @@ mod tests {
         );
 
         // malformed input
-        let e = vec_from_bytes(&vec![0u8, 0u8, 0u8], UINT16);
+        let e = vec_u64_from_bytes(&vec![0u8, 0u8, 0u8], UINT16);
         assert!(e.is_err());
     }
     fn vec_u128_from_bytes_helper(bytes: &Vec<u8>, ints: &Vec<u128>, st: ScalarType) {
@@ -804,7 +797,7 @@ mod tests {
         );
 
         // malformed input
-        let e = vec_from_bytes(&vec![0u8, 0u8, 0u8], UINT16);
+        let e = vec_u64_from_bytes(&vec![0u8, 0u8, 0u8], UINT16);
         assert!(e.is_err());
     }
 }
