@@ -3698,9 +3698,7 @@ pub struct Context {
 
 impl fmt::Debug for Context {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Context")
-            .field("body", &self.body.as_ptr())
-            .finish()
+        fmt::Display::fmt(self, f)
     }
 }
 
