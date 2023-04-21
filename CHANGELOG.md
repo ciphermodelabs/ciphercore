@@ -1,3 +1,8 @@
+# Changes in CipherCore 0.2.0
+
+* **Added support for 128-bit integers** 
+* **Postpone resharing** Performance optimization to reduce communication by delaying conversions from 3-out-of-3 secret shares to 2-out-of-3, if 2-out-of-3 shares are not immediately required by proceeding operations (e.g. additions).
+
 # Changes in CipherCore 0.1.3
 
 * **Better SMPC protocol for Private set intersection** The new protocol follows the description of the Join protocol from <https://eprint.iacr.org/2019/518.pdf>. The operation is renamed from `SetIntersection` to `Join`, and supports four join flavors: Inner, Left, Union and Full.
