@@ -1,7 +1,7 @@
 from setuptools import find_packages, setup
 from setuptools_rust import Binding, RustExtension
 
-__version__ = "0.1.3"
+__version__ = "0.2.0"
 
 with open('../../README.md', 'r') as f:
   long_description = f.read()
