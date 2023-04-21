@@ -56,6 +56,8 @@ pub enum ScalarType {
     I32,
     U64,
     I64,
+    U128,
+    I128,
 }
 
 #[cfg_attr(feature = "py-binding", impl_wrapper)]
@@ -103,15 +105,17 @@ impl ScalarType {
             ScalarType::U16 => false,
             ScalarType::U32 => false,
             ScalarType::U64 => false,
+            ScalarType::U128 => false,
             // Signed types.
             ScalarType::I8 => true,
             ScalarType::I16 => true,
             ScalarType::I32 => true,
             ScalarType::I64 => true,
+            ScalarType::I128 => true,
         }
     }
 
-    /// Returns scalar's modulus value, which defines the range of integers.
+    /// Returns scalar's modulus value, which defines the range of integers. If it's impossible as for 128-bit types, it returns `None`.
     ///
     /// # Returns
     ///
@@ -139,6 +143,8 @@ impl ScalarType {
             ScalarType::I32 => Some(1u128 << 32),
             ScalarType::U64 => Some(1u128 << 64),
             ScalarType::I64 => Some(1u128 << 64),
+            ScalarType::U128 => None,
+            ScalarType::I128 => None,
         }
     }
 
@@ -158,6 +164,8 @@ impl ScalarType {
             ScalarType::I32 => 32,
             ScalarType::U64 => 64,
             ScalarType::I64 => 64,
+            ScalarType::U128 => 128,
+            ScalarType::I128 => 128,
         }
     }
 
@@ -172,6 +180,8 @@ impl ScalarType {
             ScalarType::I32 => ScalarType::U32,
             ScalarType::U64 => ScalarType::U64,
             ScalarType::I64 => ScalarType::U64,
+            ScalarType::U128 => ScalarType::U128,
+            ScalarType::I128 => ScalarType::U128,
         }
     }
 }
@@ -181,8 +191,6 @@ impl ScalarType {
 /// BIT scalar type corresponds to either 0 or 1 bit.
 ///
 /// BIT is analogous to [numpy.bool_](https://numpy.org/doc/stable/reference/arrays.scalars.html#numpy.bool_) from NumPy.
-///
-/// This scalar type has field `signed` set to `false` and `modulus` value set to `Some`(2).
 ///
 /// # Example
 ///
@@ -197,8 +205,6 @@ pub const BIT: ScalarType = ScalarType::Bit;
 /// UINT8 corresponds to integers from 0 to 2<sup>8</sup>-1, both inclusive.
 ///
 /// UINT8 is analogous to [numpy.uint8](https://numpy.org/doc/stable/reference/arrays.scalars.html#numpy.uint8) from NumPy.
-///
-/// This scalar type has field `signed` set to `false` and `modulus` value set as `Some`(2<sup>8</sup>).
 ///
 /// # Example
 ///
@@ -215,8 +221,6 @@ pub const UINT8: ScalarType = ScalarType::U8;
 ///
 /// INT8 is analogous to [numpy.int8](https://numpy.org/doc/stable/reference/arrays.scalars.html#numpy.int8) from NumPy.
 ///
-/// This scalar type has field `signed` set to `true` and `modulus` value set to `Some`(2<sup>8</sup>).
-///
 /// # Example
 ///
 /// ```
@@ -231,8 +235,6 @@ pub const INT8: ScalarType = ScalarType::I8;
 /// UINT16 corresponds to integers from 0 to 2<sup>16</sup>-1, both inclusive.
 ///
 /// UINT16 is analogous to [numpy.uint16](https://numpy.org/doc/stable/reference/arrays.scalars.html#numpy.uint16) from NumPy.
-///
-/// This scalar type has field `signed` set to `false` and `modulus` value set to `Some`\(2<sup>16</sup>\).
 ///
 /// # Example
 ///
@@ -249,8 +251,6 @@ pub const UINT16: ScalarType = ScalarType::U16;
 ///
 /// INT16 is analogous to [numpy.int16](https://numpy.org/doc/stable/reference/arrays.scalars.html#numpy.int16) from NumPy.
 ///
-/// This scalar type has field `signed` set to `true` and `modulus` value set to `Some`\(2<sup>16</sup>\).
-///
 /// # Example
 ///
 /// ```
@@ -265,8 +265,6 @@ pub const INT16: ScalarType = ScalarType::I16;
 /// UINT32 corresponds to integers from 0 to 2<sup>32</sup>-1, both inclusive.
 ///
 /// UINT32 is analogous to [numpy.uint32](https://numpy.org/doc/stable/reference/arrays.scalars.html#numpy.uint32) from NumPy.
-///
-/// This scalar type has field `signed` set to `false` and `modulus` value set to `Some`(2<sup>32</sup>).
 ///
 /// # Example
 ///
@@ -283,8 +281,6 @@ pub const UINT32: ScalarType = ScalarType::U32;
 ///
 /// INT32 is analogous to [numpy.int32](https://numpy.org/doc/stable/reference/arrays.scalars.html#numpy.int32) from NumPy.
 ///
-/// This scalar type has field `signed` set to `true` and `modulus` value set to `Some`(2<sup>32</sup>).
-///
 /// # Example
 ///
 /// ```
@@ -299,8 +295,6 @@ pub const INT32: ScalarType = ScalarType::I32;
 /// UINT64 corresponds to integers from 0 to 2<sup>64</sup>-1, both inclusive.
 ///
 /// UINT64 is analogous to [numpy.uint64](https://numpy.org/doc/stable/reference/arrays.scalars.html#numpy.uint64) from NumPy.
-///
-/// This scalar type has field `signed` set to `false` and `modulus` value set to `Some`(2<sup>64</sup>).
 ///
 /// # Example
 ///
@@ -317,8 +311,6 @@ pub const UINT64: ScalarType = ScalarType::U64;
 ///
 /// INT64 is analogous to [numpy.int64](https://numpy.org/doc/stable/reference/arrays.scalars.html#numpy.int64) from NumPy.
 ///
-/// This scalar type has field `signed` set to `true` and `modulus` value set to `Some`(2<sup>64</sup>).
-///
 /// # Example
 ///
 /// ```
@@ -327,6 +319,32 @@ pub const UINT64: ScalarType = ScalarType::U64;
 /// assert_eq!(INT64, ScalarType::I64);
 /// ```
 pub const INT64: ScalarType = ScalarType::I64;
+
+/// Scalar type corresponding to unsigned 128-bit integers.
+///
+/// UINT128 corresponds to integers from 0 to 2<sup>128</sup>-1, both inclusive.
+///
+/// # Example
+///
+/// ```
+/// # use ciphercore_base::data_types::{UINT128, ScalarType};
+/// let two: u128 = 2;
+/// assert_eq!(UINT128, ScalarType::U128);
+/// ```
+pub const UINT128: ScalarType = ScalarType::U128;
+
+/// Scalar type corresponding to signed 128-bit integers.
+///
+/// INT128 corresponds to integers from -2<sup>127</sup> to 2<sup>127</sup>-1, both inclusive.
+///
+/// # Example
+///
+/// ```
+/// # use ciphercore_base::data_types::{INT128, ScalarType};
+/// let two: u128 = 2;
+/// assert_eq!(INT128, ScalarType::I128);
+/// ```
+pub const INT128: ScalarType = ScalarType::I128;
 
 /// Vector of dimension lengths for each axis of an array.
 ///
@@ -812,6 +830,18 @@ impl Type {
             ))
         }
     }
+
+    #[doc(hidden)]
+    pub fn get_names(&self) -> Result<Vec<String>> {
+        if let Type::NamedTuple(strings_types) = self.clone() {
+            let v = strings_types.iter().map(|st| st.0.clone()).collect();
+            Ok(v)
+        } else {
+            Err(runtime_error!(
+                "Can't get named types. Input type must be NamedTuple."
+            ))
+        }
+    }
 }
 
 // column header -> column type
@@ -1082,8 +1112,10 @@ impl FromStr for ScalarType {
             "i32" => Ok(INT32),
             "u64" => Ok(UINT64),
             "i64" => Ok(INT64),
+            "u128" => Ok(UINT128),
+            "i128" => Ok(INT128),
             _ => Err(runtime_error!(
-                "Unknown scalar type. Expected b|u8|i8|u16|i16|u32|i32|u64|i64."
+                "Unknown scalar type. Expected b|u8|i8|u16|i16|u32|i32|u64|i64|u128|i128."
             )),
         }
     }

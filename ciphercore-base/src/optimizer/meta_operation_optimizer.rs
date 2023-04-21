@@ -1,4 +1,4 @@
-use crate::bytes::vec_from_bytes;
+use crate::bytes::vec_u64_from_bytes;
 use crate::data_types::UINT64;
 use crate::errors::Result;
 use crate::graphs::{copy_node_name, Graph, Node, Operation, SliceElement};
@@ -75,7 +75,7 @@ pub(super) fn optimize_graph_meta_operations(graph: Graph, out_graph: Graph) -> 
                 if t.is_scalar() && t.get_scalar_type() == UINT64 {
                     v.access_bytes(|bytes| {
                         Ok(Some(ProxyObjectWithNode {
-                            meta: ProxyObject::Number(vec_from_bytes(bytes, UINT64)?[0]),
+                            meta: ProxyObject::Number(vec_u64_from_bytes(bytes, UINT64)?[0]),
                             node: simple_node.clone(),
                         }))
                     })?

@@ -905,6 +905,8 @@ pub mod graphs;
 #[doc(hidden)]
 pub mod inline;
 #[doc(hidden)]
+pub mod join_utils;
+#[doc(hidden)]
 pub mod mpc;
 pub mod ops;
 #[doc(hidden)]

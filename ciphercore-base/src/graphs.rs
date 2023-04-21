@@ -122,7 +122,7 @@ pub enum Operation {
     // In particular, unlike Dot, it doesn't support scalar inputs.
     Matmul,
     Gemm(bool, bool),
-    Truncate(u64),
+    Truncate(u128),
     Sum(ArrayShape),
     CumSum(u64),
     PermuteAxes(ArrayShape),
@@ -161,6 +161,7 @@ pub enum Operation {
     Shard(ShardConfig),
     // SQL joins
     Join(JoinType, HashMap<String, String>),
+    JoinWithColumnMasks(JoinType, HashMap<String, String>),
     ApplyPermutation(bool),
     Sort(String),
     Custom(CustomOperation),
@@ -322,6 +323,7 @@ impl Operation {
             | Operation::Repeat(_)
             | Operation::VectorToArray
             | Operation::Join(_, _)
+            | Operation::JoinWithColumnMasks(_, _)
             | Operation::Print(_)
             | Operation::Shard(_) => Ok(false),
             Operation::Call | Operation::Iterate => Err(runtime_error!(
@@ -711,7 +713,7 @@ impl Node {
     /// let t1n = array_type(vec![100], BIT);
     /// let t11 = array_type(vec![100], INT32);
     /// let t12 = array_type(vec![100, 128], BIT);
-    /// let t13 = array_type(vec![100],  INT64);
+    /// let t13 = array_type(vec![100], INT64);
     /// let t2n = array_type(vec![50], BIT);
     /// let t21 = array_type(vec![50], INT32);
     /// let t22 = array_type(vec![50, 128], BIT);
@@ -737,6 +739,57 @@ impl Node {
     /// ```
     pub fn join(&self, b: Node, t: JoinType, headers: HashMap<String, String>) -> Result<Node> {
         self.get_graph().join(self.clone(), b, t, headers)
+    }
+
+    /// Adds a node that computes a join of a given type on two named tuples along given key headers.
+    /// More detailed documentation can be found in [Graph::join_with_column_masks].
+    ///
+    /// Applies [Graph::join_with_column_masks] to the parent graph, `this` node and the `b` node.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::{create_context, JoinType};
+    /// # use ciphercore_base::data_types::{INT32, INT64, UINT8, BIT, array_type, named_tuple_type, tuple_type};
+    /// # use ciphercore_base::type_inference::NULL_HEADER;
+    /// # use std::collections::HashMap;
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t1n = array_type(vec![100], BIT);
+    /// let t11 = tuple_type(vec![array_type(vec![100], BIT), array_type(vec![100], INT32)]);
+    /// let t12 = tuple_type(vec![array_type(vec![100], BIT), array_type(vec![100, 128], BIT)]);
+    /// let t13 = tuple_type(vec![array_type(vec![100], BIT), array_type(vec![100], INT64)]);
+    /// let t2n = array_type(vec![50], BIT);
+    /// let t21 = tuple_type(vec![array_type(vec![50], BIT), array_type(vec![50], INT32)]);
+    /// let t22 = tuple_type(vec![array_type(vec![50], BIT), array_type(vec![50, 128], BIT)]);
+    /// let t23 = tuple_type(vec![array_type(vec![50], BIT), array_type(vec![50], UINT8)]);
+    /// let t1 = named_tuple_type(vec![
+    ///     (NULL_HEADER.to_owned(), t1n),
+    ///     ("ID".to_owned(), t11),
+    ///     ("Occupation".to_owned(), t12),
+    ///     ("Revenue".to_owned(), t13),
+    /// ]);
+    /// let t2 = named_tuple_type(vec![
+    ///     (NULL_HEADER.to_owned(), t2n),
+    ///     ("ID".to_owned(), t21),
+    ///     ("Job".to_owned(), t22),
+    ///     ("Age".to_owned(), t23),
+    /// ]);
+    /// let n1 = g.input(t1).unwrap();
+    /// let n2 = g.input(t2).unwrap();
+    /// let n3 = n1.join_with_column_masks(n2, JoinType::Inner, HashMap::from([
+    ///     ("ID".to_owned(), "ID".to_owned()),
+    ///     ("Occupation".to_owned(), "Job".to_owned()),
+    /// ])).unwrap();
+    /// ```
+    pub fn join_with_column_masks(
+        &self,
+        b: Node,
+        t: JoinType,
+        headers: HashMap<String, String>,
+    ) -> Result<Node> {
+        self.get_graph()
+            .join_with_column_masks(self.clone(), b, t, headers)
     }
 
     /// Adds a node that applies a permutation to the array along the first dimension.
@@ -839,7 +892,7 @@ impl Node {
     /// let n1 = g.input(t).unwrap();
     /// let n2 = n1.truncate(4).unwrap();
     /// ```
-    pub fn truncate(&self, scale: u64) -> Result<Node> {
+    pub fn truncate(&self, scale: u128) -> Result<Node> {
         self.get_graph().truncate(self.clone(), scale)
     }
 
@@ -1782,28 +1835,26 @@ impl Graph {
     /// Adds a node that computes a join of a given type on two named tuples along given key headers.
     ///
     /// Each tuple should consist of arrays having the same number of rows, i.e. the first dimensions of these arrays should be equal.
-    /// **WARNING**: The rows consisiting of only columns with given key headers (key columns) should be unique.
-    ///  
+    ///
     /// In addition, each named tuple should have a binary array named with NULL_HEADER that contains zeros in rows void of content; otherwise, it contains ones.
     /// This column is called the null column.
     ///
+    /// Let `row key` be the bitstring obtained by concatenating data elements for given key headers.
+    /// **WARNING**: Rows must have unique row keys, except for rows where NULL_HEADER is zero: those rows are ignored.
+    ///
     /// This operation returns:
-    /// - Inner join: a named tuple containing rows whose content is equal in the key columns named by given key headers.
-    /// - Left join: a named tuple containing rows of the first named tuple and the rows of the second named tuple whose content is equal to the one of the first named tuple in the key columns named by given key headers.
-    /// - Union join: a named tuple containing rows of the first named tuple that are not in the inner join and all the rows of the second set.
+    /// - Inner join: a named tuple containing rows where input tuples have matching row keys.
+    /// - Left join: a named tuple containing all the rows of the first input tuple merged with the rows of the second input tuple having same row keys.
+    /// - Union join: a named tuple containing rows of the first input tuple that are not in the inner join and all the rows of the second tuple.
     /// In contrast to the SQL union, this operation does not require that input datasets have respective columns of the same type.
     /// This means that columns of both datasets are included and filled with zeros where no data can be retrieved.
     /// Namely, the rows of the second set in the union join will contain zeros in non-key columns of the first set and vice versa.
-    /// - Full join: a named tuple containing all the rows of the both sets.
-    /// If a row of the first set match with a row of the second set, they are merged into one.
+    /// - Full join: a named tuple containing all the rows of input tuples.
+    /// If the row key of a row of the first set match with the row key of a row of the second set, they are merged into one.
     /// The order of rows goes as follows:
     /// 1. the rows of the first set that don't belong to the inner join.
     /// 2. all the rows of the second set including those merged with the rows of the first set as in inner join.
-    /// In this form, full join is computed as `union_join(a, left_join(b, a))`.  
-    ///
-    /// The content of non-key columns is merged.
-    /// The order of these rows is the same as in the first named tuple.
-    /// The content of other rows is set to zero including the null column.
+    /// In this form, full join is computed as `union_join(a, left_join(b, a))`.
     ///
     /// # Arguments
     ///
@@ -1828,7 +1879,7 @@ impl Graph {
     /// let t1n = array_type(vec![100], BIT);
     /// let t11 = array_type(vec![100], INT32);
     /// let t12 = array_type(vec![100, 128], BIT);
-    /// let t13 = array_type(vec![100],  INT64);
+    /// let t13 = array_type(vec![100], INT64);
     /// let t2n = array_type(vec![50], BIT);
     /// let t21 = array_type(vec![50], INT32);
     /// let t22 = array_type(vec![50, 128], BIT);
@@ -1860,6 +1911,95 @@ impl Graph {
         headers: HashMap<String, String>,
     ) -> Result<Node> {
         self.add_node(vec![a, b], vec![], Operation::Join(t, headers))
+    }
+
+    /// Adds a node that computes a join of a given type on two named tuples along given key headers.
+    ///
+    /// Each tuple should consist of pairs of arrays having the same number of rows, i.e. the first dimensions of these arrays should be equal.
+    /// Each pair has a binary array that contains zeros in rows where the data array has no content and an array with data.
+    ///
+    /// In addition, each named tuple should have a binary array named with NULL_HEADER that contains zeros in rows void of content; otherwise, it contains ones.
+    /// This column is called the null column.
+    ///
+    /// Let `row key` be the bitstring obtained by concatenating data elements for given key headers where all the corresponding mask elements are set to one.
+    /// **WARNING**: Rows must have unique row keys, except for rows where NULL_HEADER is zero or at least one mask element in given key headers is zero.
+    /// Rows with zero NULL_HEADER are ignored.
+    /// We assume that rows with zero mask elements don't match with other rows.
+    /// Thus, they can't show up in inner and left joins, but can be copied over to the result of union or full joins.
+    ///
+    /// This operation returns:
+    /// - Inner join: a named tuple containing rows where input tuples have matching row keys.
+    /// - Left join: a named tuple containing all the rows of the first input tuple merged with the rows of the second input tuple having same row keys.
+    /// - Union join: a named tuple containing rows of the first input tuple that are not in the inner join and all the rows of the second tuple.
+    /// In contrast to the SQL union, this operation does not require that input datasets have respective columns of the same type.
+    /// This means that columns of both datasets are included and filled with zeros where no data can be retrieved.
+    /// Namely, the rows of the second set in the union join will contain zeros in non-key columns of the first set and vice versa.
+    /// - Full join: a named tuple containing all the rows of input tuples.
+    /// If the row key of a row of the first set match with the row key of a row of the second set, they are merged into one.
+    /// The order of rows goes as follows:
+    /// 1. the rows of the first set that don't belong to the inner join.
+    /// 2. all the rows of the second set including those merged with the rows of the first set as in inner join.
+    /// In this form, full join is computed as `union_join(a, left_join(b, a))`.
+    ///
+    /// # Arguments
+    ///
+    /// * `a` - node containing the first named tuple
+    /// * `b` - node containing the second named tuple
+    /// * `t` - join type (Inner/Left/Union/Full)
+    /// * `headers` - headers of columns along which the join is performed
+    ///
+    /// # Returns
+    ///
+    /// New join node
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use ciphercore_base::graphs::{create_context, JoinType};
+    /// # use ciphercore_base::data_types::{INT32, INT64, UINT8, BIT, array_type, named_tuple_type, tuple_type};
+    /// # use ciphercore_base::type_inference::NULL_HEADER;
+    /// # use std::collections::HashMap;
+    /// let c = create_context().unwrap();
+    /// let g = c.create_graph().unwrap();
+    /// let t1n = array_type(vec![100], BIT);
+    /// let t11 = tuple_type(vec![array_type(vec![100], BIT), array_type(vec![100], INT32)]);
+    /// let t12 = tuple_type(vec![array_type(vec![100], BIT), array_type(vec![100, 128], BIT)]);
+    /// let t13 = tuple_type(vec![array_type(vec![100], BIT), array_type(vec![100], INT64)]);
+    /// let t2n = array_type(vec![50], BIT);
+    /// let t21 = tuple_type(vec![array_type(vec![50], BIT), array_type(vec![50], INT32)]);
+    /// let t22 = tuple_type(vec![array_type(vec![50], BIT), array_type(vec![50, 128], BIT)]);
+    /// let t23 = tuple_type(vec![array_type(vec![50], BIT), array_type(vec![50], UINT8)]);
+    /// let t1 = named_tuple_type(vec![
+    ///     (NULL_HEADER.to_owned(), t1n),
+    ///     ("ID".to_owned(), t11),
+    ///     ("Occupation".to_owned(), t12),
+    ///     ("Revenue".to_owned(), t13),
+    /// ]);
+    /// let t2 = named_tuple_type(vec![
+    ///     (NULL_HEADER.to_owned(), t2n),
+    ///     ("ID".to_owned(), t21),
+    ///     ("Job".to_owned(), t22),
+    ///     ("Age".to_owned(), t23),
+    /// ]);
+    /// let n1 = g.input(t1).unwrap();
+    /// let n2 = g.input(t2).unwrap();
+    /// let n3 = g.join_with_column_masks(n1, n2, JoinType::Inner, HashMap::from([
+    ///     ("ID".to_owned(), "ID".to_owned()),
+    ///     ("Occupation".to_owned(), "Job".to_owned()),
+    /// ])).unwrap();
+    /// ```
+    pub fn join_with_column_masks(
+        &self,
+        a: Node,
+        b: Node,
+        t: JoinType,
+        headers: HashMap<String, String>,
+    ) -> Result<Node> {
+        self.add_node(
+            vec![a, b],
+            vec![],
+            Operation::JoinWithColumnMasks(t, headers),
+        )
     }
 
     /// Adds a node that applies a permutation to the array along the first dimension.
@@ -1972,7 +2112,7 @@ impl Graph {
     /// let n1 = g.input(t).unwrap();
     /// let n2 = g.truncate(n1, 4).unwrap();
     /// ```
-    pub fn truncate(&self, a: Node, scale: u64) -> Result<Node> {
+    pub fn truncate(&self, a: Node, scale: u128) -> Result<Node> {
         self.add_node(vec![a], vec![], Operation::Truncate(scale))
     }
 
@@ -3558,9 +3698,7 @@ pub struct Context {
 
 impl fmt::Debug for Context {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Context")
-            .field("body", &self.body.as_ptr())
-            .finish()
+        fmt::Display::fmt(self, f)
     }
 }
 

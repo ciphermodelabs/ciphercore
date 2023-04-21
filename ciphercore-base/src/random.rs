@@ -1,4 +1,4 @@
-use crate::bytes::vec_from_bytes;
+use crate::bytes::vec_u64_from_bytes;
 use crate::data_types::{get_size_in_bits, get_types_vector, Type, UINT64};
 use crate::data_values::Value;
 use crate::errors::Result;
@@ -109,14 +109,14 @@ impl PRNG {
             let rejection_bound = u64::MAX - rem;
             let mut r;
             loop {
-                r = vec_from_bytes(&self.get_random_bytes(8)?, UINT64)?[0];
+                r = vec_u64_from_bytes(&self.get_random_bytes(8)?, UINT64)?[0];
                 if r <= rejection_bound {
                     break;
                 }
             }
             Ok(r % m)
         } else {
-            Ok(vec_from_bytes(&self.get_random_bytes(8)?, UINT64)?[0])
+            Ok(vec_u64_from_bytes(&self.get_random_bytes(8)?, UINT64)?[0])
         }
     }
 }

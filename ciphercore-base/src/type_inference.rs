@@ -6,9 +6,9 @@ use crate::data_types::{
 };
 use crate::errors::Result;
 use crate::graphs::{create_context, Context, JoinType, Node, Operation, WeakContext};
+use crate::join_utils::check_table_and_extract_column_types;
 use crate::slices::get_slice_shape;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 
 type CachedResults = HashMap<(u64, u64), Type>;
 type CachedInstantiations = HashMap<Instantiation, Type>;
@@ -280,76 +280,21 @@ fn b2a_type_inference(t: Type, st: ScalarType) -> Result<Type> {
 /// If the "null" bit is zero, the row is empty.
 pub const NULL_HEADER: &str = "row_mask_sentinel_639bcf36-a1b0-11ed-b93a-423c7c497182";
 
-fn check_table_and_extract_column_types(
-    t: Type,
-    has_null_column: bool,
-) -> Result<(HashMap<String, Arc<Type>>, u64)> {
-    let v = get_named_types(&t)?;
-
-    if has_null_column && v.len() < 2 {
-        return Err(runtime_error!("Named tuple should contain at least two columns, one of which must be the null column. Got: {v:?}"));
-    }
-    if !has_null_column && v.is_empty() {
-        return Err(runtime_error!(
-            "Named tuple should contain at least one column."
-        ));
-    }
-    let mut num_entries = 0;
-    let mut contains_null = false;
-    let mut all_headers: HashMap<String, Arc<Type>> = HashMap::new();
-    for (h, sub_t) in v {
-        if !sub_t.is_array() {
-            return Err(runtime_error!(
-                "Named tuple should consist of arrays, got: {sub_t:?}"
-            ));
-        }
-        let shape = sub_t.get_shape();
-        if num_entries == 0 {
-            num_entries = shape[0]
-        }
-        if num_entries != shape[0] {
-            return Err(runtime_error!(
-                "Number of entries should be the same in each column: {} vs {}",
-                num_entries,
-                shape[0]
-            ));
-        }
-        if h == NULL_HEADER && has_null_column {
-            if sub_t.get_scalar_type() != BIT {
-                return Err(runtime_error!(
-                    "Null column should be binary, got {sub_t:?}"
-                ));
-            }
-            if shape != vec![num_entries] {
-                return Err(runtime_error!(
-                    "Null column should have shape {:?}",
-                    vec![num_entries]
-                ));
-            }
-            contains_null = true;
-        }
-        all_headers.insert(h.clone(), (*sub_t).clone());
-    }
-    if !contains_null && has_null_column {
-        return Err(runtime_error!("Named tuple should contain the null column"));
-    }
-    Ok((all_headers, num_entries))
-}
-
 fn join_inference(
     t0: Type,
     t1: Type,
     join_t: JoinType,
     headers: HashMap<String, String>,
+    has_column_masks: bool,
 ) -> Result<Type> {
     if headers.is_empty() {
         return Err(runtime_error!("No column headers provided"));
     }
 
     let (headers_types_map0, num_entries0) =
-        check_table_and_extract_column_types(t0.clone(), true)?;
+        check_table_and_extract_column_types(t0.clone(), true, has_column_masks)?;
     let (headers_types_map1, num_entries1) =
-        check_table_and_extract_column_types(t1.clone(), true)?;
+        check_table_and_extract_column_types(t1.clone(), true, has_column_masks)?;
 
     let mut key_headers1 = vec![];
     for (h0, h1) in headers {
@@ -366,26 +311,27 @@ fn join_inference(
                 "There is no header {h1} in the second named tuple"
             ));
         }
-        let sub_t0 = headers_types_map0.get(&h0).unwrap();
-        let sub_t1 = headers_types_map1.get(&h1).unwrap();
+        let column_t0 = headers_types_map0.get(&h0).unwrap();
+        let column_t1 = headers_types_map1.get(&h1).unwrap();
 
-        let shape0 = sub_t0.get_shape();
-        let shape1 = sub_t1.get_shape();
+        let shape0 = column_t0.get_data_shape();
+        let shape1 = column_t1.get_data_shape();
         // First dimension can differ as input tuples might have different number of entries/rows
         if shape0[1..] != shape1[1..] {
             return Err(runtime_error!(
-                "Columns with names {h0} {h1} have incompatible shapes to be compared"
+                "Columns with names {h0} {h1} have incompatible shapes to be compared, {:?} vs {:?}",
+                shape0, shape1
             ));
         }
-        if sub_t0.get_scalar_type() != sub_t1.get_scalar_type() {
+        if column_t0.get_scalar_type() != column_t1.get_scalar_type() {
             return Err(runtime_error!(
                 "Columns with names {h0} {h1} have incompatible scalar types to be compared"
             ));
         }
         key_headers1.push(h1);
     }
-    for (h, _) in headers_types_map1 {
-        if h != NULL_HEADER && headers_types_map0.contains_key(&h) && !key_headers1.contains(&h) {
+    for h in headers_types_map1.keys() {
+        if h != NULL_HEADER && headers_types_map0.contains_key(h) && !key_headers1.contains(h) {
             return Err(runtime_error!("Both tuples contain columns named {h} that don't participate in the join. Rename one of these to a unique name."));
         }
     }
@@ -396,24 +342,18 @@ fn join_inference(
         JoinType::Union | JoinType::Full => num_entries0 + num_entries1,
     };
 
-    let headers_types0 = get_named_types(&t0)?;
-    let headers_types1 = get_named_types(&t1)?;
+    let headers0 = t0.get_names()?;
+    let headers1 = t1.get_names()?;
 
-    for (h, sub_t) in headers_types0 {
-        let mut shape = sub_t.get_shape();
-        shape[0] = res_num_entries;
-        let st = sub_t.get_scalar_type();
-        let res_sub_t = array_type(shape, st);
-        result_types_vec.push((h.clone(), res_sub_t));
+    for h in &headers0 {
+        let res_col_t = headers_types_map0[h].clone_with_number_of_entries(res_num_entries);
+        result_types_vec.push((h.clone(), res_col_t.into()));
     }
 
-    for (h, sub_t) in headers_types1 {
+    for h in &headers1 {
         if !headers_types_map0.contains_key(h) && !key_headers1.contains(h) {
-            let mut shape = sub_t.get_shape();
-            shape[0] = res_num_entries;
-            let st = sub_t.get_scalar_type();
-            let res_sub_t = array_type(shape, st);
-            result_types_vec.push((h.clone(), res_sub_t));
+            let res_col_t = headers_types_map1[h].clone_with_number_of_entries(res_num_entries);
+            result_types_vec.push((h.clone(), res_col_t.into()));
         }
     }
 
@@ -465,6 +405,7 @@ fn get_number_of_node_dependencies(operation: Operation) -> Option<u64> {
         | Operation::CuckooHash
         | Operation::ApplyPermutation(_)
         | Operation::Join(_, _)
+        | Operation::JoinWithColumnMasks(_, _)
         | Operation::Gemm(_, _)
         | Operation::Assert(_) => Some(2),
         Operation::SegmentCumSum => Some(3),
@@ -702,6 +643,18 @@ impl TypeInferenceWorker {
                     node_dependencies_types[1].clone(),
                     join_t,
                     headers,
+                    false,
+                )?;
+                self.register_result(node, result.clone())?;
+                Ok(result)
+            }
+            Operation::JoinWithColumnMasks(join_t, headers) => {
+                let result = join_inference(
+                    node_dependencies_types[0].clone(),
+                    node_dependencies_types[1].clone(),
+                    join_t,
+                    headers,
+                    true,
                 )?;
                 self.register_result(node, result.clone())?;
                 Ok(result)
@@ -716,6 +669,11 @@ impl TypeInferenceWorker {
                 let n = t.get_shape()[0];
                 let p = node_dependencies_types[1].clone();
                 if let Type::Array(shape, st) = p.clone() {
+                    if st.size_in_bits() == 128 {
+                        return Err(runtime_error!(
+                            "ApplyPermutation is not supported for 128-bit index type"
+                        ));
+                    }
                     if shape.len() != 1 || shape[0] != n || st == BIT || st.is_signed() {
                         return Err(runtime_error!(
                             "Permutation should be a 1D UINT* array of shape [{n}]. Found type: {p:?}"
@@ -791,7 +749,7 @@ impl TypeInferenceWorker {
                 if !t.is_array() && !t.is_scalar() {
                     return Err(runtime_error!("Can't truncate this type: {t:?}"));
                 }
-                if t.get_scalar_type().is_signed() && d > i64::MAX as u64 {
+                if t.get_scalar_type().is_signed() && d > i128::MAX as u128 {
                     return Err(runtime_error!("Scale for truncation is too large: {d}"));
                 }
                 self.register_result(node, t.clone())?;
@@ -878,6 +836,11 @@ impl TypeInferenceWorker {
                     return Err(runtime_error!("Input type should be an array: {t:?}"));
                 }
                 let st = t.get_scalar_type();
+                if st.size_in_bits() == 128 {
+                    return Err(runtime_error!(
+                        "InversePermutation is not supported for 128-bit type"
+                    ));
+                }
                 if st == BIT || st.is_signed() {
                     return Err(runtime_error!("Input elements must be UINT*: {t:?}"));
                 }
@@ -1472,6 +1435,11 @@ impl TypeInferenceWorker {
                 let indices_t = node_dependencies_types[1].clone();
                 match indices_t {
                     Type::Array(_, st) => {
+                        if st.size_in_bits() == 128 {
+                            return Err(runtime_error!(
+                                "Gather is not supported for 128-bit index type"
+                            ));
+                        }
                         if st.is_signed() || st == BIT {
                             return Err(runtime_error!(
                                 "Indices must be an array of UINT*: {indices_t:?}"
@@ -1601,7 +1569,7 @@ impl TypeInferenceWorker {
             Operation::Shard(shard_config) => {
                 let input_t = node_dependencies_types[0].clone();
                 let (headers_types, num_entries) =
-                    check_table_and_extract_column_types(input_t.clone(), false)?;
+                    check_table_and_extract_column_types(input_t.clone(), false, false)?;
                 let headers: Vec<String> = headers_types.keys().cloned().collect();
 
                 if shard_config.num_shards > 700 {
@@ -1701,11 +1669,12 @@ impl TypeInferenceWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data_types::{ArrayShape, Type, BIT, INT32, INT8, UINT16, UINT32, UINT8};
+    use crate::data_types::{ArrayShape, Type, BIT, INT32, INT8, UINT128, UINT16, UINT32, UINT8};
     use crate::data_values::Value;
     use crate::graphs::{
         create_unchecked_context, Graph, JoinType, ShardConfig, Slice, SliceElement,
     };
+    use crate::join_utils::ColumnType;
 
     #[test]
     fn test_malformed() {
@@ -1734,6 +1703,10 @@ mod tests {
         let context = create_unchecked_context()?;
         let mut worker = create_type_inference_worker(context.clone());
         let graph = context.create_graph()?;
+        assert_eq!(
+            worker.process_node(graph.zeros(scalar_type(UINT128))?)?,
+            scalar_type(UINT128)
+        );
         assert_eq!(
             worker.process_node(graph.zeros(scalar_type(UINT64))?)?,
             scalar_type(UINT64)
@@ -1975,7 +1948,7 @@ mod tests {
         test_matmul_worker_fail(scalar_type(INT32), scalar_type(INT32));
     }
 
-    fn test_truncate_worker(t: Type, scale: u64) {
+    fn test_truncate_worker(t: Type, scale: u128) {
         let context = create_unchecked_context().unwrap();
         let mut worker = create_type_inference_worker(context.clone());
         let graph = context.create_graph().unwrap();
@@ -1985,7 +1958,7 @@ mod tests {
         assert_eq!(t_result, t);
     }
 
-    fn test_truncate_worker_fail(t: Type, scale: u64) {
+    fn test_truncate_worker_fail(t: Type, scale: u128) {
         let context = create_unchecked_context().unwrap();
         let mut worker = create_type_inference_worker(context.clone());
         let graph = context.create_graph().unwrap();
@@ -1999,12 +1972,12 @@ mod tests {
     fn test_truncate() {
         test_truncate_worker(array_type(vec![10, 20], INT32), 1000);
         test_truncate_worker(scalar_type(INT32), 1000);
-        test_truncate_worker(scalar_type(INT32), i64::MAX as u64);
-        test_truncate_worker(scalar_type(UINT64), 1u64 << 32);
+        test_truncate_worker(scalar_type(INT32), i128::MAX as u128);
+        test_truncate_worker(scalar_type(UINT128), 1u128 << 64);
         test_truncate_worker_fail(array_type(vec![10, 20], INT32), 0);
         test_truncate_worker_fail(scalar_type(INT32), 0);
         test_truncate_worker_fail(tuple_type(vec![]), 1000);
-        test_truncate_worker_fail(scalar_type(INT32), i64::MAX as u64 + 1);
+        test_truncate_worker_fail(scalar_type(INT32), i128::MAX as u128 + 1);
     }
 
     fn test_sum_worker(t0: Type, s: ArrayShape, t1: Type) {
@@ -3565,10 +3538,17 @@ mod tests {
         .unwrap();
     }
 
+    #[derive(Clone)]
     struct ColumnDescription {
         header: String,
         row_shape: Vec<u64>,
         st: ScalarType,
+    }
+
+    impl ColumnDescription {
+        fn is_null_column(&self) -> bool {
+            self.header == NULL_HEADER
+        }
     }
 
     fn create_column(header: &str, row_shape: Vec<u64>, st: ScalarType) -> ColumnDescription {
@@ -3579,7 +3559,31 @@ mod tests {
         }
     }
 
-    fn join_worker(
+    fn create_table_type(
+        columns: Vec<ColumnDescription>,
+        num: u64,
+        has_column_masks: bool,
+    ) -> Type {
+        let mut named_tuples = vec![];
+        for column_desc in columns {
+            let mut column_shape = column_desc.row_shape.clone();
+            if column_shape == [1] {
+                column_shape[0] = num;
+            } else {
+                column_shape.insert(0, num);
+            }
+            let data_t = array_type(column_shape, column_desc.st);
+            if column_desc.is_null_column() || !has_column_masks {
+                named_tuples.push((column_desc.header, data_t));
+            } else {
+                let mask_t = array_type(vec![num], BIT);
+                named_tuples.push((column_desc.header, tuple_type(vec![mask_t, data_t])));
+            }
+        }
+        named_tuple_type(named_tuples)
+    }
+
+    fn check_join_types(
         columns0: Vec<ColumnDescription>,
         num0: u64,
         columns1: Vec<ColumnDescription>,
@@ -3587,40 +3591,118 @@ mod tests {
         op: Operation,
         expected_columns: Vec<ColumnDescription>,
     ) -> Result<()> {
+        let has_column_masks = match op.clone() {
+            Operation::Join(_, _) => false,
+            Operation::JoinWithColumnMasks(_, _) => true,
+            _ => {
+                panic!("Shouldn't be here");
+            }
+        };
         let context = create_unchecked_context()?;
         let graph = context.create_graph()?;
         let mut worker = create_type_inference_worker(context.clone());
-        let create_named_tuple_type = |columns: Vec<ColumnDescription>, num: u64| -> Type {
-            let mut named_tuples = vec![];
-            for column_desc in columns {
-                let mut column_shape = column_desc.row_shape;
-                if column_shape == [1] {
-                    column_shape[0] = num;
-                } else {
-                    column_shape.insert(0, num);
-                }
-                named_tuples.push((column_desc.header, array_type(column_shape, column_desc.st)));
-            }
-            named_tuple_type(named_tuples)
-        };
-        let i0 = graph.input(create_named_tuple_type(columns0, num0))?;
-        let i1 = graph.input(create_named_tuple_type(columns1, num1))?;
+        let i0 = graph.input(create_table_type(columns0, num0, has_column_masks))?;
+        let i1 = graph.input(create_table_type(columns1, num1, has_column_masks))?;
         let o = graph.add_node(vec![i0, i1], vec![], op.clone())?;
         let res_t = worker.process_node(o)?;
-        let num_expected = if let Operation::Join(join_t, _) = op {
-            match join_t {
-                JoinType::Inner | JoinType::Left => num0,
-                JoinType::Union | JoinType::Full => num0 + num1,
-            }
-        } else {
-            panic!("Shouldn't be here");
-        };
-        let expected_t = create_named_tuple_type(expected_columns, num_expected);
+        let num_expected =
+            if let Operation::Join(join_t, _) | Operation::JoinWithColumnMasks(join_t, _) = op {
+                match join_t {
+                    JoinType::Inner | JoinType::Left => num0,
+                    JoinType::Union | JoinType::Full => num0 + num1,
+                }
+            } else {
+                panic!("Shouldn't be here");
+            };
+        let expected_t = create_table_type(expected_columns, num_expected, has_column_masks);
         assert_eq!(res_t, expected_t);
         Ok(())
     }
 
-    fn join_fail(t0: Type, t1: Type, op: Operation) -> Result<()> {
+    fn join_worker(
+        columns0: Vec<ColumnDescription>,
+        num0: u64,
+        columns1: Vec<ColumnDescription>,
+        num1: u64,
+        join_t: JoinType,
+        key_headers: HashMap<String, String>,
+        expected_columns: Vec<ColumnDescription>,
+    ) -> Result<()> {
+        check_join_types(
+            columns0.clone(),
+            num0,
+            columns1.clone(),
+            num1,
+            Operation::Join(join_t, key_headers.clone()),
+            expected_columns.clone(),
+        )?;
+        check_join_types(
+            columns0.clone(),
+            num0,
+            columns1.clone(),
+            num1,
+            Operation::JoinWithColumnMasks(join_t, key_headers),
+            expected_columns.clone(),
+        )
+    }
+
+    fn add_masks(t: Type) -> Result<Type> {
+        if !t.is_named_tuple() {
+            return Ok(t);
+        }
+        let headers_types = get_named_types(&t)?;
+
+        let mut new_headers_types = vec![];
+        for (h, sub_t) in headers_types {
+            let new_type = if h == NULL_HEADER {
+                (**sub_t).clone()
+            } else {
+                let mut column_type = ColumnType::new((**sub_t).clone(), false, h)?;
+                column_type.add_mask();
+                column_type.into()
+            };
+
+            new_headers_types.push((h.clone(), new_type));
+        }
+
+        Ok(named_tuple_type(new_headers_types))
+    }
+
+    fn join_fail_with_or_without_masks(
+        t0: Type,
+        t1: Type,
+        join_t: JoinType,
+        headers: HashMap<String, String>,
+        expected_msg: &str,
+    ) -> Result<()> {
+        let check_join_result_type =
+            |input_t0: Type, input_t1: Type, op: Operation| -> Result<()> {
+                let context = create_unchecked_context()?;
+                let graph = context.create_graph()?;
+                let mut worker = create_type_inference_worker(context.clone());
+                let i0 = graph.input(input_t0.clone())?;
+                let i1 = graph.input(input_t1.clone())?;
+                let o = graph.add_node(vec![i0, i1], vec![], op)?;
+                let res_t = worker.process_node(o);
+                assert!(res_t.unwrap_err().to_string().find(expected_msg).is_some());
+                Ok(())
+            };
+        check_join_result_type(
+            t0.clone(),
+            t1.clone(),
+            Operation::Join(join_t, headers.clone()),
+        )?;
+        let t0_with_masks = add_masks(t0)?;
+        let t1_with_masks = add_masks(t1)?;
+        check_join_result_type(
+            t0_with_masks,
+            t1_with_masks,
+            Operation::JoinWithColumnMasks(join_t, headers),
+        )?;
+        Ok(())
+    }
+
+    fn join_fail(t0: Type, t1: Type, op: Operation, expected_msg: &str) -> Result<()> {
         let context = create_unchecked_context()?;
         let graph = context.create_graph()?;
         let mut worker = create_type_inference_worker(context.clone());
@@ -3628,7 +3710,7 @@ mod tests {
         let i1 = graph.input(t1.clone())?;
         let o = graph.add_node(vec![i0, i1], vec![], op)?;
         let res_t = worker.process_node(o);
-        assert!(res_t.is_err());
+        assert!(res_t.unwrap_err().to_string().find(expected_msg).is_some());
         Ok(())
     }
 
@@ -3648,14 +3730,12 @@ mod tests {
                 create_column("Name", vec![128], BIT),
             ],
             1,
-            Operation::Join(
-                join_t.clone(),
-                HashMap::from([
-                    ("ID".to_owned(), "ID".to_owned()),
-                    ("Country".to_owned(), "Country".to_owned()),
-                    ("Name".to_owned(), "Name".to_owned()),
-                ]),
-            ),
+            join_t,
+            HashMap::from([
+                ("ID".to_owned(), "ID".to_owned()),
+                ("Country".to_owned(), "Country".to_owned()),
+                ("Name".to_owned(), "Name".to_owned()),
+            ]),
             vec![
                 create_column(NULL_HEADER, vec![1], BIT),
                 create_column("ID", vec![1], UINT64),
@@ -3679,13 +3759,11 @@ mod tests {
                 create_column("Second Name", vec![128], BIT),
             ],
             30,
-            Operation::Join(
-                join_t.clone(),
-                HashMap::from([
-                    ("ID".to_owned(), "UID".to_owned()),
-                    ("Country".to_owned(), "Origin".to_owned()),
-                ]),
-            ),
+            join_t.clone(),
+            HashMap::from([
+                ("ID".to_owned(), "UID".to_owned()),
+                ("Country".to_owned(), "Origin".to_owned()),
+            ]),
             vec![
                 create_column(NULL_HEADER, vec![1], BIT),
                 create_column("ID", vec![1], UINT64),
@@ -3705,17 +3783,15 @@ mod tests {
                 create_column("ID2", vec![1], UINT64),
             ],
             30,
-            Operation::Join(
-                join_t.clone(),
-                HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
-            ),
+            join_t.clone(),
+            HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
             vec![
                 create_column(NULL_HEADER, vec![1], BIT),
                 create_column("ID1", vec![1], UINT64),
             ],
         )?;
 
-        join_fail(
+        join_fail_with_or_without_masks(
             named_tuple_type(vec![
                 (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
                 ("ID1".to_owned(), array_type(vec![50], UINT64)),
@@ -3724,31 +3800,34 @@ mod tests {
                 (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
                 ("ID2".to_owned(), array_type(vec![30], UINT64)),
             ]),
-            Operation::Join(join_t.clone(), HashMap::new()),
+            join_t.clone(),
+            HashMap::new(),
+            "No column headers provided",
         )?;
-        join_fail(
+        join_fail_with_or_without_masks(
             named_tuple_type(vec![("ID1".to_owned(), array_type(vec![50], UINT64))]),
-            named_tuple_type(vec![("ID2".to_owned(), array_type(vec![30], UINT64))]),
-            Operation::Join(
-                join_t.clone(),
-                HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
-            ),
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
+                ("ID2".to_owned(), array_type(vec![30], UINT64)),
+            ]),
+            join_t.clone(),
+            HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
+            "Named tuple should contain at least two columns, one of which must be the null column",
         )?;
-        join_fail(
+        join_fail_with_or_without_masks(
             named_tuple_type(vec![
                 (NULL_HEADER.to_owned(), array_type(vec![50], UINT64)),
                 ("ID1".to_owned(), array_type(vec![50], UINT64)),
             ]),
             named_tuple_type(vec![
                 (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
-                ("ID2".to_owned(), array_type(vec![30], UINT64)),
+                ("ID2".to_owned(), array_type(vec![30], BIT)),
             ]),
-            Operation::Join(
-                join_t.clone(),
-                HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
-            ),
+            join_t.clone(),
+            HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
+            "Null column should be binary",
         )?;
-        join_fail(
+        join_fail_with_or_without_masks(
             named_tuple_type(vec![
                 (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
                 ("ID1".to_owned(), array_type(vec![50], UINT64)),
@@ -3757,12 +3836,11 @@ mod tests {
                 (NULL_HEADER.to_owned(), array_type(vec![30], UINT64)),
                 ("ID2".to_owned(), array_type(vec![30], UINT64)),
             ]),
-            Operation::Join(
-                join_t.clone(),
-                HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
-            ),
+            join_t.clone(),
+            HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
+            "Null column should be binary",
         )?;
-        join_fail(
+        join_fail_with_or_without_masks(
             named_tuple_type(vec![
                 (NULL_HEADER.to_owned(), array_type(vec![50, 1], BIT)),
                 ("ID1".to_owned(), array_type(vec![50], UINT64)),
@@ -3771,12 +3849,11 @@ mod tests {
                 (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
                 ("ID2".to_owned(), array_type(vec![30], UINT64)),
             ]),
-            Operation::Join(
-                join_t.clone(),
-                HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
-            ),
+            join_t.clone(),
+            HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
+            "Null column has shape",
         )?;
-        join_fail(
+        join_fail_with_or_without_masks(
             named_tuple_type(vec![
                 (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
                 ("ID1".to_owned(), array_type(vec![50], UINT64)),
@@ -3785,12 +3862,11 @@ mod tests {
                 (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
                 ("ID2".to_owned(), array_type(vec![30], UINT64)),
             ]),
-            Operation::Join(
-                join_t.clone(),
-                HashMap::from([("ID1".to_owned(), "ID".to_owned())]),
-            ),
+            join_t.clone(),
+            HashMap::from([("ID1".to_owned(), "ID".to_owned())]),
+            "There is no header ID in the second named tuple",
         )?;
-        join_fail(
+        join_fail_with_or_without_masks(
             named_tuple_type(vec![
                 (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
                 ("ID1".to_owned(), array_type(vec![50], UINT64)),
@@ -3799,12 +3875,11 @@ mod tests {
                 (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
                 ("ID2".to_owned(), array_type(vec![30], UINT64)),
             ]),
-            Operation::Join(
-                join_t.clone(),
-                HashMap::from([("ID".to_owned(), "ID2".to_owned())]),
-            ),
+            join_t.clone(),
+            HashMap::from([("ID".to_owned(), "ID2".to_owned())]),
+            "There is no header ID in the first named tuple",
         )?;
-        join_fail(
+        join_fail_with_or_without_masks(
             named_tuple_type(vec![
                 (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
                 ("ID1".to_owned(), array_type(vec![30], UINT64)),
@@ -3813,12 +3888,11 @@ mod tests {
                 (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
                 ("ID2".to_owned(), array_type(vec![30], UINT64)),
             ]),
-            Operation::Join(
-                join_t.clone(),
-                HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
-            ),
+            join_t.clone(),
+            HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
+            "Number of entries should be the same in each column",
         )?;
-        join_fail(
+        join_fail_with_or_without_masks(
             named_tuple_type(vec![
                 (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
                 ("ID1".to_owned(), array_type(vec![50], UINT64)),
@@ -3827,12 +3901,11 @@ mod tests {
                 (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
                 ("ID2".to_owned(), array_type(vec![50], UINT64)),
             ]),
-            Operation::Join(
-                join_t.clone(),
-                HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
-            ),
+            join_t.clone(),
+            HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
+            "Number of entries should be the same in each column",
         )?;
-        join_fail(
+        join_fail_with_or_without_masks(
             named_tuple_type(vec![
                 (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
                 ("ID1".to_owned(), array_type(vec![50], UINT32)),
@@ -3841,12 +3914,11 @@ mod tests {
                 (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
                 ("ID2".to_owned(), array_type(vec![30], UINT64)),
             ]),
-            Operation::Join(
-                join_t.clone(),
-                HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
-            ),
+            join_t.clone(),
+            HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
+            "Columns with names ID1 ID2 have incompatible scalar types to be compared",
         )?;
-        join_fail(
+        join_fail_with_or_without_masks(
             named_tuple_type(vec![
                 (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
                 ("ID1".to_owned(), array_type(vec![50, 1], UINT64)),
@@ -3855,12 +3927,11 @@ mod tests {
                 (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
                 ("ID2".to_owned(), array_type(vec![50], UINT64)),
             ]),
-            Operation::Join(
-                join_t.clone(),
-                HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
-            ),
+            join_t.clone(),
+            HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
+            "Columns with names ID1 ID2 have incompatible shapes to be compared",
         )?;
-        join_fail(
+        join_fail_with_or_without_masks(
             named_tuple_type(vec![
                 (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
                 ("ID1".to_owned(), array_type(vec![30], UINT64)),
@@ -3871,24 +3942,22 @@ mod tests {
                 ("ID2".to_owned(), array_type(vec![50], UINT64)),
                 ("Name".to_owned(), array_type(vec![50], UINT64)),
             ]),
-            Operation::Join(
                 join_t.clone(),
-                HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
-            ),
+                HashMap::from([("ID1".to_owned(), "ID2".to_owned())]), 
+            "Both tuples contain columns named Name that don't participate in the join. Rename one of these to a unique name."
         )?;
-        join_fail(
+        join_fail_with_or_without_masks(
             scalar_type(BIT),
             named_tuple_type(vec![
                 (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
                 ("ID2".to_owned(), array_type(vec![50], UINT64)),
                 ("Name".to_owned(), array_type(vec![50], UINT64)),
             ]),
-            Operation::Join(
-                join_t.clone(),
-                HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
-            ),
+            join_t.clone(),
+            HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
+            "Can't get named types. Input type must be NamedTuple.",
         )?;
-        join_fail(
+        join_fail_with_or_without_masks(
             named_tuple_type(vec![
                 ("ID1".to_owned(), array_type(vec![50], UINT64)),
                 ("Name1".to_owned(), array_type(vec![50], UINT64)),
@@ -3897,28 +3966,46 @@ mod tests {
                 ("ID2".to_owned(), array_type(vec![30], UINT64)),
                 ("Name2".to_owned(), array_type(vec![30], UINT64)),
             ]),
-            Operation::Join(
-                join_t.clone(),
-                HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
-            ),
+            join_t.clone(),
+            HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
+            "Named tuple should contain the null column",
         )?;
         join_fail(
             named_tuple_type(vec![
                 (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
-                ("ID1".to_owned(), array_type(vec![30], UINT64)),
+                (
+                    "ID1".to_owned(),
+                    tuple_type(vec![
+                        array_type(vec![30], BIT),
+                        array_type(vec![30], UINT64),
+                    ]),
+                ),
                 ("Name1".to_owned(), scalar_type(UINT64)),
             ]),
             named_tuple_type(vec![
                 (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
-                ("ID2".to_owned(), array_type(vec![30], UINT64)),
-                ("Name2".to_owned(), array_type(vec![30], UINT64)),
+                (
+                    "ID2".to_owned(),
+                    tuple_type(vec![
+                        array_type(vec![30], BIT),
+                        array_type(vec![30], UINT64),
+                    ]),
+                ),
+                (
+                    "Name2".to_owned(),
+                    tuple_type(vec![
+                        array_type(vec![30], BIT),
+                        array_type(vec![30], UINT64),
+                    ]),
+                ),
             ]),
-            Operation::Join(
+            Operation::JoinWithColumnMasks(
                 join_t.clone(),
                 HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
             ),
+            "Column should contain a tuple",
         )?;
-        join_fail(
+        join_fail_with_or_without_masks(
             named_tuple_type(vec![
                 (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
                 ("ID1".to_owned(), array_type(vec![30], UINT64)),
@@ -3929,10 +4016,189 @@ mod tests {
                 ("ID2".to_owned(), array_type(vec![50], UINT64)),
                 ("Name2".to_owned(), array_type(vec![50], UINT64)),
             ]),
-            Operation::Join(
+            join_t.clone(),
+            HashMap::from([(NULL_HEADER.to_owned(), NULL_HEADER.to_owned())]),
+            "Join along the null column is forbidden",
+        )?;
+        join_fail(
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
+                (
+                    "ID1".to_owned(),
+                    tuple_type(vec![array_type(vec![30], BIT), scalar_type(UINT64)]),
+                ),
+                (
+                    "Name1".to_owned(),
+                    tuple_type(vec![
+                        array_type(vec![30], BIT),
+                        array_type(vec![30], UINT64),
+                    ]),
+                ),
+            ]),
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
+                (
+                    "ID2".to_owned(),
+                    tuple_type(vec![
+                        array_type(vec![50], BIT),
+                        array_type(vec![50], UINT64),
+                    ]),
+                ),
+                (
+                    "Name2".to_owned(),
+                    tuple_type(vec![
+                        array_type(vec![50], BIT),
+                        array_type(vec![50], UINT64),
+                    ]),
+                ),
+            ]),
+            Operation::JoinWithColumnMasks(
                 join_t.clone(),
-                HashMap::from([(NULL_HEADER.to_owned(), NULL_HEADER.to_owned())]),
+                HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
             ),
+            "Column should have an array with data",
+        )?;
+        join_fail(
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
+                (
+                    "ID1".to_owned(),
+                    tuple_type(vec![
+                        array_type(vec![30], UINT32),
+                        array_type(vec![30], UINT64),
+                    ]),
+                ),
+                (
+                    "Name1".to_owned(),
+                    tuple_type(vec![
+                        array_type(vec![30], BIT),
+                        array_type(vec![30], UINT64),
+                    ]),
+                ),
+            ]),
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
+                (
+                    "ID2".to_owned(),
+                    tuple_type(vec![
+                        array_type(vec![50], BIT),
+                        array_type(vec![50], UINT64),
+                    ]),
+                ),
+                (
+                    "Name2".to_owned(),
+                    tuple_type(vec![
+                        array_type(vec![50], BIT),
+                        array_type(vec![50], UINT64),
+                    ]),
+                ),
+            ]),
+            Operation::JoinWithColumnMasks(
+                join_t.clone(),
+                HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
+            ),
+            "ID1 column mask should be binary",
+        )?;
+        join_fail(
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
+                (
+                    "ID1".to_owned(),
+                    tuple_type(vec![
+                        array_type(vec![30, 1], BIT),
+                        array_type(vec![30], UINT64),
+                    ]),
+                ),
+                (
+                    "Name1".to_owned(),
+                    tuple_type(vec![
+                        array_type(vec![30], BIT),
+                        array_type(vec![30], UINT64),
+                    ]),
+                ),
+            ]),
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
+                (
+                    "ID2".to_owned(),
+                    tuple_type(vec![
+                        array_type(vec![50], BIT),
+                        array_type(vec![50], UINT64),
+                    ]),
+                ),
+                (
+                    "Name2".to_owned(),
+                    tuple_type(vec![
+                        array_type(vec![50], BIT),
+                        array_type(vec![50], UINT64),
+                    ]),
+                ),
+            ]),
+            Operation::JoinWithColumnMasks(
+                join_t.clone(),
+                HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
+            ),
+            "ID1 column mask should have shape [30]",
+        )?;
+        join_fail_with_or_without_masks(
+            named_tuple_type(vec![
+                (
+                    NULL_HEADER.to_owned(),
+                    tuple_type(vec![array_type(vec![30], BIT), array_type(vec![30], BIT)]),
+                ),
+                ("ID1".to_owned(), array_type(vec![30], UINT64)),
+                ("Name1".to_owned(), array_type(vec![30], UINT64)),
+            ]),
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
+                ("ID2".to_owned(), array_type(vec![50], UINT64)),
+                ("Name2".to_owned(), array_type(vec![50], UINT64)),
+            ]),
+            join_t.clone(),
+            HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
+            "Null column should be a binary array",
+        )?;
+        join_fail(
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
+                (
+                    "ID1".to_owned(),
+                    tuple_type(vec![
+                        array_type(vec![30], BIT),
+                        array_type(vec![30], UINT64),
+                        array_type(vec![30], UINT64),
+                    ]),
+                ),
+                (
+                    "Name1".to_owned(),
+                    tuple_type(vec![
+                        array_type(vec![30], BIT),
+                        array_type(vec![30], UINT64),
+                    ]),
+                ),
+            ]),
+            named_tuple_type(vec![
+                (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
+                (
+                    "ID2".to_owned(),
+                    tuple_type(vec![
+                        array_type(vec![50], BIT),
+                        array_type(vec![50], UINT64),
+                    ]),
+                ),
+                (
+                    "Name2".to_owned(),
+                    tuple_type(vec![
+                        array_type(vec![50], BIT),
+                        array_type(vec![50], UINT64),
+                    ]),
+                ),
+            ]),
+            Operation::JoinWithColumnMasks(
+                join_t.clone(),
+                HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
+            ),
+            "Column should contain a tuple with two arrays",
         )?;
         Ok(())
     }

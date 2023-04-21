@@ -118,7 +118,7 @@ pub(crate) fn evaluate_add_subtract_multiply(
                 )?,
                 _ => panic!("Should not be here"),
             };
-            //unpack bytes from vectors of u64
+            //unpack bytes from vectors of u128
             vec_to_bytes(&result_u128, st)?
         }
         _ => {
@@ -313,9 +313,9 @@ fn evaluate_permute_axes(
     perm: ArrayShape,
     output_shape: ArrayShape,
 ) -> Result<Value> {
-    let values = value.to_flattened_array_u64(t.clone())?;
+    let values = value.to_flattened_array_u128(t.clone())?;
     let cur_shape = t.get_shape();
-    let mut result = vec![0u64; values.len()];
+    let mut result = vec![0u128; values.len()];
     for i in 0..values.len() as u64 {
         let old_index = number_to_index(i, &cur_shape);
         let mut new_index = vec![];
@@ -673,6 +673,23 @@ impl Evaluator for SimpleEvaluator {
                 };
                 Ok(result_value)
             }
+            Operation::JoinWithColumnMasks(join_t, headers) => {
+                let dependencies = node.get_node_dependencies();
+                let res_t = node.get_type()?;
+
+                let set0 = TypedValue {
+                    value: dependencies_values[0].clone(),
+                    t: dependencies[0].get_type()?,
+                    name: None,
+                };
+                let set1 = TypedValue {
+                    value: dependencies_values[1].clone(),
+                    t: dependencies[1].get_type()?,
+                    name: None,
+                };
+
+                evaluate_join(join_t, set0, set1, true, &headers, res_t)
+            }
             Operation::Join(join_t, headers) => {
                 let dependencies = node.get_node_dependencies();
                 let res_t = node.get_type()?;
@@ -688,7 +705,7 @@ impl Evaluator for SimpleEvaluator {
                     name: None,
                 };
 
-                evaluate_join(join_t, set0, set1, &headers, res_t)
+                evaluate_join(join_t, set0, set1, false, &headers, res_t)
             }
             Operation::CreateTuple
             | Operation::CreateNamedTuple(_)
@@ -949,26 +966,26 @@ impl Evaluator for SimpleEvaluator {
                 let scalar_type = dependency_type.get_scalar_type();
                 let dependency_value = dependencies_values[0].clone();
                 let mut entries = if dependency_type.is_scalar() {
-                    vec![dependency_value.to_u64(scalar_type)?]
+                    vec![dependency_value.to_u128(scalar_type)?]
                 } else {
-                    dependency_value.to_flattened_array_u64(dependency_type.clone())?
+                    dependency_value.to_flattened_array_u128(dependency_type.clone())?
                 };
                 for entry in &mut entries {
                     if scalar_type.is_signed() {
                         match scalar_type.get_modulus() {
                             Some(modulus) => {
-                                let mut val = *entry as i64;
-                                if val >= (modulus / 2) as i64 {
-                                    val -= modulus as i64;
+                                let mut val = *entry as i128;
+                                if val >= (modulus / 2) as i128 {
+                                    val -= modulus as i128;
                                 }
-                                let mut res = val / (scale as i64);
+                                let mut res = val / (scale as i128);
                                 if res < 0 {
-                                    res += modulus as i64;
+                                    res += modulus as i128;
                                 }
-                                *entry = res as u64;
+                                *entry = res as u128;
                             }
                             None => {
-                                *entry = ((*entry as i64) / (scale as i64)) as u64;
+                                *entry = ((*entry as i128) / (scale as i128)) as u128;
                             }
                         }
                     } else {
@@ -1448,6 +1465,7 @@ mod tests {
         },
         evaluators::{evaluate_simple_evaluator, random_evaluate},
         graphs::{create_context, util::simple_context, JoinType, SliceElement},
+        join_utils::ColumnType,
         random::chi_statistics,
         type_inference::NULL_HEADER,
         typed_value_operations::{FromVectorMode, TypedValueArrayOperations, TypedValueOperations},
@@ -2303,12 +2321,20 @@ mod tests {
         .unwrap();
     }
 
-    fn join_helper(test_info: Vec<JoinTestInfo>, join_t: JoinType) -> Result<()> {
+    fn join_helper(
+        test_info: Vec<JoinTestInfo>,
+        join_t: JoinType,
+        has_column_masks: bool,
+    ) -> Result<()> {
         for test_i in test_info {
             let c = simple_context(|g| {
                 let i0 = g.input(test_i.set0.get_type())?;
                 let i1 = g.input(test_i.set1.get_type())?;
-                i0.join(i1, join_t, test_i.headers)
+                if has_column_masks {
+                    i0.join_with_column_masks(i1, join_t, test_i.headers)
+                } else {
+                    i0.join(i1, join_t, test_i.headers)
+                }
             })?;
             let g = c.get_main_graph()?;
             let o = g.get_output_node()?;
@@ -2317,13 +2343,31 @@ mod tests {
                     .to_vector()?;
             let result_t = o.get_type()?;
             if let Type::NamedTuple(headers_types) = result_t {
-                assert_eq!(test_i.expected.len(), headers_types.len());
-                for (i, (expected_header, expected_column)) in test_i.expected.iter().enumerate() {
+                assert_eq!(test_i.expected[&join_t].len(), headers_types.len());
+                for (i, (expected_header, expected_mask, expected_column)) in
+                    test_i.expected[&join_t].iter().enumerate()
+                {
                     assert_eq!(*expected_header, headers_types[i].0);
-                    assert_eq!(
-                        result[i].to_flattened_array_u64((*headers_types[i].1).clone())?,
-                        *expected_column
-                    )
+                    if expected_header == NULL_HEADER || !has_column_masks {
+                        assert_eq!(
+                            result[i].to_flattened_array_u64((*headers_types[i].1).clone())?,
+                            *expected_column
+                        );
+                        continue;
+                    }
+                    if let Some(mask) = expected_mask {
+                        let column_t =
+                            ColumnType::new((*headers_types[i].1).clone(), true, expected_header)?;
+                        let mask_data = result[i].to_vector()?;
+                        assert_eq!(
+                            mask_data[0].to_flattened_array_u64(column_t.get_mask_type()?)?,
+                            *mask
+                        );
+                        assert_eq!(
+                            mask_data[1].to_flattened_array_u64(column_t.get_data_type())?,
+                            *expected_column
+                        )
+                    }
                 }
             } else {
                 panic!("Inconsistency with type checker");
@@ -2336,7 +2380,16 @@ mod tests {
         header: String,
         shape: Vec<u64>,
         st: ScalarType,
+        mask: Option<Vec<u64>>,
         data: Vec<u64>,
+    }
+    impl ColumnInfo {
+        fn get_data_type(&self) -> Type {
+            array_type(self.shape.clone(), self.st)
+        }
+        fn has_mask(&self) -> bool {
+            self.mask.is_some()
+        }
     }
 
     fn column_info(header: &str, shape: &[u64], st: ScalarType, data: &[u64]) -> ColumnInfo {
@@ -2344,6 +2397,31 @@ mod tests {
             header: header.to_owned(),
             shape: shape.to_vec(),
             st,
+            mask: None,
+            data: data.to_vec(),
+        }
+    }
+
+    fn column_info_with_mask(
+        header: &str,
+        shape: &[u64],
+        st: ScalarType,
+        mask: Option<&[u64]>,
+        data: &[u64],
+    ) -> ColumnInfo {
+        if header == NULL_HEADER && mask.is_some() {
+            panic!("Null column shouldn't have a mask");
+        }
+        let resolved_mask = if let Some(mask_arr) = mask {
+            Some(mask_arr.to_vec())
+        } else {
+            None
+        };
+        ColumnInfo {
+            header: header.to_owned(),
+            shape: shape.to_vec(),
+            st,
+            mask: resolved_mask,
             data: data.to_vec(),
         }
     }
@@ -2359,25 +2437,63 @@ mod tests {
         fn get_type(&self) -> Type {
             let mut v = vec![];
             for col in self.iter() {
-                v.push((col.header.clone(), array_type(col.shape.clone(), col.st)));
+                if !col.has_mask() {
+                    v.push((col.header.clone(), col.get_data_type()));
+                    continue;
+                }
+                let data_shape = col.shape.clone();
+                let mask_shape = vec![data_shape[0]];
+                v.push((
+                    col.header.clone(),
+                    tuple_type(vec![
+                        array_type(mask_shape.clone(), BIT),
+                        array_type(data_shape.clone(), col.st),
+                    ]),
+                ));
             }
             named_tuple_type(v)
         }
         fn get_value(&self) -> Result<Value> {
             let mut v = vec![];
             for col in self.iter() {
-                v.push(Value::from_flattened_array(&col.data, col.st)?);
+                if !col.has_mask() {
+                    v.push(Value::from_flattened_array(&col.data, col.st)?);
+                    continue;
+                }
+                let mask_data = vec![
+                    Value::from_flattened_array(col.mask.as_ref().unwrap(), BIT)?,
+                    Value::from_flattened_array(&col.data, col.st)?,
+                ];
+                v.push(Value::from_vector(mask_data));
             }
             Ok(Value::from_vector(v))
         }
     }
 
-    type ExpectedInfo = Vec<(String, Vec<u64>)>;
+    type ExpectedInfo = Vec<(String, Option<Vec<u64>>, Vec<u64>)>;
 
     fn expected_info(expected_columns: Vec<(&str, &[u64])>) -> ExpectedInfo {
         let mut v = vec![];
         for (header, data) in expected_columns {
-            v.push((header.to_owned(), data.to_vec()));
+            v.push((header.to_owned(), None, data.to_vec()));
+        }
+        v
+    }
+
+    fn expected_info_with_mask(
+        expected_columns: Vec<(&str, Option<&[u64]>, &[u64])>,
+    ) -> ExpectedInfo {
+        let mut v = vec![];
+        for (header, mask, data) in expected_columns {
+            if header == NULL_HEADER && mask.is_some() {
+                panic!("Null column shouldn't have a column mask");
+            }
+            let resolved_mask = if let Some(mask_arr) = mask {
+                Some(mask_arr.to_vec())
+            } else {
+                None
+            };
+            v.push((header.to_owned(), resolved_mask, data.to_vec()));
         }
         v
     }
@@ -2386,14 +2502,14 @@ mod tests {
         set0: SetInfo,
         set1: SetInfo,
         headers: HashMap<String, String>,
-        expected: ExpectedInfo,
+        expected: HashMap<JoinType, ExpectedInfo>,
     }
 
     fn join_info(
         set0: SetInfo,
         set1: SetInfo,
         headers: Vec<(&str, &str)>,
-        expected: ExpectedInfo,
+        expected: HashMap<JoinType, ExpectedInfo>,
     ) -> JoinTestInfo {
         let mut hmap = HashMap::new();
         for (h0, h1) in headers {
@@ -2407,9 +2523,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_set_intersection() -> Result<()> {
-        let tests = vec![
+    fn get_join_test_setup(with_masks: bool) -> Vec<JoinTestInfo> {
+        let tests_without_masks = vec![
             join_info(
                 vec![
                     column_info(NULL_HEADER, &[6], BIT, &[1, 1, 1, 1, 1, 1]),
@@ -2427,12 +2542,64 @@ mod tests {
                     ),
                 ],
                 vec![("ID", "ID")],
-                expected_info(vec![
-                    (NULL_HEADER, &[0, 1, 0, 1, 0, 1]),
-                    ("ID", &[0, 3, 0, 4, 0, 2]),
-                    ("Income", &[0, 300, 0, 400, 0, 200]),
-                    ("Outcome", &[0, 30, 0, 40, 0, 20]),
-                ]),
+                {
+                    let mut expected = HashMap::new();
+                    expected.insert(
+                        JoinType::Inner,
+                        expected_info(vec![
+                            (NULL_HEADER, &[0, 1, 0, 1, 0, 1]),
+                            ("ID", &[0, 3, 0, 4, 0, 2]),
+                            ("Income", &[0, 300, 0, 400, 0, 200]),
+                            ("Outcome", &[0, 30, 0, 40, 0, 20]),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Left,
+                        expected_info(vec![
+                            (NULL_HEADER, &[1, 1, 1, 1, 1, 1]),
+                            ("ID", &[5, 3, 0, 4, 1, 2]),
+                            ("Income", &[500, 300, 0, 400, 100, 200]),
+                            ("Outcome", &[0, 30, 0, 40, 0, 20]),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Union,
+                        expected_info(vec![
+                            (
+                                NULL_HEADER,
+                                &[1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                            ),
+                            ("ID", &[5, 0, 0, 0, 1, 0, 4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                            (
+                                "Income",
+                                &[500, 0, 0, 0, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                            ),
+                            (
+                                "Outcome",
+                                &[0, 0, 0, 0, 0, 0, 40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
+                            ),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Full,
+                        expected_info(vec![
+                            (
+                                NULL_HEADER,
+                                &[1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                            ),
+                            ("ID", &[5, 0, 0, 0, 1, 0, 4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                            (
+                                "Income",
+                                &[500, 0, 0, 0, 100, 0, 400, 0, 0, 0, 0, 0, 0, 200, 300, 0],
+                            ),
+                            (
+                                "Outcome",
+                                &[0, 0, 0, 0, 0, 0, 40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
+                            ),
+                        ]),
+                    );
+                    expected
+                },
             ),
             join_info(
                 vec![
@@ -2451,11 +2618,58 @@ mod tests {
                     ),
                 ],
                 vec![("ID", "ID"), ("Income1", "Income2")],
-                expected_info(vec![
-                    (NULL_HEADER, &[0, 1, 0, 1, 0, 1]),
-                    ("ID", &[0, 3, 0, 4, 0, 2]),
-                    ("Income1", &[0, 30, 0, 40, 0, 20]),
-                ]),
+                {
+                    let mut expected = HashMap::new();
+                    expected.insert(
+                        JoinType::Inner,
+                        expected_info(vec![
+                            (NULL_HEADER, &[0, 1, 0, 1, 0, 1]),
+                            ("ID", &[0, 3, 0, 4, 0, 2]),
+                            ("Income1", &[0, 30, 0, 40, 0, 20]),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Left,
+                        expected_info(vec![
+                            (NULL_HEADER, &[1, 1, 1, 1, 1, 1]),
+                            ("ID", &[5, 3, 0, 4, 1, 2]),
+                            ("Income1", &[50, 30, 0, 40, 10, 20]),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Union,
+                        expected_info(vec![
+                            (
+                                NULL_HEADER,
+                                &[1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                            ),
+                            ("ID", &[5, 0, 0, 0, 1, 0, 4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                            (
+                                "Income1",
+                                &[
+                                    50, 0, 0, 0, 10, 0, 40, 70, 80, 90, 100, 110, 120, 20, 30, 130,
+                                ],
+                            ),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Full,
+                        expected_info(vec![
+                            (
+                                NULL_HEADER,
+                                &[1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                            ),
+                            ("ID", &[5, 0, 0, 0, 1, 0, 4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                            (
+                                "Income1",
+                                &[
+                                    50, 0, 0, 0, 10, 0, 40, 70, 80, 90, 100, 110, 120, 20, 30, 130,
+                                ],
+                            ),
+                        ]),
+                    );
+                    expected
+                },
             ),
             join_info(
                 vec![
@@ -2481,13 +2695,84 @@ mod tests {
                     ),
                 ],
                 vec![("ID", "ID"), ("Income1", "Income2")],
-                expected_info(vec![
-                    (NULL_HEADER, &[0, 1, 0, 1, 0, 0]),
-                    ("ID", &[0, 3, 0, 4, 0, 0]),
-                    ("Income1", &[0, 30, 0, 40, 0, 0]),
-                    ("Outcome1", &[0, 300, 0, 400, 0, 0]),
-                    ("Outcome2", &[0, 300, 0, 400, 0, 0]),
-                ]),
+                {
+                    let mut expected = HashMap::new();
+                    expected.insert(
+                        JoinType::Inner,
+                        expected_info(vec![
+                            (NULL_HEADER, &[0, 1, 0, 1, 0, 0]),
+                            ("ID", &[0, 3, 0, 4, 0, 0]),
+                            ("Income1", &[0, 30, 0, 40, 0, 0]),
+                            ("Outcome1", &[0, 300, 0, 400, 0, 0]),
+                            ("Outcome2", &[0, 300, 0, 400, 0, 0]),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Left,
+                        expected_info(vec![
+                            (NULL_HEADER, &[1, 1, 1, 1, 1, 0]),
+                            ("ID", &[5, 3, 0, 4, 1, 0]),
+                            ("Income1", &[50, 30, 0, 40, 10, 0]),
+                            ("Outcome1", &[500, 300, 0, 400, 100, 0]),
+                            ("Outcome2", &[0, 300, 0, 400, 0, 0]),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Union,
+                        expected_info(vec![
+                            (
+                                NULL_HEADER,
+                                &[1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                            ),
+                            ("ID", &[5, 0, 0, 0, 1, 0, 4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                            (
+                                "Income1",
+                                &[
+                                    50, 0, 0, 0, 10, 0, 40, 70, 80, 90, 100, 110, 120, 20, 30, 130,
+                                ],
+                            ),
+                            (
+                                "Outcome1",
+                                &[500, 0, 0, 0, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                            ),
+                            (
+                                "Outcome2",
+                                &[
+                                    0, 0, 0, 0, 0, 0, 400, 700, 800, 900, 1000, 1100, 1200, 200,
+                                    300, 1300,
+                                ],
+                            ),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Full,
+                        expected_info(vec![
+                            (
+                                NULL_HEADER,
+                                &[1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                            ),
+                            ("ID", &[5, 0, 0, 0, 1, 0, 4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                            (
+                                "Income1",
+                                &[
+                                    50, 0, 0, 0, 10, 0, 40, 70, 80, 90, 100, 110, 120, 20, 30, 130,
+                                ],
+                            ),
+                            (
+                                "Outcome1",
+                                &[500, 0, 0, 0, 100, 0, 400, 0, 0, 0, 0, 0, 0, 0, 300, 0],
+                            ),
+                            (
+                                "Outcome2",
+                                &[
+                                    0, 0, 0, 0, 0, 0, 400, 700, 800, 900, 1000, 1100, 1200, 200,
+                                    300, 1300,
+                                ],
+                            ),
+                        ]),
+                    );
+                    expected
+                },
             ),
             join_info(
                 vec![
@@ -2513,13 +2798,86 @@ mod tests {
                     ),
                 ],
                 vec![("ID", "ID"), ("Income1", "Income2")],
-                expected_info(vec![
-                    (NULL_HEADER, &[0, 0, 0, 0, 0, 0]),
-                    ("Income1", &[0, 0, 0, 0, 0, 0]),
-                    ("ID", &[0, 0, 0, 0, 0, 0]),
-                    ("Outcome1", &[0, 0, 0, 0, 0, 0]),
-                    ("Outcome2", &[0, 0, 0, 0, 0, 0]),
-                ]),
+                {
+                    let mut expected = HashMap::new();
+                    expected.insert(
+                        JoinType::Inner,
+                        expected_info(vec![
+                            (NULL_HEADER, &[0, 0, 0, 0, 0, 0]),
+                            ("Income1", &[0, 0, 0, 0, 0, 0]),
+                            ("ID", &[0, 0, 0, 0, 0, 0]),
+                            ("Outcome1", &[0, 0, 0, 0, 0, 0]),
+                            ("Outcome2", &[0, 0, 0, 0, 0, 0]),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Left,
+                        expected_info(vec![
+                            (NULL_HEADER, &[1, 0, 1, 0, 1, 1]),
+                            ("Income1", &[5, 0, 0, 0, 1, 2]),
+                            ("ID", &[50, 0, 0, 0, 10, 20]),
+                            ("Outcome1", &[500, 0, 0, 0, 100, 200]),
+                            ("Outcome2", &[0, 0, 0, 0, 0, 0]),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Union,
+                        expected_info(vec![
+                            (
+                                NULL_HEADER,
+                                &[1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1],
+                            ),
+                            (
+                                "Income1",
+                                &[5, 0, 0, 0, 1, 2, 40, 70, 80, 90, 100, 110, 120, 0, 30, 130],
+                            ),
+                            (
+                                "ID",
+                                &[50, 0, 0, 0, 10, 20, 4, 7, 8, 9, 10, 11, 12, 0, 3, 13],
+                            ),
+                            (
+                                "Outcome1",
+                                &[500, 0, 0, 0, 100, 200, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                            ),
+                            (
+                                "Outcome2",
+                                &[
+                                    0, 0, 0, 0, 0, 0, 400, 700, 800, 900, 1000, 1100, 1200, 0, 300,
+                                    1300,
+                                ],
+                            ),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Full,
+                        expected_info(vec![
+                            (
+                                NULL_HEADER,
+                                &[1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1],
+                            ),
+                            (
+                                "Income1",
+                                &[5, 0, 0, 0, 1, 2, 40, 70, 80, 90, 100, 110, 120, 0, 30, 130],
+                            ),
+                            (
+                                "ID",
+                                &[50, 0, 0, 0, 10, 20, 4, 7, 8, 9, 10, 11, 12, 0, 3, 13],
+                            ),
+                            (
+                                "Outcome1",
+                                &[500, 0, 0, 0, 100, 200, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                            ),
+                            (
+                                "Outcome2",
+                                &[
+                                    0, 0, 0, 0, 0, 0, 400, 700, 800, 900, 1000, 1100, 1200, 0, 300,
+                                    1300,
+                                ],
+                            ),
+                        ]),
+                    );
+                    expected
+                },
             ),
             join_info(
                 vec![
@@ -2535,13 +2893,50 @@ mod tests {
                     column_info("Outcome2", &[1], UINT64, &[51]),
                 ],
                 vec![("ID", "ID"), ("Income1", "Income2")],
-                expected_info(vec![
-                    (NULL_HEADER, &[1]),
-                    ("ID", &[5]),
-                    ("Income1", &[50]),
-                    ("Outcome1", &[500]),
-                    ("Outcome2", &[51]),
-                ]),
+                {
+                    let mut expected = HashMap::new();
+                    expected.insert(
+                        JoinType::Inner,
+                        expected_info(vec![
+                            (NULL_HEADER, &[1]),
+                            ("ID", &[5]),
+                            ("Income1", &[50]),
+                            ("Outcome1", &[500]),
+                            ("Outcome2", &[51]),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Left,
+                        expected_info(vec![
+                            (NULL_HEADER, &[1]),
+                            ("ID", &[5]),
+                            ("Income1", &[50]),
+                            ("Outcome1", &[500]),
+                            ("Outcome2", &[51]),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Union,
+                        expected_info(vec![
+                            (NULL_HEADER, &[0, 1]),
+                            ("ID", &[0, 5]),
+                            ("Income1", &[0, 50]),
+                            ("Outcome1", &[0, 0]),
+                            ("Outcome2", &[0, 51]),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Full,
+                        expected_info(vec![
+                            (NULL_HEADER, &[0, 1]),
+                            ("ID", &[0, 5]),
+                            ("Income1", &[0, 50]),
+                            ("Outcome1", &[0, 500]),
+                            ("Outcome2", &[0, 51]),
+                        ]),
+                    );
+                    expected
+                },
             ),
             join_info(
                 vec![
@@ -2557,13 +2952,50 @@ mod tests {
                     column_info("Outcome2", &[1], UINT64, &[51]),
                 ],
                 vec![("ID", "ID"), ("Income1", "Income2")],
-                expected_info(vec![
-                    (NULL_HEADER, &[1]),
-                    ("Income1", &[50]),
-                    ("Outcome1", &[500]),
-                    ("ID", &[5]),
-                    ("Outcome2", &[51]),
-                ]),
+                {
+                    let mut expected = HashMap::new();
+                    expected.insert(
+                        JoinType::Inner,
+                        expected_info(vec![
+                            (NULL_HEADER, &[1]),
+                            ("Income1", &[50]),
+                            ("Outcome1", &[500]),
+                            ("ID", &[5]),
+                            ("Outcome2", &[51]),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Left,
+                        expected_info(vec![
+                            (NULL_HEADER, &[1]),
+                            ("Income1", &[50]),
+                            ("Outcome1", &[500]),
+                            ("ID", &[5]),
+                            ("Outcome2", &[51]),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Union,
+                        expected_info(vec![
+                            (NULL_HEADER, &[0, 1]),
+                            ("Income1", &[0, 50]),
+                            ("Outcome1", &[0, 0]),
+                            ("ID", &[0, 5]),
+                            ("Outcome2", &[0, 51]),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Full,
+                        expected_info(vec![
+                            (NULL_HEADER, &[0, 1]),
+                            ("Income1", &[0, 50]),
+                            ("Outcome1", &[0, 500]),
+                            ("ID", &[0, 5]),
+                            ("Outcome2", &[0, 51]),
+                        ]),
+                    );
+                    expected
+                },
             ),
             join_info(
                 vec![
@@ -2579,718 +3011,527 @@ mod tests {
                     column_info("Outcome2", &[2, 2], UINT64, &[500, 501, 300, 301]),
                 ],
                 vec![("ID", "ID"), ("Income1", "Income2")],
-                expected_info(vec![
-                    (NULL_HEADER, &[0, 1]),
-                    ("Income1", &[0, 50]),
-                    ("Outcome1", &[0, 0, 500, 501]),
-                    ("ID", &[0, 5]),
-                    ("Outcome2", &[0, 0, 500, 501]),
-                ]),
+                {
+                    let mut expected = HashMap::new();
+                    expected.insert(
+                        JoinType::Inner,
+                        expected_info(vec![
+                            (NULL_HEADER, &[0, 1]),
+                            ("Income1", &[0, 50]),
+                            ("Outcome1", &[0, 0, 500, 501]),
+                            ("ID", &[0, 5]),
+                            ("Outcome2", &[0, 0, 500, 501]),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Left,
+                        expected_info(vec![
+                            (NULL_HEADER, &[1, 1]),
+                            ("Income1", &[40, 50]),
+                            ("Outcome1", &[400, 401, 500, 501]),
+                            ("ID", &[4, 5]),
+                            ("Outcome2", &[0, 0, 500, 501]),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Union,
+                        expected_info(vec![
+                            (NULL_HEADER, &[1, 0, 1, 1]),
+                            ("Income1", &[40, 0, 50, 30]),
+                            ("Outcome1", &[400, 401, 0, 0, 0, 0, 0, 0]),
+                            ("ID", &[4, 0, 5, 3]),
+                            ("Outcome2", &[0, 0, 0, 0, 500, 501, 300, 301]),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Full,
+                        expected_info(vec![
+                            (NULL_HEADER, &[1, 0, 1, 1]),
+                            ("Income1", &[40, 0, 50, 30]),
+                            ("Outcome1", &[400, 401, 0, 0, 500, 501, 0, 0]),
+                            ("ID", &[4, 0, 5, 3]),
+                            ("Outcome2", &[0, 0, 0, 0, 500, 501, 300, 301]),
+                        ]),
+                    );
+                    expected
+                },
+            ),
+            join_info(
+                vec![
+                    column_info(NULL_HEADER, &[2], BIT, &[1, 1]),
+                    column_info("Income1", &[2], UINT64, &[40, 50]),
+                    column_info("Outcome1", &[2], UINT64, &[400, 500]),
+                    column_info("ID", &[2], UINT64, &[4, 5]),
+                ],
+                vec![
+                    column_info(NULL_HEADER, &[2], BIT, &[1, 1]),
+                    column_info("ID", &[2], UINT64, &[6, 7]),
+                    column_info("Income2", &[2], UINT64, &[60, 70]),
+                    column_info("Outcome2", &[2, 2], UINT64, &[60, 61, 70, 71]),
+                ],
+                vec![("ID", "ID"), ("Income1", "Income2")],
+                {
+                    let mut expected = HashMap::new();
+                    expected.insert(
+                        JoinType::Inner,
+                        expected_info(vec![
+                            (NULL_HEADER, &[0, 0]),
+                            ("Income1", &[0, 0]),
+                            ("Outcome1", &[0, 0]),
+                            ("ID", &[0, 0]),
+                            ("Outcome2", &[0, 0, 0, 0]),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Left,
+                        expected_info(vec![
+                            (NULL_HEADER, &[1, 1]),
+                            ("Income1", &[40, 50]),
+                            ("Outcome1", &[400, 500]),
+                            ("ID", &[4, 5]),
+                            ("Outcome2", &[0, 0, 0, 0]),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Union,
+                        expected_info(vec![
+                            (NULL_HEADER, &[1, 1, 1, 1]),
+                            ("Income1", &[40, 50, 60, 70]),
+                            ("Outcome1", &[400, 500, 0, 0]),
+                            ("ID", &[4, 5, 6, 7]),
+                            ("Outcome2", &[0, 0, 0, 0, 60, 61, 70, 71]),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Full,
+                        expected_info(vec![
+                            (NULL_HEADER, &[1, 1, 1, 1]),
+                            ("Income1", &[40, 50, 60, 70]),
+                            ("Outcome1", &[400, 500, 0, 0]),
+                            ("ID", &[4, 5, 6, 7]),
+                            ("Outcome2", &[0, 0, 0, 0, 60, 61, 70, 71]),
+                        ]),
+                    );
+                    expected
+                },
             ),
         ];
-        join_helper(tests, JoinType::Inner)?;
+
+        let tests_with_masks = vec![
+            join_info(
+                vec![
+                    column_info_with_mask(NULL_HEADER, &[2], BIT, None, &[1, 1]),
+                    column_info_with_mask("Income1", &[2], UINT64, Some(&[1, 1]), &[40, 50]),
+                    column_info_with_mask(
+                        "Outcome1",
+                        &[2, 2],
+                        UINT64,
+                        Some(&[1, 1]),
+                        &[400, 401, 500, 501],
+                    ),
+                    column_info_with_mask("ID", &[2], UINT64, Some(&[1, 0]), &[4, 5]),
+                ],
+                vec![
+                    column_info_with_mask(NULL_HEADER, &[2], BIT, None, &[1, 1]),
+                    column_info_with_mask("ID", &[2], UINT64, Some(&[1, 1]), &[5, 3]),
+                    column_info_with_mask("Income2", &[2], UINT64, Some(&[1, 1]), &[50, 30]),
+                    column_info_with_mask(
+                        "Outcome2",
+                        &[2, 2],
+                        UINT64,
+                        Some(&[1, 1]),
+                        &[500, 501, 300, 301],
+                    ),
+                ],
+                vec![("ID", "ID"), ("Income1", "Income2")],
+                {
+                    let mut expected = HashMap::new();
+                    expected.insert(
+                        JoinType::Inner,
+                        expected_info_with_mask(vec![
+                            (NULL_HEADER, None, &[0, 0]),
+                            ("Income1", Some(&[0, 0]), &[0, 0]),
+                            ("Outcome1", Some(&[0, 0]), &[0, 0, 0, 0]),
+                            ("ID", Some(&[0, 0]), &[0, 0]),
+                            ("Outcome2", Some(&[0, 0]), &[0, 0, 0, 0]),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Left,
+                        expected_info_with_mask(vec![
+                            (NULL_HEADER, None, &[1, 1]),
+                            ("Income1", Some(&[1, 1]), &[40, 50]),
+                            ("Outcome1", Some(&[1, 1]), &[400, 401, 500, 501]),
+                            ("ID", Some(&[1, 0]), &[4, 0]),
+                            ("Outcome2", Some(&[0, 0]), &[0, 0, 0, 0]),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Union,
+                        expected_info_with_mask(vec![
+                            (NULL_HEADER, None, &[1, 1, 1, 1]),
+                            ("Income1", Some(&[1, 1, 1, 1]), &[40, 50, 50, 30]),
+                            (
+                                "Outcome1",
+                                Some(&[1, 1, 0, 0]),
+                                &[400, 401, 500, 501, 0, 0, 0, 0],
+                            ),
+                            ("ID", Some(&[1, 0, 1, 1]), &[4, 0, 5, 3]),
+                            (
+                                "Outcome2",
+                                Some(&[0, 0, 1, 1]),
+                                &[0, 0, 0, 0, 500, 501, 300, 301],
+                            ),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Full,
+                        expected_info_with_mask(vec![
+                            (NULL_HEADER, None, &[1, 1, 1, 1]),
+                            ("Income1", Some(&[1, 1, 1, 1]), &[40, 50, 50, 30]),
+                            (
+                                "Outcome1",
+                                Some(&[1, 1, 0, 0]),
+                                &[400, 401, 500, 501, 0, 0, 0, 0],
+                            ),
+                            ("ID", Some(&[1, 0, 1, 1]), &[4, 0, 5, 3]),
+                            (
+                                "Outcome2",
+                                Some(&[0, 0, 1, 1]),
+                                &[0, 0, 0, 0, 500, 501, 300, 301],
+                            ),
+                        ]),
+                    );
+                    expected
+                },
+            ),
+            join_info(
+                vec![
+                    column_info_with_mask(NULL_HEADER, &[4], BIT, None, &[1, 1, 1, 1]),
+                    column_info_with_mask(
+                        "Income1",
+                        &[4],
+                        UINT64,
+                        Some(&[1, 1, 1, 1]),
+                        &[40, 50, 20, 30],
+                    ),
+                    column_info_with_mask(
+                        "Outcome1",
+                        &[4, 2],
+                        UINT64,
+                        Some(&[1, 1, 1, 0]),
+                        &[400, 401, 500, 501, 200, 201, 300, 301],
+                    ),
+                    column_info_with_mask("ID", &[4], UINT64, Some(&[1, 0, 1, 1]), &[4, 5, 2, 3]),
+                ],
+                vec![
+                    column_info_with_mask(NULL_HEADER, &[4], BIT, None, &[1, 1, 1, 1]),
+                    column_info_with_mask("ID", &[4], UINT64, Some(&[1, 1, 1, 1]), &[5, 3, 6, 7]),
+                    column_info_with_mask(
+                        "Income2",
+                        &[4],
+                        UINT64,
+                        Some(&[1, 1, 1, 1]),
+                        &[50, 30, 60, 70],
+                    ),
+                    column_info_with_mask(
+                        "Outcome2",
+                        &[4, 2],
+                        UINT64,
+                        Some(&[1, 1, 1, 1]),
+                        &[500, 501, 300, 301, 600, 601, 700, 701],
+                    ),
+                ],
+                vec![("ID", "ID"), ("Income1", "Income2")],
+                {
+                    let mut expected = HashMap::new();
+                    expected.insert(
+                        JoinType::Inner,
+                        expected_info_with_mask(vec![
+                            (NULL_HEADER, None, &[0, 0, 0, 1]),
+                            ("Income1", Some(&[0, 0, 0, 1]), &[0, 0, 0, 30]),
+                            ("Outcome1", Some(&[0, 0, 0, 0]), &[0, 0, 0, 0, 0, 0, 0, 0]),
+                            ("ID", Some(&[0, 0, 0, 1]), &[0, 0, 0, 3]),
+                            (
+                                "Outcome2",
+                                Some(&[0, 0, 0, 1]),
+                                &[0, 0, 0, 0, 0, 0, 300, 301],
+                            ),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Left,
+                        expected_info_with_mask(vec![
+                            (NULL_HEADER, None, &[1, 1, 1, 1]),
+                            ("Income1", Some(&[1, 1, 1, 1]), &[40, 50, 20, 30]),
+                            (
+                                "Outcome1",
+                                Some(&[1, 1, 1, 0]),
+                                &[400, 401, 500, 501, 200, 201, 0, 0],
+                            ),
+                            ("ID", Some(&[1, 0, 1, 1]), &[4, 0, 2, 3]),
+                            (
+                                "Outcome2",
+                                Some(&[0, 0, 0, 1]),
+                                &[0, 0, 0, 0, 0, 0, 300, 301],
+                            ),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Union,
+                        expected_info_with_mask(vec![
+                            (NULL_HEADER, None, &[1, 1, 1, 0, 1, 1, 1, 1]),
+                            (
+                                "Income1",
+                                Some(&[1, 1, 1, 0, 1, 1, 1, 1]),
+                                &[40, 50, 20, 0, 50, 30, 60, 70],
+                            ),
+                            (
+                                "Outcome1",
+                                Some(&[1, 1, 1, 0, 0, 0, 0, 0]),
+                                &[400, 401, 500, 501, 200, 201, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                            ),
+                            (
+                                "ID",
+                                Some(&[1, 0, 1, 0, 1, 1, 1, 1]),
+                                &[4, 0, 2, 0, 5, 3, 6, 7],
+                            ),
+                            (
+                                "Outcome2",
+                                Some(&[0, 0, 0, 0, 1, 1, 1, 1]),
+                                &[
+                                    0, 0, 0, 0, 0, 0, 0, 0, 500, 501, 300, 301, 600, 601, 700, 701,
+                                ],
+                            ),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Full,
+                        expected_info_with_mask(vec![
+                            (NULL_HEADER, None, &[1, 1, 1, 0, 1, 1, 1, 1]),
+                            (
+                                "Income1",
+                                Some(&[1, 1, 1, 0, 1, 1, 1, 1]),
+                                &[40, 50, 20, 0, 50, 30, 60, 70],
+                            ),
+                            (
+                                "Outcome1",
+                                Some(&[1, 1, 1, 0, 0, 0, 0, 0]),
+                                &[400, 401, 500, 501, 200, 201, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                            ),
+                            (
+                                "ID",
+                                Some(&[1, 0, 1, 0, 1, 1, 1, 1]),
+                                &[4, 0, 2, 0, 5, 3, 6, 7],
+                            ),
+                            (
+                                "Outcome2",
+                                Some(&[0, 0, 0, 0, 1, 1, 1, 1]),
+                                &[
+                                    0, 0, 0, 0, 0, 0, 0, 0, 500, 501, 300, 301, 600, 601, 700, 701,
+                                ],
+                            ),
+                        ]),
+                    );
+                    expected
+                },
+            ),
+            join_info(
+                vec![
+                    column_info_with_mask(NULL_HEADER, &[4], BIT, None, &[1, 1, 1, 0]),
+                    column_info_with_mask(
+                        "Income1",
+                        &[4],
+                        UINT64,
+                        Some(&[1, 1, 1, 1]),
+                        &[40, 50, 20, 30],
+                    ),
+                    column_info_with_mask(
+                        "Outcome1",
+                        &[4, 2],
+                        UINT64,
+                        Some(&[1, 1, 1, 0]),
+                        &[400, 401, 500, 501, 200, 201, 300, 301],
+                    ),
+                    column_info_with_mask("ID", &[4], UINT64, Some(&[1, 1, 1, 1]), &[4, 5, 2, 3]),
+                ],
+                vec![
+                    column_info_with_mask(NULL_HEADER, &[4], BIT, None, &[1, 1, 1, 1]),
+                    column_info_with_mask("ID", &[4], UINT64, Some(&[1, 1, 1, 1]), &[5, 3, 6, 7]),
+                    column_info_with_mask(
+                        "Income2",
+                        &[4],
+                        UINT64,
+                        Some(&[1, 1, 1, 1]),
+                        &[50, 30, 60, 70],
+                    ),
+                    column_info_with_mask(
+                        "Outcome2",
+                        &[4, 2],
+                        UINT64,
+                        Some(&[1, 1, 1, 1]),
+                        &[500, 501, 300, 301, 600, 601, 700, 701],
+                    ),
+                ],
+                vec![("ID", "ID"), ("Income1", "Income2")],
+                {
+                    let mut expected = HashMap::new();
+                    expected.insert(
+                        JoinType::Inner,
+                        expected_info_with_mask(vec![
+                            (NULL_HEADER, None, &[0, 1, 0, 0]),
+                            ("Income1", Some(&[0, 1, 0, 0]), &[0, 50, 0, 0]),
+                            (
+                                "Outcome1",
+                                Some(&[0, 1, 0, 0]),
+                                &[0, 0, 500, 501, 0, 0, 0, 0],
+                            ),
+                            ("ID", Some(&[0, 1, 0, 0]), &[0, 5, 0, 0]),
+                            (
+                                "Outcome2",
+                                Some(&[0, 1, 0, 0]),
+                                &[0, 0, 500, 501, 0, 0, 0, 0],
+                            ),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Left,
+                        expected_info_with_mask(vec![
+                            (NULL_HEADER, None, &[1, 1, 1, 0]),
+                            ("Income1", Some(&[1, 1, 1, 0]), &[40, 50, 20, 0]),
+                            (
+                                "Outcome1",
+                                Some(&[1, 1, 1, 0]),
+                                &[400, 401, 500, 501, 200, 201, 0, 0],
+                            ),
+                            ("ID", Some(&[1, 1, 1, 0]), &[4, 5, 2, 0]),
+                            (
+                                "Outcome2",
+                                Some(&[0, 1, 0, 0]),
+                                &[0, 0, 500, 501, 0, 0, 0, 0],
+                            ),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Union,
+                        expected_info_with_mask(vec![
+                            (NULL_HEADER, None, &[1, 0, 1, 0, 1, 1, 1, 1]),
+                            (
+                                "Income1",
+                                Some(&[1, 0, 1, 0, 1, 1, 1, 1]),
+                                &[40, 0, 20, 0, 50, 30, 60, 70],
+                            ),
+                            (
+                                "Outcome1",
+                                Some(&[1, 0, 1, 0, 0, 0, 0, 0]),
+                                &[400, 401, 0, 0, 200, 201, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                            ),
+                            (
+                                "ID",
+                                Some(&[1, 0, 1, 0, 1, 1, 1, 1]),
+                                &[4, 0, 2, 0, 5, 3, 6, 7],
+                            ),
+                            (
+                                "Outcome2",
+                                Some(&[0, 0, 0, 0, 1, 1, 1, 1]),
+                                &[
+                                    0, 0, 0, 0, 0, 0, 0, 0, 500, 501, 300, 301, 600, 601, 700, 701,
+                                ],
+                            ),
+                        ]),
+                    );
+                    expected.insert(
+                        JoinType::Full,
+                        expected_info_with_mask(vec![
+                            (NULL_HEADER, None, &[1, 0, 1, 0, 1, 1, 1, 1]),
+                            (
+                                "Income1",
+                                Some(&[1, 0, 1, 0, 1, 1, 1, 1]),
+                                &[40, 0, 20, 0, 50, 30, 60, 70],
+                            ),
+                            (
+                                "Outcome1",
+                                Some(&[1, 0, 1, 0, 1, 0, 0, 0]),
+                                &[400, 401, 0, 0, 200, 201, 0, 0, 500, 501, 0, 0, 0, 0, 0, 0],
+                            ),
+                            (
+                                "ID",
+                                Some(&[1, 0, 1, 0, 1, 1, 1, 1]),
+                                &[4, 0, 2, 0, 5, 3, 6, 7],
+                            ),
+                            (
+                                "Outcome2",
+                                Some(&[0, 0, 0, 0, 1, 1, 1, 1]),
+                                &[
+                                    0, 0, 0, 0, 0, 0, 0, 0, 500, 501, 300, 301, 600, 601, 700, 701,
+                                ],
+                            ),
+                        ]),
+                    );
+                    expected
+                },
+            ),
+        ];
+
+        if with_masks {
+            tests_with_masks
+        } else {
+            tests_without_masks
+        }
+    }
+
+    #[test]
+    fn test_set_intersection() -> Result<()> {
+        join_helper(get_join_test_setup(false), JoinType::Inner, false)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_intersection_with_masks() -> Result<()> {
+        join_helper(get_join_test_setup(true), JoinType::Inner, true)?;
 
         Ok(())
     }
 
     #[test]
     fn test_left_join() -> Result<()> {
-        let tests = vec![
-            join_info(
-                vec![
-                    column_info(NULL_HEADER, &[6], BIT, &[1, 1, 1, 1, 1, 1]),
-                    column_info("ID", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
-                    column_info("Income", &[6], UINT64, &[500, 300, 0, 400, 100, 200]),
-                ],
-                vec![
-                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
-                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
-                    column_info(
-                        "Outcome",
-                        &[10],
-                        UINT64,
-                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
-                    ),
-                ],
-                vec![("ID", "ID")],
-                expected_info(vec![
-                    (NULL_HEADER, &[1, 1, 1, 1, 1, 1]),
-                    ("ID", &[5, 3, 0, 4, 1, 2]),
-                    ("Income", &[500, 300, 0, 400, 100, 200]),
-                    ("Outcome", &[0, 30, 0, 40, 0, 20]),
-                ]),
-            ),
-            join_info(
-                vec![
-                    column_info(NULL_HEADER, &[6], BIT, &[1, 1, 1, 1, 1, 1]),
-                    column_info("ID", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
-                    column_info("Income1", &[6], UINT64, &[50, 30, 0, 40, 10, 20]),
-                ],
-                vec![
-                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
-                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
-                    column_info(
-                        "Income2",
-                        &[10],
-                        UINT64,
-                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
-                    ),
-                ],
-                vec![("ID", "ID"), ("Income1", "Income2")],
-                expected_info(vec![
-                    (NULL_HEADER, &[1, 1, 1, 1, 1, 1]),
-                    ("ID", &[5, 3, 0, 4, 1, 2]),
-                    ("Income1", &[50, 30, 0, 40, 10, 20]),
-                ]),
-            ),
-            join_info(
-                vec![
-                    column_info(NULL_HEADER, &[6], BIT, &[1, 1, 1, 1, 1, 0]),
-                    column_info("ID", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
-                    column_info("Income1", &[6], UINT64, &[50, 30, 0, 40, 10, 20]),
-                    column_info("Outcome1", &[6], UINT64, &[500, 300, 0, 400, 100, 200]),
-                ],
-                vec![
-                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
-                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
-                    column_info(
-                        "Income2",
-                        &[10],
-                        UINT64,
-                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
-                    ),
-                    column_info(
-                        "Outcome2",
-                        &[10],
-                        UINT64,
-                        &[400, 700, 800, 900, 1000, 1100, 1200, 200, 300, 1300],
-                    ),
-                ],
-                vec![("ID", "ID"), ("Income1", "Income2")],
-                expected_info(vec![
-                    (NULL_HEADER, &[1, 1, 1, 1, 1, 0]),
-                    ("ID", &[5, 3, 0, 4, 1, 0]),
-                    ("Income1", &[50, 30, 0, 40, 10, 0]),
-                    ("Outcome1", &[500, 300, 0, 400, 100, 0]),
-                    ("Outcome2", &[0, 300, 0, 400, 0, 0]),
-                ]),
-            ),
-            join_info(
-                vec![
-                    column_info(NULL_HEADER, &[6], BIT, &[1, 0, 1, 0, 1, 1]),
-                    column_info("Income1", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
-                    column_info("ID", &[6], UINT64, &[50, 30, 0, 40, 10, 20]),
-                    column_info("Outcome1", &[6], UINT64, &[500, 300, 0, 400, 100, 200]),
-                ],
-                vec![
-                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 0, 1, 1]),
-                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
-                    column_info(
-                        "Income2",
-                        &[10],
-                        UINT64,
-                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
-                    ),
-                    column_info(
-                        "Outcome2",
-                        &[10],
-                        UINT64,
-                        &[400, 700, 800, 900, 1000, 1100, 1200, 200, 300, 1300],
-                    ),
-                ],
-                vec![("ID", "ID"), ("Income1", "Income2")],
-                expected_info(vec![
-                    (NULL_HEADER, &[1, 0, 1, 0, 1, 1]),
-                    ("Income1", &[5, 0, 0, 0, 1, 2]),
-                    ("ID", &[50, 0, 0, 0, 10, 20]),
-                    ("Outcome1", &[500, 0, 0, 0, 100, 200]),
-                    ("Outcome2", &[0, 0, 0, 0, 0, 0]),
-                ]),
-            ),
-            join_info(
-                vec![
-                    column_info(NULL_HEADER, &[1], BIT, &[1]),
-                    column_info("ID", &[1], UINT64, &[5]),
-                    column_info("Income1", &[1], UINT64, &[50]),
-                    column_info("Outcome1", &[1], UINT64, &[500]),
-                ],
-                vec![
-                    column_info(NULL_HEADER, &[1], BIT, &[1]),
-                    column_info("ID", &[1], UINT64, &[5]),
-                    column_info("Income2", &[1], UINT64, &[50]),
-                    column_info("Outcome2", &[1], UINT64, &[51]),
-                ],
-                vec![("ID", "ID"), ("Income1", "Income2")],
-                expected_info(vec![
-                    (NULL_HEADER, &[1]),
-                    ("ID", &[5]),
-                    ("Income1", &[50]),
-                    ("Outcome1", &[500]),
-                    ("Outcome2", &[51]),
-                ]),
-            ),
-            join_info(
-                vec![
-                    column_info(NULL_HEADER, &[1], BIT, &[1]),
-                    column_info("Income1", &[1], UINT64, &[50]),
-                    column_info("Outcome1", &[1], UINT64, &[500]),
-                    column_info("ID", &[1], UINT64, &[5]),
-                ],
-                vec![
-                    column_info(NULL_HEADER, &[1], BIT, &[1]),
-                    column_info("ID", &[1], UINT64, &[5]),
-                    column_info("Income2", &[1], UINT64, &[50]),
-                    column_info("Outcome2", &[1], UINT64, &[51]),
-                ],
-                vec![("ID", "ID"), ("Income1", "Income2")],
-                expected_info(vec![
-                    (NULL_HEADER, &[1]),
-                    ("Income1", &[50]),
-                    ("Outcome1", &[500]),
-                    ("ID", &[5]),
-                    ("Outcome2", &[51]),
-                ]),
-            ),
-            join_info(
-                vec![
-                    column_info(NULL_HEADER, &[2], BIT, &[1, 1]),
-                    column_info("Income1", &[2], UINT64, &[40, 50]),
-                    column_info("Outcome1", &[2, 2], UINT64, &[400, 401, 500, 501]),
-                    column_info("ID", &[2], UINT64, &[4, 5]),
-                ],
-                vec![
-                    column_info(NULL_HEADER, &[2], BIT, &[1, 1]),
-                    column_info("ID", &[2], UINT64, &[5, 3]),
-                    column_info("Income2", &[2], UINT64, &[50, 30]),
-                    column_info("Outcome2", &[2, 2], UINT64, &[500, 501, 300, 301]),
-                ],
-                vec![("ID", "ID"), ("Income1", "Income2")],
-                expected_info(vec![
-                    (NULL_HEADER, &[1, 1]),
-                    ("Income1", &[40, 50]),
-                    ("Outcome1", &[400, 401, 500, 501]),
-                    ("ID", &[4, 5]),
-                    ("Outcome2", &[0, 0, 500, 501]),
-                ]),
-            ),
-        ];
-        join_helper(tests, JoinType::Left)?;
+        join_helper(get_join_test_setup(false), JoinType::Left, false)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_left_join_with_masks() -> Result<()> {
+        join_helper(get_join_test_setup(true), JoinType::Left, true)?;
 
         Ok(())
     }
 
     #[test]
     fn test_union_join() -> Result<()> {
-        let tests = vec![
-            join_info(
-                vec![
-                    column_info(NULL_HEADER, &[6], BIT, &[1, 1, 1, 1, 1, 1]),
-                    column_info("ID", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
-                    column_info("Income", &[6], UINT64, &[500, 300, 0, 400, 100, 200]),
-                ],
-                vec![
-                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
-                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
-                    column_info(
-                        "Outcome",
-                        &[10],
-                        UINT64,
-                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
-                    ),
-                ],
-                vec![("ID", "ID")],
-                expected_info(vec![
-                    (
-                        NULL_HEADER,
-                        &[1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-                    ),
-                    ("ID", &[5, 0, 0, 0, 1, 0, 4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
-                    (
-                        "Income",
-                        &[500, 0, 0, 0, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-                    ),
-                    (
-                        "Outcome",
-                        &[0, 0, 0, 0, 0, 0, 40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
-                    ),
-                ]),
-            ),
-            join_info(
-                vec![
-                    column_info(NULL_HEADER, &[6], BIT, &[1, 1, 1, 1, 1, 1]),
-                    column_info("ID", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
-                    column_info("Income1", &[6], UINT64, &[50, 30, 0, 40, 10, 20]),
-                ],
-                vec![
-                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
-                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
-                    column_info(
-                        "Income2",
-                        &[10],
-                        UINT64,
-                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
-                    ),
-                ],
-                vec![("ID", "ID"), ("Income1", "Income2")],
-                expected_info(vec![
-                    (
-                        NULL_HEADER,
-                        &[1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-                    ),
-                    ("ID", &[5, 0, 0, 0, 1, 0, 4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
-                    (
-                        "Income1",
-                        &[
-                            50, 0, 0, 0, 10, 0, 40, 70, 80, 90, 100, 110, 120, 20, 30, 130,
-                        ],
-                    ),
-                ]),
-            ),
-            join_info(
-                vec![
-                    column_info(NULL_HEADER, &[6], BIT, &[1, 1, 1, 1, 1, 0]),
-                    column_info("ID", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
-                    column_info("Income1", &[6], UINT64, &[50, 30, 0, 40, 10, 20]),
-                    column_info("Outcome1", &[6], UINT64, &[500, 300, 0, 400, 100, 200]),
-                ],
-                vec![
-                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
-                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
-                    column_info(
-                        "Income2",
-                        &[10],
-                        UINT64,
-                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
-                    ),
-                    column_info(
-                        "Outcome2",
-                        &[10],
-                        UINT64,
-                        &[400, 700, 800, 900, 1000, 1100, 1200, 200, 300, 1300],
-                    ),
-                ],
-                vec![("ID", "ID"), ("Income1", "Income2")],
-                expected_info(vec![
-                    (
-                        NULL_HEADER,
-                        &[1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-                    ),
-                    ("ID", &[5, 0, 0, 0, 1, 0, 4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
-                    (
-                        "Income1",
-                        &[
-                            50, 0, 0, 0, 10, 0, 40, 70, 80, 90, 100, 110, 120, 20, 30, 130,
-                        ],
-                    ),
-                    (
-                        "Outcome1",
-                        &[500, 0, 0, 0, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-                    ),
-                    (
-                        "Outcome2",
-                        &[
-                            0, 0, 0, 0, 0, 0, 400, 700, 800, 900, 1000, 1100, 1200, 200, 300, 1300,
-                        ],
-                    ),
-                ]),
-            ),
-            join_info(
-                vec![
-                    column_info(NULL_HEADER, &[6], BIT, &[1, 0, 1, 0, 1, 1]),
-                    column_info("Income1", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
-                    column_info("ID", &[6], UINT64, &[50, 30, 0, 40, 10, 20]),
-                    column_info("Outcome1", &[6], UINT64, &[500, 300, 0, 400, 100, 200]),
-                ],
-                vec![
-                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 0, 1, 1]),
-                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
-                    column_info(
-                        "Income2",
-                        &[10],
-                        UINT64,
-                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
-                    ),
-                    column_info(
-                        "Outcome2",
-                        &[10],
-                        UINT64,
-                        &[400, 700, 800, 900, 1000, 1100, 1200, 200, 300, 1300],
-                    ),
-                ],
-                vec![("ID", "ID"), ("Income1", "Income2")],
-                expected_info(vec![
-                    (
-                        NULL_HEADER,
-                        &[1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1],
-                    ),
-                    (
-                        "Income1",
-                        &[5, 0, 0, 0, 1, 2, 40, 70, 80, 90, 100, 110, 120, 0, 30, 130],
-                    ),
-                    (
-                        "ID",
-                        &[50, 0, 0, 0, 10, 20, 4, 7, 8, 9, 10, 11, 12, 0, 3, 13],
-                    ),
-                    (
-                        "Outcome1",
-                        &[500, 0, 0, 0, 100, 200, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-                    ),
-                    (
-                        "Outcome2",
-                        &[
-                            0, 0, 0, 0, 0, 0, 400, 700, 800, 900, 1000, 1100, 1200, 0, 300, 1300,
-                        ],
-                    ),
-                ]),
-            ),
-            join_info(
-                vec![
-                    column_info(NULL_HEADER, &[1], BIT, &[1]),
-                    column_info("ID", &[1], UINT64, &[5]),
-                    column_info("Income1", &[1], UINT64, &[50]),
-                    column_info("Outcome1", &[1], UINT64, &[500]),
-                ],
-                vec![
-                    column_info(NULL_HEADER, &[1], BIT, &[1]),
-                    column_info("ID", &[1], UINT64, &[5]),
-                    column_info("Income2", &[1], UINT64, &[50]),
-                    column_info("Outcome2", &[1], UINT64, &[51]),
-                ],
-                vec![("ID", "ID"), ("Income1", "Income2")],
-                expected_info(vec![
-                    (NULL_HEADER, &[0, 1]),
-                    ("ID", &[0, 5]),
-                    ("Income1", &[0, 50]),
-                    ("Outcome1", &[0, 0]),
-                    ("Outcome2", &[0, 51]),
-                ]),
-            ),
-            join_info(
-                vec![
-                    column_info(NULL_HEADER, &[1], BIT, &[1]),
-                    column_info("Income1", &[1], UINT64, &[50]),
-                    column_info("Outcome1", &[1], UINT64, &[500]),
-                    column_info("ID", &[1], UINT64, &[5]),
-                ],
-                vec![
-                    column_info(NULL_HEADER, &[1], BIT, &[1]),
-                    column_info("ID", &[1], UINT64, &[5]),
-                    column_info("Income2", &[1], UINT64, &[50]),
-                    column_info("Outcome2", &[1], UINT64, &[51]),
-                ],
-                vec![("ID", "ID"), ("Income1", "Income2")],
-                expected_info(vec![
-                    (NULL_HEADER, &[0, 1]),
-                    ("Income1", &[0, 50]),
-                    ("Outcome1", &[0, 0]),
-                    ("ID", &[0, 5]),
-                    ("Outcome2", &[0, 51]),
-                ]),
-            ),
-            join_info(
-                vec![
-                    column_info(NULL_HEADER, &[2], BIT, &[1, 1]),
-                    column_info("Income1", &[2], UINT64, &[40, 50]),
-                    column_info("Outcome1", &[2], UINT64, &[400, 500]),
-                    column_info("ID", &[2], UINT64, &[4, 5]),
-                ],
-                vec![
-                    column_info(NULL_HEADER, &[2], BIT, &[1, 1]),
-                    column_info("ID", &[2], UINT64, &[4, 3]),
-                    column_info("Income2", &[2], UINT64, &[40, 30]),
-                    column_info("Outcome2", &[2, 2], UINT64, &[40, 41, 30, 31]),
-                ],
-                vec![("ID", "ID"), ("Income1", "Income2")],
-                expected_info(vec![
-                    (NULL_HEADER, &[0, 1, 1, 1]),
-                    ("Income1", &[0, 50, 40, 30]),
-                    ("Outcome1", &[0, 500, 0, 0]),
-                    ("ID", &[0, 5, 4, 3]),
-                    ("Outcome2", &[0, 0, 0, 0, 40, 41, 30, 31]),
-                ]),
-            ),
-            join_info(
-                vec![
-                    column_info(NULL_HEADER, &[2], BIT, &[1, 1]),
-                    column_info("Income1", &[2], UINT64, &[40, 50]),
-                    column_info("Outcome1", &[2], UINT64, &[400, 500]),
-                    column_info("ID", &[2], UINT64, &[4, 5]),
-                ],
-                vec![
-                    column_info(NULL_HEADER, &[2], BIT, &[1, 1]),
-                    column_info("ID", &[2], UINT64, &[6, 7]),
-                    column_info("Income2", &[2], UINT64, &[60, 70]),
-                    column_info("Outcome2", &[2, 2], UINT64, &[60, 61, 70, 71]),
-                ],
-                vec![("ID", "ID"), ("Income1", "Income2")],
-                expected_info(vec![
-                    (NULL_HEADER, &[1, 1, 1, 1]),
-                    ("Income1", &[40, 50, 60, 70]),
-                    ("Outcome1", &[400, 500, 0, 0]),
-                    ("ID", &[4, 5, 6, 7]),
-                    ("Outcome2", &[0, 0, 0, 0, 60, 61, 70, 71]),
-                ]),
-            ),
-        ];
-        join_helper(tests, JoinType::Union)?;
+        join_helper(get_join_test_setup(false), JoinType::Union, false)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_union_join_with_masks() -> Result<()> {
+        join_helper(get_join_test_setup(true), JoinType::Union, true)?;
 
         Ok(())
     }
 
     #[test]
     fn test_full_join() -> Result<()> {
-        let tests = vec![
-            join_info(
-                vec![
-                    column_info(NULL_HEADER, &[6], BIT, &[1, 1, 1, 1, 1, 1]),
-                    column_info("ID", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
-                    column_info("Income", &[6], UINT64, &[500, 300, 0, 400, 100, 200]),
-                ],
-                vec![
-                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
-                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
-                    column_info(
-                        "Outcome",
-                        &[10],
-                        UINT64,
-                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
-                    ),
-                ],
-                vec![("ID", "ID")],
-                expected_info(vec![
-                    (
-                        NULL_HEADER,
-                        &[1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-                    ),
-                    ("ID", &[5, 0, 0, 0, 1, 0, 4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
-                    (
-                        "Income",
-                        &[500, 0, 0, 0, 100, 0, 400, 0, 0, 0, 0, 0, 0, 200, 300, 0],
-                    ),
-                    (
-                        "Outcome",
-                        &[0, 0, 0, 0, 0, 0, 40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
-                    ),
-                ]),
-            ),
-            join_info(
-                vec![
-                    column_info(NULL_HEADER, &[6], BIT, &[1, 1, 1, 1, 1, 1]),
-                    column_info("ID", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
-                    column_info("Income1", &[6], UINT64, &[50, 30, 0, 40, 10, 20]),
-                ],
-                vec![
-                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
-                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
-                    column_info(
-                        "Income2",
-                        &[10],
-                        UINT64,
-                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
-                    ),
-                ],
-                vec![("ID", "ID"), ("Income1", "Income2")],
-                expected_info(vec![
-                    (
-                        NULL_HEADER,
-                        &[1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-                    ),
-                    ("ID", &[5, 0, 0, 0, 1, 0, 4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
-                    (
-                        "Income1",
-                        &[
-                            50, 0, 0, 0, 10, 0, 40, 70, 80, 90, 100, 110, 120, 20, 30, 130,
-                        ],
-                    ),
-                ]),
-            ),
-            join_info(
-                vec![
-                    column_info(NULL_HEADER, &[6], BIT, &[1, 1, 1, 1, 1, 0]),
-                    column_info("ID", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
-                    column_info("Income1", &[6], UINT64, &[50, 30, 0, 40, 10, 20]),
-                    column_info("Outcome1", &[6], UINT64, &[500, 300, 0, 400, 100, 200]),
-                ],
-                vec![
-                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
-                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
-                    column_info(
-                        "Income2",
-                        &[10],
-                        UINT64,
-                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
-                    ),
-                    column_info(
-                        "Outcome2",
-                        &[10],
-                        UINT64,
-                        &[400, 700, 800, 900, 1000, 1100, 1200, 200, 300, 1300],
-                    ),
-                ],
-                vec![("ID", "ID"), ("Income1", "Income2")],
-                expected_info(vec![
-                    (
-                        NULL_HEADER,
-                        &[1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-                    ),
-                    ("ID", &[5, 0, 0, 0, 1, 0, 4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
-                    (
-                        "Income1",
-                        &[
-                            50, 0, 0, 0, 10, 0, 40, 70, 80, 90, 100, 110, 120, 20, 30, 130,
-                        ],
-                    ),
-                    (
-                        "Outcome1",
-                        &[500, 0, 0, 0, 100, 0, 400, 0, 0, 0, 0, 0, 0, 0, 300, 0],
-                    ),
-                    (
-                        "Outcome2",
-                        &[
-                            0, 0, 0, 0, 0, 0, 400, 700, 800, 900, 1000, 1100, 1200, 200, 300, 1300,
-                        ],
-                    ),
-                ]),
-            ),
-            join_info(
-                vec![
-                    column_info(NULL_HEADER, &[6], BIT, &[1, 0, 1, 0, 1, 1]),
-                    column_info("Income1", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
-                    column_info("ID", &[6], UINT64, &[50, 30, 0, 40, 10, 20]),
-                    column_info("Outcome1", &[6], UINT64, &[500, 300, 0, 400, 100, 200]),
-                ],
-                vec![
-                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 0, 1, 1]),
-                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
-                    column_info(
-                        "Income2",
-                        &[10],
-                        UINT64,
-                        &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
-                    ),
-                    column_info(
-                        "Outcome2",
-                        &[10],
-                        UINT64,
-                        &[400, 700, 800, 900, 1000, 1100, 1200, 200, 300, 1300],
-                    ),
-                ],
-                vec![("ID", "ID"), ("Income1", "Income2")],
-                expected_info(vec![
-                    (
-                        NULL_HEADER,
-                        &[1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1],
-                    ),
-                    (
-                        "Income1",
-                        &[5, 0, 0, 0, 1, 2, 40, 70, 80, 90, 100, 110, 120, 0, 30, 130],
-                    ),
-                    (
-                        "ID",
-                        &[50, 0, 0, 0, 10, 20, 4, 7, 8, 9, 10, 11, 12, 0, 3, 13],
-                    ),
-                    (
-                        "Outcome1",
-                        &[500, 0, 0, 0, 100, 200, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-                    ),
-                    (
-                        "Outcome2",
-                        &[
-                            0, 0, 0, 0, 0, 0, 400, 700, 800, 900, 1000, 1100, 1200, 0, 300, 1300,
-                        ],
-                    ),
-                ]),
-            ),
-            join_info(
-                vec![
-                    column_info(NULL_HEADER, &[1], BIT, &[1]),
-                    column_info("ID", &[1], UINT64, &[5]),
-                    column_info("Income1", &[1], UINT64, &[50]),
-                    column_info("Outcome1", &[1], UINT64, &[500]),
-                ],
-                vec![
-                    column_info(NULL_HEADER, &[1], BIT, &[1]),
-                    column_info("ID", &[1], UINT64, &[5]),
-                    column_info("Income2", &[1], UINT64, &[50]),
-                    column_info("Outcome2", &[1], UINT64, &[51]),
-                ],
-                vec![("ID", "ID"), ("Income1", "Income2")],
-                expected_info(vec![
-                    (NULL_HEADER, &[0, 1]),
-                    ("ID", &[0, 5]),
-                    ("Income1", &[0, 50]),
-                    ("Outcome1", &[0, 500]),
-                    ("Outcome2", &[0, 51]),
-                ]),
-            ),
-            join_info(
-                vec![
-                    column_info(NULL_HEADER, &[1], BIT, &[1]),
-                    column_info("Income1", &[1], UINT64, &[50]),
-                    column_info("Outcome1", &[1], UINT64, &[500]),
-                    column_info("ID", &[1], UINT64, &[5]),
-                ],
-                vec![
-                    column_info(NULL_HEADER, &[1], BIT, &[1]),
-                    column_info("ID", &[1], UINT64, &[5]),
-                    column_info("Income2", &[1], UINT64, &[50]),
-                    column_info("Outcome2", &[1], UINT64, &[51]),
-                ],
-                vec![("ID", "ID"), ("Income1", "Income2")],
-                expected_info(vec![
-                    (NULL_HEADER, &[0, 1]),
-                    ("Income1", &[0, 50]),
-                    ("Outcome1", &[0, 500]),
-                    ("ID", &[0, 5]),
-                    ("Outcome2", &[0, 51]),
-                ]),
-            ),
-            join_info(
-                vec![
-                    column_info(NULL_HEADER, &[2], BIT, &[1, 1]),
-                    column_info("Income1", &[2], UINT64, &[40, 50]),
-                    column_info("Outcome1", &[2], UINT64, &[400, 500]),
-                    column_info("ID", &[2], UINT64, &[4, 5]),
-                ],
-                vec![
-                    column_info(NULL_HEADER, &[2], BIT, &[1, 1]),
-                    column_info("ID", &[2], UINT64, &[4, 3]),
-                    column_info("Income2", &[2], UINT64, &[40, 30]),
-                    column_info("Outcome2", &[2, 2], UINT64, &[40, 41, 30, 31]),
-                ],
-                vec![("ID", "ID"), ("Income1", "Income2")],
-                expected_info(vec![
-                    (NULL_HEADER, &[0, 1, 1, 1]),
-                    ("Income1", &[0, 50, 40, 30]),
-                    ("Outcome1", &[0, 500, 400, 0]),
-                    ("ID", &[0, 5, 4, 3]),
-                    ("Outcome2", &[0, 0, 0, 0, 40, 41, 30, 31]),
-                ]),
-            ),
-            join_info(
-                vec![
-                    column_info(NULL_HEADER, &[2], BIT, &[1, 1]),
-                    column_info("Income1", &[2], UINT64, &[40, 50]),
-                    column_info("Outcome1", &[2], UINT64, &[400, 500]),
-                    column_info("ID", &[2], UINT64, &[4, 5]),
-                ],
-                vec![
-                    column_info(NULL_HEADER, &[2], BIT, &[1, 1]),
-                    column_info("ID", &[2], UINT64, &[6, 7]),
-                    column_info("Income2", &[2], UINT64, &[60, 70]),
-                    column_info("Outcome2", &[2, 2], UINT64, &[60, 61, 70, 71]),
-                ],
-                vec![("ID", "ID"), ("Income1", "Income2")],
-                expected_info(vec![
-                    (NULL_HEADER, &[1, 1, 1, 1]),
-                    ("Income1", &[40, 50, 60, 70]),
-                    ("Outcome1", &[400, 500, 0, 0]),
-                    ("ID", &[4, 5, 6, 7]),
-                    ("Outcome2", &[0, 0, 0, 0, 60, 61, 70, 71]),
-                ]),
-            ),
-        ];
-        join_helper(tests, JoinType::Full)?;
+        join_helper(get_join_test_setup(false), JoinType::Full, false)?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_full_join_with_masks() -> Result<()> {
+        join_helper(get_join_test_setup(true), JoinType::Full, true)?;
 
         Ok(())
     }

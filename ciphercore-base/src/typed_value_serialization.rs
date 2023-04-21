@@ -3,7 +3,8 @@
 use std::fmt::{self, Debug};
 
 use crate::data_types::{
-    ArrayShape, ScalarType, Type, BIT, INT16, INT32, INT64, INT8, UINT16, UINT32, UINT64, UINT8,
+    ArrayShape, ScalarType, Type, BIT, INT128, INT16, INT32, INT64, INT8, UINT128, UINT16, UINT32,
+    UINT64, UINT8,
 };
 use crate::data_values::Value;
 use crate::typed_value::TypedValue;
@@ -96,7 +97,7 @@ impl<T: Clone> ShapedArray<T> {
 
 #[derive(Debug)]
 enum SerializedDataModel {
-    Array(ShapedArray<u64>),
+    Array(ShapedArray<u128>),
     Vector(Vec<TypedValue>),
     Value(TypedValue),
     NamedTuple(Vec<(String, TypedValue)>),
@@ -154,7 +155,7 @@ impl<'de> Visitor<'de> for SerializedDataModelVisitor {
         E: de::Error,
     {
         Ok(SerializedDataModel::Array(ShapedArray {
-            array: vec![value as u64],
+            array: vec![value as u128],
             shape: vec![],
         }))
     }
@@ -164,7 +165,7 @@ impl<'de> Visitor<'de> for SerializedDataModelVisitor {
         E: de::Error,
     {
         Ok(SerializedDataModel::Array(ShapedArray {
-            array: vec![value],
+            array: vec![value as u128],
             shape: vec![],
         }))
     }
@@ -174,7 +175,7 @@ impl<'de> Visitor<'de> for SerializedDataModelVisitor {
         E: de::Error,
     {
         Ok(SerializedDataModel::Array(ShapedArray {
-            array: vec![value as u64],
+            array: vec![value as u128],
             shape: vec![],
         }))
     }
@@ -183,13 +184,18 @@ impl<'de> Visitor<'de> for SerializedDataModelVisitor {
     where
         A: MapAccess<'de>,
     {
-        #[derive(Deserialize)]
+        #[derive(Debug, Deserialize)]
         #[serde(field_identifier, rename_all = "lowercase")]
         enum Field {
             Kind,
             Name,
             Type,
             Value,
+            // Numbers that don't fit in 64 bits are initially converted to a special map with a single key like:
+            // {"$serde_json::private::Number": "1234567890123456789012345"}
+            // We need to convert them to SerializedDataModel::Array just like we do in visit_i64 and visit_u64
+            #[serde(rename(deserialize = "$serde_json::private::Number"))]
+            SerdeNumber,
         }
 
         #[derive(Deserialize)]
@@ -207,6 +213,7 @@ impl<'de> Visitor<'de> for SerializedDataModelVisitor {
         let mut t: Option<String> = None;
         let mut name: Option<String> = None;
         let mut opt_value: Option<SerializedDataModel> = None;
+        let mut serde_number: Option<String> = None;
         while let Some(key) = map.next_key()? {
             match key {
                 Field::Kind => {
@@ -233,7 +240,32 @@ impl<'de> Visitor<'de> for SerializedDataModelVisitor {
                     }
                     name = Some(map.next_value()?);
                 }
+                Field::SerdeNumber => {
+                    if serde_number.is_some() {
+                        return Err(de::Error::duplicate_field("$serde_json::private::Number"));
+                    }
+                    serde_number = Some(map.next_value::<String>()?);
+                }
             }
+        }
+        if let Some(s) = serde_number {
+            if kind.is_some() || t.is_some() || name.is_some() || opt_value.is_some() {
+                return Err(de::Error::custom(
+                    "Unexpected field: \"$serde_json::private::Number\" can not be together with \"type\" or \"kind\" or \"name\" or \"value\".",
+                ));
+            }
+            let val = if s.starts_with('-') {
+                s.parse::<i128>()
+                    .map_err(|x| de::Error::custom(format!("Invalid number {x}")))?
+                    as u128
+            } else {
+                s.parse::<u128>()
+                    .map_err(|x| de::Error::custom(format!("Invalid number {x}")))?
+            };
+            return Ok(SerializedDataModel::Array(ShapedArray {
+                array: vec![val],
+                shape: vec![],
+            }));
         }
         let value = opt_value.ok_or_else(|| de::Error::missing_field("value"))?;
         if let Some(n) = name {
@@ -416,6 +448,8 @@ impl TypedValue {
                     INT32 => ser_value_to_scalar_aux!(s, self.value, st, to_i32)?,
                     UINT64 => ser_value_to_scalar_aux!(s, self.value, st, to_u64)?,
                     INT64 => ser_value_to_scalar_aux!(s, self.value, st, to_i64)?,
+                    UINT128 => ser_value_to_scalar_aux!(s, self.value, st, to_u128)?,
+                    INT128 => ser_value_to_scalar_aux!(s, self.value, st, to_i128)?,
                 };
                 s.end()
             }
@@ -487,6 +521,20 @@ impl TypedValue {
                         to_flattened_array_i64,
                         shape
                     )?,
+                    UINT128 => ser_value_to_scalar_array_aux!(
+                        s,
+                        self.value,
+                        self.t,
+                        to_flattened_array_u128,
+                        shape
+                    )?,
+                    INT128 => ser_value_to_scalar_array_aux!(
+                        s,
+                        self.value,
+                        self.t,
+                        to_flattened_array_i128,
+                        shape
+                    )?,
                 };
                 s.end()
             }
@@ -541,6 +589,7 @@ mod tests {
     use super::*;
     use crate::data_types::{array_type, named_tuple_type, scalar_type, tuple_type, vector_type};
     use crate::errors::Result;
+    use crate::random::PRNG;
 
     fn test_scalar_or_array_helper(s: &str, t: Type, bytes: &[u8]) -> Result<()> {
         let tv = serde_json::from_str::<TypedValue>(s)?;
@@ -650,6 +699,50 @@ mod tests {
     fn test_array_i64() -> Result<()> {
         let s = r#"{"kind":"array","type":"i64","value":[-123456]}"#;
         test_array_helper(s, INT64, &[192, 29, 254, 255, 255, 255, 255, 255])
+    }
+    #[test]
+    fn test_scalar_u128() -> Result<()> {
+        let s = r#"{"kind":"scalar","type":"u128","value":120892581961447099616}"#;
+        test_scalar_helper(
+            s,
+            UINT128,
+            &[
+                224, 204, 217, 15, 199, 186, 184, 141, 6, 0, 0, 0, 0, 0, 0, 0,
+            ],
+        )
+    }
+    #[test]
+    fn test_array_u128() -> Result<()> {
+        let s = r#"{"kind":"array","type":"u128","value":[120892581961447099616]}"#;
+        test_array_helper(
+            s,
+            UINT128,
+            &[
+                224, 204, 217, 15, 199, 186, 184, 141, 6, 0, 0, 0, 0, 0, 0, 0,
+            ],
+        )
+    }
+    #[test]
+    fn test_scalar_i128() -> Result<()> {
+        let s = r#"{"kind":"scalar","type":"i128","value":-120892581961447099616}"#;
+        test_scalar_helper(
+            s,
+            INT128,
+            &[
+                32, 51, 38, 240, 56, 69, 71, 114, 249, 255, 255, 255, 255, 255, 255, 255,
+            ],
+        )
+    }
+    #[test]
+    fn test_array_i128() -> Result<()> {
+        let s = r#"{"kind":"array","type":"i128","value":[-120892581961447099616]}"#;
+        test_array_helper(
+            s,
+            INT128,
+            &[
+                32, 51, 38, 240, 56, 69, 71, 114, 249, 255, 255, 255, 255, 255, 255, 255,
+            ],
+        )
     }
     #[test]
     fn test_ndarray() -> Result<()> {
@@ -795,6 +888,23 @@ mod tests {
         assert!(serde_json::from_str::<TypedValue>(&s).is_err());
         let s = r#"{"kind":"named tuple","value":[{"name":"field1","value":123123}]}"#;
         assert!(serde_json::from_str::<TypedValue>(&s).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_128_bit() -> Result<()> {
+        // Test that serialization and deserialization of 128-bit integers works.
+        let mut prng = PRNG::new(None)?;
+        let types = vec![scalar_type(UINT128), scalar_type(INT128)];
+        for _ in 0..100 {
+            for t in &types {
+                let value = prng.get_random_value(t.clone())?;
+                let tv = TypedValue::new(t.clone(), value)?;
+                let s = serde_json::to_string(&tv)?;
+                let tv2 = serde_json::from_str::<TypedValue>(&s)?;
+                assert_eq!(tv, tv2);
+            }
+        }
         Ok(())
     }
 
