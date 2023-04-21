@@ -2,6 +2,7 @@
 //! A custom operation can be thought of as a polymorphic function, i.e., where the number of inputs and their types can vary.
 
 pub mod adder;
+pub mod auc;
 mod broadcast_test;
 pub mod clip;
 pub mod comparisons;

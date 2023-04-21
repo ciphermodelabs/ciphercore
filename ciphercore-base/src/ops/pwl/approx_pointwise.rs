@@ -110,9 +110,9 @@ where
     // We need to find `divisor` so that `(right - left) / divisor` = scale.
     // So divisor is `(right - left) / scale` (with the fixed-precision multiplier).
     let divisor = if log_buckets <= precision {
-        ((right - left) * ((1 << (precision - log_buckets)) as f32)) as u64
+        ((right - left) * ((1 << (precision - log_buckets)) as f32)) as u128
     } else {
-        ((right - left) as u64) >> (log_buckets - precision)
+        ((right - left) as u128) >> (log_buckets - precision)
     };
     let scaled_x = shifted_x.truncate(divisor)?;
 

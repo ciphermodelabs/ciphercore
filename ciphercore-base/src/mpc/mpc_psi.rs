@@ -3041,6 +3041,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_psi_2() -> Result<()> {
         private_join_data_helper(
@@ -3099,6 +3100,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_psi_3() -> Result<()> {
         private_join_data_helper(
@@ -3165,6 +3167,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_psi_4() -> Result<()> {
         private_join_data_helper(
@@ -3209,6 +3212,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_psi_5() -> Result<()> {
         private_join_data_helper(
@@ -3250,6 +3254,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_psi_6() -> Result<()> {
         private_join_data_helper(
@@ -3291,6 +3296,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_psi_7() -> Result<()> {
         private_join_data_helper(
@@ -3312,6 +3318,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_psi_8() -> Result<()> {
         private_join_data_helper(
@@ -3341,6 +3348,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_psi_9() -> Result<()> {
         private_join_data_helper(
@@ -3495,6 +3503,7 @@ mod tests {
         )?;
         Ok(())
     }
+
     #[test]
     fn test_private_left_join_1() -> Result<()> {
         private_join_data_helper(
@@ -3528,6 +3537,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_left_join_2() -> Result<()> {
         private_join_data_helper(
@@ -3586,6 +3596,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_left_join_3() -> Result<()> {
         private_join_data_helper(
@@ -3652,6 +3663,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_left_join_4() -> Result<()> {
         private_join_data_helper(
@@ -3696,6 +3708,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_left_join_5() -> Result<()> {
         private_join_data_helper(
@@ -3737,6 +3750,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_left_join_6() -> Result<()> {
         private_join_data_helper(
@@ -3778,6 +3792,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_left_join_7() -> Result<()> {
         private_join_data_helper(
@@ -3799,6 +3814,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_left_join_8() -> Result<()> {
         private_join_data_helper(
@@ -3828,6 +3844,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_left_join_9() -> Result<()> {
         private_join_data_helper(
@@ -4026,6 +4043,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_union_join_2() -> Result<()> {
         private_join_data_helper(
@@ -4096,6 +4114,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_union_join_3() -> Result<()> {
         private_join_data_helper(
@@ -4179,6 +4198,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_union_join_4() -> Result<()> {
         private_join_data_helper(
@@ -4242,6 +4262,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_union_join_5() -> Result<()> {
         private_join_data_helper(
@@ -4292,6 +4313,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_union_join_6() -> Result<()> {
         private_join_data_helper(
@@ -4339,6 +4361,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_union_join_7() -> Result<()> {
         private_join_data_helper(
@@ -4360,6 +4383,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_union_join_8() -> Result<()> {
         private_join_data_helper(
@@ -4389,6 +4413,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_union_join_9() -> Result<()> {
         private_join_data_helper(
@@ -4601,6 +4626,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_full_join_2() -> Result<()> {
         private_join_data_helper(
@@ -4668,6 +4694,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_full_join_3() -> Result<()> {
         private_join_data_helper(
@@ -4751,6 +4778,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_full_join_4() -> Result<()> {
         private_join_data_helper(
@@ -4811,6 +4839,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_full_join_5() -> Result<()> {
         private_join_data_helper(
@@ -4861,6 +4890,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_full_join_6() -> Result<()> {
         private_join_data_helper(
@@ -4908,6 +4938,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_full_join_7() -> Result<()> {
         private_join_data_helper(
@@ -4929,6 +4960,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_full_join_8() -> Result<()> {
         private_join_data_helper(
@@ -4958,6 +4990,7 @@ mod tests {
             ],
         )
     }
+
     #[test]
     fn test_private_full_join_9() -> Result<()> {
         private_join_data_helper(

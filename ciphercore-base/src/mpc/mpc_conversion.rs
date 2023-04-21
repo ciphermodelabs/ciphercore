@@ -413,7 +413,7 @@ fn add_3_bitstrings(
 mod tests {
     use super::*;
     use crate::bytes::subtract_vectors_u128;
-    use crate::data_types::{array_type, ScalarType, INT32, UINT32};
+    use crate::data_types::{array_type, ScalarType, INT128, UINT128};
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
     use crate::graphs::Operation;
@@ -653,26 +653,30 @@ mod tests {
             Ok(())
         };
         helper_runs(vec![85], scalar_type(st))?;
-        helper_runs(vec![(-12345677i32) as u128], scalar_type(st))?;
-        helper_runs(vec![-12345677i32 as u128], scalar_type(st))?;
+        helper_runs(vec![(-1233425456713636117134i128) as u128], scalar_type(st))?;
+        helper_runs(vec![1234531312235111221677134 as u128], scalar_type(st))?;
         helper_runs(vec![2, 85], array_type(vec![2], st))?;
         helper_runs(vec![0, 255], array_type(vec![2], st))?;
         helper_runs(
-            vec![12345678, (-12345677i32) as u128],
+            vec![1133353228592345678, (-12345677123142726513i128) as u128],
             array_type(vec![2], st),
+        )?;
+        helper_runs(
+            vec![i128::MIN as u128, i128::MAX as u128, 0, u128::MAX],
+            array_type(vec![4], st),
         )?;
         Ok(())
     }
 
     #[test]
     fn test_a2b_mpc() {
-        conversion_test(Operation::A2B, UINT32).unwrap();
-        conversion_test(Operation::A2B, INT32).unwrap();
+        conversion_test(Operation::A2B, UINT128).unwrap();
+        conversion_test(Operation::A2B, INT128).unwrap();
     }
 
     #[test]
     fn test_b2a_mpc() {
-        conversion_test(Operation::B2A(UINT32), UINT32).unwrap();
-        conversion_test(Operation::B2A(INT32), INT32).unwrap();
+        conversion_test(Operation::B2A(UINT128), UINT128).unwrap();
+        conversion_test(Operation::B2A(INT128), INT128).unwrap();
     }
 }

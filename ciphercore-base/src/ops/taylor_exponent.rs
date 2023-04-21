@@ -140,7 +140,7 @@ impl CustomOperationBody for TaylorExponent {
                 if i < self.taylor_terms - 1 {
                     coef = coef.multiply(y.clone())?;
                     // We need to divide it by i + 1, and by 2 ** fixed_precision_points, so we combine the two.
-                    coef = coef.truncate((i + 1) << self.fixed_precision_points)?;
+                    coef = coef.truncate((i as u128 + 1) << self.fixed_precision_points)?;
                 }
             }
             exp_fractional
@@ -152,7 +152,7 @@ impl CustomOperationBody for TaylorExponent {
         // If x < 0, then it can be represented as x = -2^max_exp_bits + integer_bits + fractional_bits
         // exp is equal to 2^(integer_bits + fractional_bits).
         // Thus, truncation by 2^(2^max_exp_bits) changes the sign of the exponent.
-        let one_over_exp = exp.truncate(1u64 << (1u64 << max_exp_bits))?;
+        let one_over_exp = exp.truncate(1u128 << (1u64 << max_exp_bits))?;
         // Our maximal precision is 15, leading to minimum value around 3e-5. Exp(-10) is 4e-5
         // If x is smaller than -10, return 0.
         let upper_bound_for_inversion =

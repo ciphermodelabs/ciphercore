@@ -22,8 +22,8 @@ impl Default for FixedPrecisionConfig {
 }
 
 impl FixedPrecisionConfig {
-    pub fn denominator(&self) -> u64 {
-        1 << self.fractional_bits
+    pub fn denominator(&self) -> u128 {
+        1u128 << self.fractional_bits
     }
 
     pub fn denominator_f64(&self) -> f64 {

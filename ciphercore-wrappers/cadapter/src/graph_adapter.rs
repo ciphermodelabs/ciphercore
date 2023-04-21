@@ -120,7 +120,7 @@ pub extern "C" fn graph_truncate(
     a_ptr: *mut Node,
     scale: u64,
 ) -> CResult<Node> {
-    graph_one_node_method_helper(graph_ptr, a_ptr, |g, a| g.truncate(a, scale))
+    graph_one_node_method_helper(graph_ptr, a_ptr, |g, a| g.truncate(a, scale as u128))
 }
 
 #[no_mangle]
@@ -698,7 +698,7 @@ pub extern "C" fn node_matmul(node_ptr: *mut Node, b_ptr: *mut Node) -> CResult<
 
 #[no_mangle]
 pub extern "C" fn node_truncate(node_ptr: *mut Node, scale: u64) -> CResult<Node> {
-    node_method_helper(node_ptr, |a| a.truncate(scale))
+    node_method_helper(node_ptr, |a| a.truncate(scale as u128))
 }
 
 #[no_mangle]

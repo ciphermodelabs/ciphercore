@@ -745,6 +745,32 @@ impl TypedValue {
         }
     }
 
+    /// Converts `self` to a scalar if it is a byte vector, then casts the result to `u128`.
+    ///
+    /// # Arguments
+    ///
+    /// `st` - scalar type used to interpret `self`
+    ///
+    /// # Result
+    ///
+    /// Resulting scalar cast to `u128`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use ciphercore_base::data_types::INT32;
+    /// # use ciphercore_base::typed_value::TypedValue;
+    /// let v = TypedValue::from_scalar(-123456, INT32).unwrap();
+    /// assert_eq!(v.to_u128().unwrap(), -123456i32 as u128);
+    /// ```
+    pub fn to_u128(&self) -> Result<u128> {
+        if let Type::Scalar(st) = &self.t {
+            Ok(self.value.to_u128(*st)?)
+        } else {
+            Err(runtime_error!("Cannot convert type {:?} to u128", self.t))
+        }
+    }
+
     pub fn secret_share(&self, prng: &mut PRNG) -> Result<TypedValue> {
         let vals = self.shard_to_shares(prng)?;
         Ok(TypedValue {
@@ -959,7 +985,7 @@ mod tests {
 
     use super::*;
     use crate::data_types::{
-        scalar_type, tuple_type, BIT, INT32, INT8, UINT16, UINT32, UINT64, UINT8,
+        scalar_type, tuple_type, BIT, INT32, INT8, UINT128, UINT16, UINT32, UINT64, UINT8,
     };
 
     #[test]
@@ -1394,6 +1420,14 @@ mod tests {
                 .to_u64()
                 .unwrap(),
             -73i32 as u64
+        );
+        let x = 131487715213352547813154;
+        assert_eq!(
+            TypedValue::from_scalar(x, UINT128)
+                .unwrap()
+                .to_u128()
+                .unwrap(),
+            x
         );
     }
     #[test]
