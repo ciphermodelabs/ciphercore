@@ -3719,7 +3719,11 @@ impl fmt::Display for Graph {
 
 impl fmt::Display for Node {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Node[type={}]", self.get_type()?)
+        write!(
+            f,
+            "Node[type={}]",
+            self.get_type().map_err(|_| fmt::Error::default())?
+        )
     }
 }
 
