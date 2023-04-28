@@ -1589,7 +1589,7 @@ impl CustomOperationBody for PermutationMPC {
 /// If map's i-th element is one, then the map copies the previous element of the result.
 /// This rules can be summarized by the following equation
 ///
-/// duplication_indices[i] = duplication_bits[i] * duplication_indices[i-1] + (1 - duplication_bits[i]) * i.
+/// `duplication_indices[i] = duplication_bits[i] * duplication_indices[i-1] + (1 - duplication_bits[i]) * i`
 ///
 /// Input shares are assumed to be a tuple of 2-out-of-2 shares.
 /// Each share must be a named tuple containing integer or binary arrays.
@@ -1597,29 +1597,29 @@ impl CustomOperationBody for PermutationMPC {
 ///
 /// The protocol follows the Duplicate protocol from <https://eprint.iacr.org/2019/518.pdf>.
 /// For each column header, the following steps are performed.
-/// 1. Sender selects an input column C_s.
-/// 2. Sender and Receiver generate shared randomness B_r[i] for i in [1,num_entries], W_0 and W_1 of size of a column without one entry.
-/// 2. Sender selects the first entry and masks it with a random value B0_p also known to Programmer.
-/// This value is assigned to B_r[0].
+/// 1. Sender selects an input column `C_s`.
+/// 2. Sender and Receiver generate shared randomness `B_r[i]` for i in `[1,num_entries]`, `W_0` and `W_1` of size of a column without one entry.
+/// 2. Sender selects the first entry and masks it with a random value `B0_p` also known to Programmer.
+/// This value is assigned to `B_r[0]`.
 /// 3. Sender and programmer generate a random mask phi of the duplication bits.
-/// 4. Sender computes two columns M0 and M1 such that
+/// 4. Sender computes two columns `M0` and `M1` such that
 ///    
-///    M0[i] = C_s[i] - B_r[i] - W_(duplication_bits[i])[i],
-///    M1[i] = B_r[i-1] - B_r[i] - W_(1-duplication_bits[i])[i].
+///    `M0[i] = C_s[i] - B_r[i] - W_(duplication_bits[i])[i],`
+///    `M1[i] = B_r[i-1] - B_r[i] - W_(1-duplication_bits[i])[i].`
 ///    
-///    for i in [1, num_entries].
-/// 5. Sender sends M0 and M1 to Programmer.
-/// 6. Programmer and Receiver generate a random value R of size of an input share.
-/// 7. Programmer masks the duplication map by computing rho = phi XOR duplication_bits except for the first bit.
+///    for i in `[1, num_entries]`.
+/// 5. Sender sends `M0` and `M1` to Programmer.
+/// 6. Programmer and Receiver generate a random value `R` of size of an input share.
+/// 7. Programmer masks the duplication map by computing `rho = phi XOR duplication_bits` except for the first bit.
 /// 8. Programmer sends rho to Receiver.
-/// 9. Receiver selects W_(rho[i])[i] for i in [1, num_entries] and sends them to Programmer.
+/// 9. Receiver selects `W_(rho[i])[i]` for i in `[1, num_entries]` and sends them to Programmer.
 /// 10. Programmer computes
 ///
-///     B_p[i] = M_(duplication_bits[i])[i] + W_(rho[i])[i] + dup_bits[i] * B_p[i-1]
+///     `B_p[i] = M_(duplication_bits[i])[i] + W_(rho[i])[i] + dup_bits[i] * B_p[i-1]`
 ///
-///     for i in [1,num_entries].
-/// 11. Compute the share of Programmer equal to B_p - R + duplication_map(programmer column share)
-/// 12. Compute the share of Receiver B_r + R
+///     for i in `[1,num_entries]`.
+/// 11. Compute the share of Programmer equal to `B_p - R + duplication_map(programmer column share)`
+/// 12. Compute the share of Receiver `B_r + R`
 ///
 /// **WARNING**: this function should not be used before MPC compilation.
 ///
