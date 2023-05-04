@@ -245,6 +245,7 @@ impl Operation {
                 | Operation::ArrayToVector
                 | Operation::VectorToArray
                 | Operation::Join(_, _)
+                | Operation::JoinWithColumnMasks(_, _)
                 | Operation::ApplyPermutation(_)
                 | Operation::Sort(_)
         )
