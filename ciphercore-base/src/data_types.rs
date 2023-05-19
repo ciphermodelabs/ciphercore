@@ -1,6 +1,6 @@
 //! Types used within CipherCore and related functions.
 use crate::constants::type_size_limit_constants;
-use crate::errors::CiphercoreBaseError;
+use crate::errors::Error;
 use crate::errors::Result;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -1100,7 +1100,7 @@ impl fmt::Debug for ScalarType {
 }
 
 impl FromStr for ScalarType {
-    type Err = CiphercoreBaseError;
+    type Err = Error;
     fn from_str(s: &str) -> Result<Self> {
         match s {
             "bit" => Ok(BIT),

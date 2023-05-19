@@ -241,6 +241,7 @@ pub(super) fn propagate_private_annotations(
             | Operation::Matmul
             | Operation::Gemm(_, _)
             | Operation::Join(_, _)
+            | Operation::JoinWithColumnMasks(_, _)
             | Operation::A2B
             | Operation::B2A(_)
             | Operation::PermuteAxes(_)
@@ -265,7 +266,10 @@ pub(super) fn propagate_private_annotations(
                 let dependencies = node.get_node_dependencies();
                 if is_one_node_private(&dependencies, &private_nodes) {
                     private_nodes.insert(node.clone());
-                    if matches!(op, Operation::Join(_, _)) {
+                    if matches!(
+                        op,
+                        Operation::Join(_, _) | Operation::JoinWithColumnMasks(_, _)
+                    ) {
                         use_prf_for_mul = true;
                     }
                 }
@@ -485,7 +489,7 @@ pub(super) fn compile_to_mpc_graph(
                 // Let compiler to check the following nodes and decide.
                 general_multiply_mpc(new_input0, new_input1, op, prf_keys_mul.clone(), false)?
             }
-            Operation::Join(join_t, headers) => {
+            Operation::Join(join_t, headers) | Operation::JoinWithColumnMasks(join_t, headers) => {
                 let dependencies = node.get_node_dependencies();
                 let input0 = dependencies[0].clone();
                 let input1 = dependencies[1].clone();
@@ -495,10 +499,21 @@ pub(super) fn compile_to_mpc_graph(
                 for headers_pair in headers {
                     headers_vec.push(headers_pair);
                 }
-                let custom_op = CustomOperation::new(JoinMPC {
-                    join_t,
-                    headers: headers_vec,
-                });
+                let custom_op = match op {
+                    Operation::Join(_, _) => CustomOperation::new(JoinMPC {
+                        join_t,
+                        headers: headers_vec,
+                        has_column_masks: false,
+                    }),
+                    Operation::JoinWithColumnMasks(_, _) => CustomOperation::new(JoinMPC {
+                        join_t,
+                        headers: headers_vec,
+                        has_column_masks: true,
+                    }),
+                    _ => {
+                        return Err(runtime_error!("Shouldn't be here"));
+                    }
+                };
 
                 if private_nodes.contains(&node) {
                     // If one input set is private, MPC protocols requires invoking PRFs.

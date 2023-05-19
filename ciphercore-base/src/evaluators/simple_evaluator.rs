@@ -1463,6 +1463,10 @@ mod tests {
             named_tuple_type, scalar_type, tuple_type, vector_type, ArrayShape, ScalarType, INT16,
             INT32, INT64, UINT16, UINT32, UINT64, UINT8,
         },
+        evaluators::join_test_utils::{
+            column_info, column_info_with_mask, expected_set_info, expected_set_info_with_mask,
+            join_info, JoinTestInfo, SetHelpers,
+        },
         evaluators::{evaluate_simple_evaluator, random_evaluate},
         graphs::{create_context, util::simple_context, JoinType, SliceElement},
         join_utils::ColumnType,
@@ -2321,11 +2325,8 @@ mod tests {
         .unwrap();
     }
 
-    fn join_helper(
-        test_info: Vec<JoinTestInfo>,
-        join_t: JoinType,
-        has_column_masks: bool,
-    ) -> Result<()> {
+    fn join_helper(join_t: JoinType, has_column_masks: bool) -> Result<()> {
+        let test_info = get_join_test_setup(has_column_masks)?;
         for test_i in test_info {
             let c = simple_context(|g| {
                 let i0 = g.input(test_i.set0.get_type())?;
@@ -2376,177 +2377,30 @@ mod tests {
         Ok(())
     }
 
-    struct ColumnInfo {
-        header: String,
-        shape: Vec<u64>,
-        st: ScalarType,
-        mask: Option<Vec<u64>>,
-        data: Vec<u64>,
-    }
-    impl ColumnInfo {
-        fn get_data_type(&self) -> Type {
-            array_type(self.shape.clone(), self.st)
-        }
-        fn has_mask(&self) -> bool {
-            self.mask.is_some()
-        }
-    }
-
-    fn column_info(header: &str, shape: &[u64], st: ScalarType, data: &[u64]) -> ColumnInfo {
-        ColumnInfo {
-            header: header.to_owned(),
-            shape: shape.to_vec(),
-            st,
-            mask: None,
-            data: data.to_vec(),
-        }
-    }
-
-    fn column_info_with_mask(
-        header: &str,
-        shape: &[u64],
-        st: ScalarType,
-        mask: Option<&[u64]>,
-        data: &[u64],
-    ) -> ColumnInfo {
-        if header == NULL_HEADER && mask.is_some() {
-            panic!("Null column shouldn't have a mask");
-        }
-        let resolved_mask = if let Some(mask_arr) = mask {
-            Some(mask_arr.to_vec())
-        } else {
-            None
-        };
-        ColumnInfo {
-            header: header.to_owned(),
-            shape: shape.to_vec(),
-            st,
-            mask: resolved_mask,
-            data: data.to_vec(),
-        }
-    }
-
-    type SetInfo = Vec<ColumnInfo>;
-
-    trait SetHelpers {
-        fn get_type(&self) -> Type;
-        fn get_value(&self) -> Result<Value>;
-    }
-
-    impl SetHelpers for SetInfo {
-        fn get_type(&self) -> Type {
-            let mut v = vec![];
-            for col in self.iter() {
-                if !col.has_mask() {
-                    v.push((col.header.clone(), col.get_data_type()));
-                    continue;
-                }
-                let data_shape = col.shape.clone();
-                let mask_shape = vec![data_shape[0]];
-                v.push((
-                    col.header.clone(),
-                    tuple_type(vec![
-                        array_type(mask_shape.clone(), BIT),
-                        array_type(data_shape.clone(), col.st),
-                    ]),
-                ));
-            }
-            named_tuple_type(v)
-        }
-        fn get_value(&self) -> Result<Value> {
-            let mut v = vec![];
-            for col in self.iter() {
-                if !col.has_mask() {
-                    v.push(Value::from_flattened_array(&col.data, col.st)?);
-                    continue;
-                }
-                let mask_data = vec![
-                    Value::from_flattened_array(col.mask.as_ref().unwrap(), BIT)?,
-                    Value::from_flattened_array(&col.data, col.st)?,
-                ];
-                v.push(Value::from_vector(mask_data));
-            }
-            Ok(Value::from_vector(v))
-        }
-    }
-
-    type ExpectedInfo = Vec<(String, Option<Vec<u64>>, Vec<u64>)>;
-
-    fn expected_info(expected_columns: Vec<(&str, &[u64])>) -> ExpectedInfo {
-        let mut v = vec![];
-        for (header, data) in expected_columns {
-            v.push((header.to_owned(), None, data.to_vec()));
-        }
-        v
-    }
-
-    fn expected_info_with_mask(
-        expected_columns: Vec<(&str, Option<&[u64]>, &[u64])>,
-    ) -> ExpectedInfo {
-        let mut v = vec![];
-        for (header, mask, data) in expected_columns {
-            if header == NULL_HEADER && mask.is_some() {
-                panic!("Null column shouldn't have a column mask");
-            }
-            let resolved_mask = if let Some(mask_arr) = mask {
-                Some(mask_arr.to_vec())
-            } else {
-                None
-            };
-            v.push((header.to_owned(), resolved_mask, data.to_vec()));
-        }
-        v
-    }
-
-    struct JoinTestInfo {
-        set0: SetInfo,
-        set1: SetInfo,
-        headers: HashMap<String, String>,
-        expected: HashMap<JoinType, ExpectedInfo>,
-    }
-
-    fn join_info(
-        set0: SetInfo,
-        set1: SetInfo,
-        headers: Vec<(&str, &str)>,
-        expected: HashMap<JoinType, ExpectedInfo>,
-    ) -> JoinTestInfo {
-        let mut hmap = HashMap::new();
-        for (h0, h1) in headers {
-            hmap.insert(h0.to_owned(), h1.to_owned());
-        }
-        JoinTestInfo {
-            set0,
-            set1,
-            headers: hmap,
-            expected,
-        }
-    }
-
-    fn get_join_test_setup(with_masks: bool) -> Vec<JoinTestInfo> {
+    fn get_join_test_setup(with_masks: bool) -> Result<Vec<JoinTestInfo>> {
         let tests_without_masks = vec![
             join_info(
                 vec![
-                    column_info(NULL_HEADER, &[6], BIT, &[1, 1, 1, 1, 1, 1]),
-                    column_info("ID", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
-                    column_info("Income", &[6], UINT64, &[500, 300, 0, 400, 100, 200]),
+                    column_info(NULL_HEADER, &[6], BIT, &[1, 1, 1, 1, 1, 1])?,
+                    column_info("ID", &[6], UINT64, &[5, 3, 0, 4, 1, 2])?,
+                    column_info("Income", &[6], UINT64, &[500, 300, 0, 400, 100, 200])?,
                 ],
                 vec![
-                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
-                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1])?,
+                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13])?,
                     column_info(
                         "Outcome",
                         &[10],
                         UINT64,
                         &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
-                    ),
+                    )?,
                 ],
                 vec![("ID", "ID")],
                 {
                     let mut expected = HashMap::new();
                     expected.insert(
                         JoinType::Inner,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (NULL_HEADER, &[0, 1, 0, 1, 0, 1]),
                             ("ID", &[0, 3, 0, 4, 0, 2]),
                             ("Income", &[0, 300, 0, 400, 0, 200]),
@@ -2555,7 +2409,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Left,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (NULL_HEADER, &[1, 1, 1, 1, 1, 1]),
                             ("ID", &[5, 3, 0, 4, 1, 2]),
                             ("Income", &[500, 300, 0, 400, 100, 200]),
@@ -2564,7 +2418,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Union,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (
                                 NULL_HEADER,
                                 &[1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
@@ -2582,7 +2436,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Full,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (
                                 NULL_HEADER,
                                 &[1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
@@ -2603,26 +2457,26 @@ mod tests {
             ),
             join_info(
                 vec![
-                    column_info(NULL_HEADER, &[6], BIT, &[1, 1, 1, 1, 1, 1]),
-                    column_info("ID", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
-                    column_info("Income1", &[6], UINT64, &[50, 30, 0, 40, 10, 20]),
+                    column_info(NULL_HEADER, &[6], BIT, &[1, 1, 1, 1, 1, 1])?,
+                    column_info("ID", &[6], UINT64, &[5, 3, 0, 4, 1, 2])?,
+                    column_info("Income1", &[6], UINT64, &[50, 30, 0, 40, 10, 20])?,
                 ],
                 vec![
-                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
-                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1])?,
+                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13])?,
                     column_info(
                         "Income2",
                         &[10],
                         UINT64,
                         &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
-                    ),
+                    )?,
                 ],
                 vec![("ID", "ID"), ("Income1", "Income2")],
                 {
                     let mut expected = HashMap::new();
                     expected.insert(
                         JoinType::Inner,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (NULL_HEADER, &[0, 1, 0, 1, 0, 1]),
                             ("ID", &[0, 3, 0, 4, 0, 2]),
                             ("Income1", &[0, 30, 0, 40, 0, 20]),
@@ -2630,7 +2484,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Left,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (NULL_HEADER, &[1, 1, 1, 1, 1, 1]),
                             ("ID", &[5, 3, 0, 4, 1, 2]),
                             ("Income1", &[50, 30, 0, 40, 10, 20]),
@@ -2638,7 +2492,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Union,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (
                                 NULL_HEADER,
                                 &[1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
@@ -2654,7 +2508,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Full,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (
                                 NULL_HEADER,
                                 &[1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
@@ -2673,33 +2527,33 @@ mod tests {
             ),
             join_info(
                 vec![
-                    column_info(NULL_HEADER, &[6], BIT, &[1, 1, 1, 1, 1, 0]),
-                    column_info("ID", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
-                    column_info("Income1", &[6], UINT64, &[50, 30, 0, 40, 10, 20]),
-                    column_info("Outcome1", &[6], UINT64, &[500, 300, 0, 400, 100, 200]),
+                    column_info(NULL_HEADER, &[6], BIT, &[1, 1, 1, 1, 1, 0])?,
+                    column_info("ID", &[6], UINT64, &[5, 3, 0, 4, 1, 2])?,
+                    column_info("Income1", &[6], UINT64, &[50, 30, 0, 40, 10, 20])?,
+                    column_info("Outcome1", &[6], UINT64, &[500, 300, 0, 400, 100, 200])?,
                 ],
                 vec![
-                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1]),
-                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 1, 1, 1])?,
+                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13])?,
                     column_info(
                         "Income2",
                         &[10],
                         UINT64,
                         &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
-                    ),
+                    )?,
                     column_info(
                         "Outcome2",
                         &[10],
                         UINT64,
                         &[400, 700, 800, 900, 1000, 1100, 1200, 200, 300, 1300],
-                    ),
+                    )?,
                 ],
                 vec![("ID", "ID"), ("Income1", "Income2")],
                 {
                     let mut expected = HashMap::new();
                     expected.insert(
                         JoinType::Inner,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (NULL_HEADER, &[0, 1, 0, 1, 0, 0]),
                             ("ID", &[0, 3, 0, 4, 0, 0]),
                             ("Income1", &[0, 30, 0, 40, 0, 0]),
@@ -2709,7 +2563,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Left,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (NULL_HEADER, &[1, 1, 1, 1, 1, 0]),
                             ("ID", &[5, 3, 0, 4, 1, 0]),
                             ("Income1", &[50, 30, 0, 40, 10, 0]),
@@ -2719,7 +2573,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Union,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (
                                 NULL_HEADER,
                                 &[1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
@@ -2746,7 +2600,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Full,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (
                                 NULL_HEADER,
                                 &[1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
@@ -2776,33 +2630,33 @@ mod tests {
             ),
             join_info(
                 vec![
-                    column_info(NULL_HEADER, &[6], BIT, &[1, 0, 1, 0, 1, 1]),
-                    column_info("Income1", &[6], UINT64, &[5, 3, 0, 4, 1, 2]),
-                    column_info("ID", &[6], UINT64, &[50, 30, 0, 40, 10, 20]),
-                    column_info("Outcome1", &[6], UINT64, &[500, 300, 0, 400, 100, 200]),
+                    column_info(NULL_HEADER, &[6], BIT, &[1, 0, 1, 0, 1, 1])?,
+                    column_info("Income1", &[6], UINT64, &[5, 3, 0, 4, 1, 2])?,
+                    column_info("ID", &[6], UINT64, &[50, 30, 0, 40, 10, 20])?,
+                    column_info("Outcome1", &[6], UINT64, &[500, 300, 0, 400, 100, 200])?,
                 ],
                 vec![
-                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 0, 1, 1]),
-                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13]),
+                    column_info(NULL_HEADER, &[10], BIT, &[1, 1, 1, 1, 1, 1, 1, 0, 1, 1])?,
+                    column_info("ID", &[10], UINT64, &[4, 7, 8, 9, 10, 11, 12, 2, 3, 13])?,
                     column_info(
                         "Income2",
                         &[10],
                         UINT64,
                         &[40, 70, 80, 90, 100, 110, 120, 20, 30, 130],
-                    ),
+                    )?,
                     column_info(
                         "Outcome2",
                         &[10],
                         UINT64,
                         &[400, 700, 800, 900, 1000, 1100, 1200, 200, 300, 1300],
-                    ),
+                    )?,
                 ],
                 vec![("ID", "ID"), ("Income1", "Income2")],
                 {
                     let mut expected = HashMap::new();
                     expected.insert(
                         JoinType::Inner,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (NULL_HEADER, &[0, 0, 0, 0, 0, 0]),
                             ("Income1", &[0, 0, 0, 0, 0, 0]),
                             ("ID", &[0, 0, 0, 0, 0, 0]),
@@ -2812,7 +2666,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Left,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (NULL_HEADER, &[1, 0, 1, 0, 1, 1]),
                             ("Income1", &[5, 0, 0, 0, 1, 2]),
                             ("ID", &[50, 0, 0, 0, 10, 20]),
@@ -2822,7 +2676,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Union,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (
                                 NULL_HEADER,
                                 &[1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1],
@@ -2850,7 +2704,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Full,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (
                                 NULL_HEADER,
                                 &[1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1],
@@ -2881,23 +2735,23 @@ mod tests {
             ),
             join_info(
                 vec![
-                    column_info(NULL_HEADER, &[1], BIT, &[1]),
-                    column_info("ID", &[1], UINT64, &[5]),
-                    column_info("Income1", &[1], UINT64, &[50]),
-                    column_info("Outcome1", &[1], UINT64, &[500]),
+                    column_info(NULL_HEADER, &[1], BIT, &[1])?,
+                    column_info("ID", &[1], UINT64, &[5])?,
+                    column_info("Income1", &[1], UINT64, &[50])?,
+                    column_info("Outcome1", &[1], UINT64, &[500])?,
                 ],
                 vec![
-                    column_info(NULL_HEADER, &[1], BIT, &[1]),
-                    column_info("ID", &[1], UINT64, &[5]),
-                    column_info("Income2", &[1], UINT64, &[50]),
-                    column_info("Outcome2", &[1], UINT64, &[51]),
+                    column_info(NULL_HEADER, &[1], BIT, &[1])?,
+                    column_info("ID", &[1], UINT64, &[5])?,
+                    column_info("Income2", &[1], UINT64, &[50])?,
+                    column_info("Outcome2", &[1], UINT64, &[51])?,
                 ],
                 vec![("ID", "ID"), ("Income1", "Income2")],
                 {
                     let mut expected = HashMap::new();
                     expected.insert(
                         JoinType::Inner,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (NULL_HEADER, &[1]),
                             ("ID", &[5]),
                             ("Income1", &[50]),
@@ -2907,7 +2761,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Left,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (NULL_HEADER, &[1]),
                             ("ID", &[5]),
                             ("Income1", &[50]),
@@ -2917,7 +2771,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Union,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (NULL_HEADER, &[0, 1]),
                             ("ID", &[0, 5]),
                             ("Income1", &[0, 50]),
@@ -2927,7 +2781,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Full,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (NULL_HEADER, &[0, 1]),
                             ("ID", &[0, 5]),
                             ("Income1", &[0, 50]),
@@ -2940,23 +2794,23 @@ mod tests {
             ),
             join_info(
                 vec![
-                    column_info(NULL_HEADER, &[1], BIT, &[1]),
-                    column_info("Income1", &[1], UINT64, &[50]),
-                    column_info("Outcome1", &[1], UINT64, &[500]),
-                    column_info("ID", &[1], UINT64, &[5]),
+                    column_info(NULL_HEADER, &[1], BIT, &[1])?,
+                    column_info("Income1", &[1], UINT64, &[50])?,
+                    column_info("Outcome1", &[1], UINT64, &[500])?,
+                    column_info("ID", &[1], UINT64, &[5])?,
                 ],
                 vec![
-                    column_info(NULL_HEADER, &[1], BIT, &[1]),
-                    column_info("ID", &[1], UINT64, &[5]),
-                    column_info("Income2", &[1], UINT64, &[50]),
-                    column_info("Outcome2", &[1], UINT64, &[51]),
+                    column_info(NULL_HEADER, &[1], BIT, &[1])?,
+                    column_info("ID", &[1], UINT64, &[5])?,
+                    column_info("Income2", &[1], UINT64, &[50])?,
+                    column_info("Outcome2", &[1], UINT64, &[51])?,
                 ],
                 vec![("ID", "ID"), ("Income1", "Income2")],
                 {
                     let mut expected = HashMap::new();
                     expected.insert(
                         JoinType::Inner,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (NULL_HEADER, &[1]),
                             ("Income1", &[50]),
                             ("Outcome1", &[500]),
@@ -2966,7 +2820,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Left,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (NULL_HEADER, &[1]),
                             ("Income1", &[50]),
                             ("Outcome1", &[500]),
@@ -2976,7 +2830,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Union,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (NULL_HEADER, &[0, 1]),
                             ("Income1", &[0, 50]),
                             ("Outcome1", &[0, 0]),
@@ -2986,7 +2840,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Full,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (NULL_HEADER, &[0, 1]),
                             ("Income1", &[0, 50]),
                             ("Outcome1", &[0, 500]),
@@ -2999,23 +2853,23 @@ mod tests {
             ),
             join_info(
                 vec![
-                    column_info(NULL_HEADER, &[2], BIT, &[1, 1]),
-                    column_info("Income1", &[2], UINT64, &[40, 50]),
-                    column_info("Outcome1", &[2, 2], UINT64, &[400, 401, 500, 501]),
-                    column_info("ID", &[2], UINT64, &[4, 5]),
+                    column_info(NULL_HEADER, &[2], BIT, &[1, 1])?,
+                    column_info("Income1", &[2], UINT64, &[40, 50])?,
+                    column_info("Outcome1", &[2, 2], UINT64, &[400, 401, 500, 501])?,
+                    column_info("ID", &[2], UINT64, &[4, 5])?,
                 ],
                 vec![
-                    column_info(NULL_HEADER, &[2], BIT, &[1, 1]),
-                    column_info("ID", &[2], UINT64, &[5, 3]),
-                    column_info("Income2", &[2], UINT64, &[50, 30]),
-                    column_info("Outcome2", &[2, 2], UINT64, &[500, 501, 300, 301]),
+                    column_info(NULL_HEADER, &[2], BIT, &[1, 1])?,
+                    column_info("ID", &[2], UINT64, &[5, 3])?,
+                    column_info("Income2", &[2], UINT64, &[50, 30])?,
+                    column_info("Outcome2", &[2, 2], UINT64, &[500, 501, 300, 301])?,
                 ],
                 vec![("ID", "ID"), ("Income1", "Income2")],
                 {
                     let mut expected = HashMap::new();
                     expected.insert(
                         JoinType::Inner,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (NULL_HEADER, &[0, 1]),
                             ("Income1", &[0, 50]),
                             ("Outcome1", &[0, 0, 500, 501]),
@@ -3025,7 +2879,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Left,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (NULL_HEADER, &[1, 1]),
                             ("Income1", &[40, 50]),
                             ("Outcome1", &[400, 401, 500, 501]),
@@ -3035,7 +2889,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Union,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (NULL_HEADER, &[1, 0, 1, 1]),
                             ("Income1", &[40, 0, 50, 30]),
                             ("Outcome1", &[400, 401, 0, 0, 0, 0, 0, 0]),
@@ -3045,7 +2899,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Full,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (NULL_HEADER, &[1, 0, 1, 1]),
                             ("Income1", &[40, 0, 50, 30]),
                             ("Outcome1", &[400, 401, 0, 0, 500, 501, 0, 0]),
@@ -3058,23 +2912,23 @@ mod tests {
             ),
             join_info(
                 vec![
-                    column_info(NULL_HEADER, &[2], BIT, &[1, 1]),
-                    column_info("Income1", &[2], UINT64, &[40, 50]),
-                    column_info("Outcome1", &[2], UINT64, &[400, 500]),
-                    column_info("ID", &[2], UINT64, &[4, 5]),
+                    column_info(NULL_HEADER, &[2], BIT, &[1, 1])?,
+                    column_info("Income1", &[2], UINT64, &[40, 50])?,
+                    column_info("Outcome1", &[2], UINT64, &[400, 500])?,
+                    column_info("ID", &[2], UINT64, &[4, 5])?,
                 ],
                 vec![
-                    column_info(NULL_HEADER, &[2], BIT, &[1, 1]),
-                    column_info("ID", &[2], UINT64, &[6, 7]),
-                    column_info("Income2", &[2], UINT64, &[60, 70]),
-                    column_info("Outcome2", &[2, 2], UINT64, &[60, 61, 70, 71]),
+                    column_info(NULL_HEADER, &[2], BIT, &[1, 1])?,
+                    column_info("ID", &[2], UINT64, &[6, 7])?,
+                    column_info("Income2", &[2], UINT64, &[60, 70])?,
+                    column_info("Outcome2", &[2, 2], UINT64, &[60, 61, 70, 71])?,
                 ],
                 vec![("ID", "ID"), ("Income1", "Income2")],
                 {
                     let mut expected = HashMap::new();
                     expected.insert(
                         JoinType::Inner,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (NULL_HEADER, &[0, 0]),
                             ("Income1", &[0, 0]),
                             ("Outcome1", &[0, 0]),
@@ -3084,7 +2938,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Left,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (NULL_HEADER, &[1, 1]),
                             ("Income1", &[40, 50]),
                             ("Outcome1", &[400, 500]),
@@ -3094,7 +2948,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Union,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (NULL_HEADER, &[1, 1, 1, 1]),
                             ("Income1", &[40, 50, 60, 70]),
                             ("Outcome1", &[400, 500, 0, 0]),
@@ -3104,7 +2958,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Full,
-                        expected_info(vec![
+                        expected_set_info(vec![
                             (NULL_HEADER, &[1, 1, 1, 1]),
                             ("Income1", &[40, 50, 60, 70]),
                             ("Outcome1", &[400, 500, 0, 0]),
@@ -3120,35 +2974,35 @@ mod tests {
         let tests_with_masks = vec![
             join_info(
                 vec![
-                    column_info_with_mask(NULL_HEADER, &[2], BIT, None, &[1, 1]),
-                    column_info_with_mask("Income1", &[2], UINT64, Some(&[1, 1]), &[40, 50]),
+                    column_info_with_mask(NULL_HEADER, &[2], BIT, None, &[1, 1])?,
+                    column_info_with_mask("Income1", &[2], UINT64, Some(&[1, 1]), &[40, 50])?,
                     column_info_with_mask(
                         "Outcome1",
                         &[2, 2],
                         UINT64,
                         Some(&[1, 1]),
                         &[400, 401, 500, 501],
-                    ),
-                    column_info_with_mask("ID", &[2], UINT64, Some(&[1, 0]), &[4, 5]),
+                    )?,
+                    column_info_with_mask("ID", &[2], UINT64, Some(&[1, 0]), &[4, 5])?,
                 ],
                 vec![
-                    column_info_with_mask(NULL_HEADER, &[2], BIT, None, &[1, 1]),
-                    column_info_with_mask("ID", &[2], UINT64, Some(&[1, 1]), &[5, 3]),
-                    column_info_with_mask("Income2", &[2], UINT64, Some(&[1, 1]), &[50, 30]),
+                    column_info_with_mask(NULL_HEADER, &[2], BIT, None, &[1, 1])?,
+                    column_info_with_mask("ID", &[2], UINT64, Some(&[1, 1]), &[5, 3])?,
+                    column_info_with_mask("Income2", &[2], UINT64, Some(&[1, 1]), &[50, 30])?,
                     column_info_with_mask(
                         "Outcome2",
                         &[2, 2],
                         UINT64,
                         Some(&[1, 1]),
                         &[500, 501, 300, 301],
-                    ),
+                    )?,
                 ],
                 vec![("ID", "ID"), ("Income1", "Income2")],
                 {
                     let mut expected = HashMap::new();
                     expected.insert(
                         JoinType::Inner,
-                        expected_info_with_mask(vec![
+                        expected_set_info_with_mask(vec![
                             (NULL_HEADER, None, &[0, 0]),
                             ("Income1", Some(&[0, 0]), &[0, 0]),
                             ("Outcome1", Some(&[0, 0]), &[0, 0, 0, 0]),
@@ -3158,7 +3012,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Left,
-                        expected_info_with_mask(vec![
+                        expected_set_info_with_mask(vec![
                             (NULL_HEADER, None, &[1, 1]),
                             ("Income1", Some(&[1, 1]), &[40, 50]),
                             ("Outcome1", Some(&[1, 1]), &[400, 401, 500, 501]),
@@ -3168,7 +3022,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Union,
-                        expected_info_with_mask(vec![
+                        expected_set_info_with_mask(vec![
                             (NULL_HEADER, None, &[1, 1, 1, 1]),
                             ("Income1", Some(&[1, 1, 1, 1]), &[40, 50, 50, 30]),
                             (
@@ -3186,7 +3040,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Full,
-                        expected_info_with_mask(vec![
+                        expected_set_info_with_mask(vec![
                             (NULL_HEADER, None, &[1, 1, 1, 1]),
                             ("Income1", Some(&[1, 1, 1, 1]), &[40, 50, 50, 30]),
                             (
@@ -3207,47 +3061,47 @@ mod tests {
             ),
             join_info(
                 vec![
-                    column_info_with_mask(NULL_HEADER, &[4], BIT, None, &[1, 1, 1, 1]),
+                    column_info_with_mask(NULL_HEADER, &[4], BIT, None, &[1, 1, 1, 1])?,
                     column_info_with_mask(
                         "Income1",
                         &[4],
                         UINT64,
                         Some(&[1, 1, 1, 1]),
                         &[40, 50, 20, 30],
-                    ),
+                    )?,
                     column_info_with_mask(
                         "Outcome1",
                         &[4, 2],
                         UINT64,
                         Some(&[1, 1, 1, 0]),
                         &[400, 401, 500, 501, 200, 201, 300, 301],
-                    ),
-                    column_info_with_mask("ID", &[4], UINT64, Some(&[1, 0, 1, 1]), &[4, 5, 2, 3]),
+                    )?,
+                    column_info_with_mask("ID", &[4], UINT64, Some(&[1, 0, 1, 1]), &[4, 5, 2, 3])?,
                 ],
                 vec![
-                    column_info_with_mask(NULL_HEADER, &[4], BIT, None, &[1, 1, 1, 1]),
-                    column_info_with_mask("ID", &[4], UINT64, Some(&[1, 1, 1, 1]), &[5, 3, 6, 7]),
+                    column_info_with_mask(NULL_HEADER, &[4], BIT, None, &[1, 1, 1, 1])?,
+                    column_info_with_mask("ID", &[4], UINT64, Some(&[1, 1, 1, 1]), &[5, 3, 6, 7])?,
                     column_info_with_mask(
                         "Income2",
                         &[4],
                         UINT64,
                         Some(&[1, 1, 1, 1]),
                         &[50, 30, 60, 70],
-                    ),
+                    )?,
                     column_info_with_mask(
                         "Outcome2",
                         &[4, 2],
                         UINT64,
                         Some(&[1, 1, 1, 1]),
                         &[500, 501, 300, 301, 600, 601, 700, 701],
-                    ),
+                    )?,
                 ],
                 vec![("ID", "ID"), ("Income1", "Income2")],
                 {
                     let mut expected = HashMap::new();
                     expected.insert(
                         JoinType::Inner,
-                        expected_info_with_mask(vec![
+                        expected_set_info_with_mask(vec![
                             (NULL_HEADER, None, &[0, 0, 0, 1]),
                             ("Income1", Some(&[0, 0, 0, 1]), &[0, 0, 0, 30]),
                             ("Outcome1", Some(&[0, 0, 0, 0]), &[0, 0, 0, 0, 0, 0, 0, 0]),
@@ -3261,7 +3115,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Left,
-                        expected_info_with_mask(vec![
+                        expected_set_info_with_mask(vec![
                             (NULL_HEADER, None, &[1, 1, 1, 1]),
                             ("Income1", Some(&[1, 1, 1, 1]), &[40, 50, 20, 30]),
                             (
@@ -3279,7 +3133,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Union,
-                        expected_info_with_mask(vec![
+                        expected_set_info_with_mask(vec![
                             (NULL_HEADER, None, &[1, 1, 1, 0, 1, 1, 1, 1]),
                             (
                                 "Income1",
@@ -3307,7 +3161,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Full,
-                        expected_info_with_mask(vec![
+                        expected_set_info_with_mask(vec![
                             (NULL_HEADER, None, &[1, 1, 1, 0, 1, 1, 1, 1]),
                             (
                                 "Income1",
@@ -3338,47 +3192,47 @@ mod tests {
             ),
             join_info(
                 vec![
-                    column_info_with_mask(NULL_HEADER, &[4], BIT, None, &[1, 1, 1, 0]),
+                    column_info_with_mask(NULL_HEADER, &[4], BIT, None, &[1, 1, 1, 0])?,
                     column_info_with_mask(
                         "Income1",
                         &[4],
                         UINT64,
                         Some(&[1, 1, 1, 1]),
                         &[40, 50, 20, 30],
-                    ),
+                    )?,
                     column_info_with_mask(
                         "Outcome1",
                         &[4, 2],
                         UINT64,
                         Some(&[1, 1, 1, 0]),
                         &[400, 401, 500, 501, 200, 201, 300, 301],
-                    ),
-                    column_info_with_mask("ID", &[4], UINT64, Some(&[1, 1, 1, 1]), &[4, 5, 2, 3]),
+                    )?,
+                    column_info_with_mask("ID", &[4], UINT64, Some(&[1, 1, 1, 1]), &[4, 5, 2, 3])?,
                 ],
                 vec![
-                    column_info_with_mask(NULL_HEADER, &[4], BIT, None, &[1, 1, 1, 1]),
-                    column_info_with_mask("ID", &[4], UINT64, Some(&[1, 1, 1, 1]), &[5, 3, 6, 7]),
+                    column_info_with_mask(NULL_HEADER, &[4], BIT, None, &[1, 1, 1, 1])?,
+                    column_info_with_mask("ID", &[4], UINT64, Some(&[1, 1, 1, 1]), &[5, 3, 6, 7])?,
                     column_info_with_mask(
                         "Income2",
                         &[4],
                         UINT64,
                         Some(&[1, 1, 1, 1]),
                         &[50, 30, 60, 70],
-                    ),
+                    )?,
                     column_info_with_mask(
                         "Outcome2",
                         &[4, 2],
                         UINT64,
                         Some(&[1, 1, 1, 1]),
                         &[500, 501, 300, 301, 600, 601, 700, 701],
-                    ),
+                    )?,
                 ],
                 vec![("ID", "ID"), ("Income1", "Income2")],
                 {
                     let mut expected = HashMap::new();
                     expected.insert(
                         JoinType::Inner,
-                        expected_info_with_mask(vec![
+                        expected_set_info_with_mask(vec![
                             (NULL_HEADER, None, &[0, 1, 0, 0]),
                             ("Income1", Some(&[0, 1, 0, 0]), &[0, 50, 0, 0]),
                             (
@@ -3396,7 +3250,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Left,
-                        expected_info_with_mask(vec![
+                        expected_set_info_with_mask(vec![
                             (NULL_HEADER, None, &[1, 1, 1, 0]),
                             ("Income1", Some(&[1, 1, 1, 0]), &[40, 50, 20, 0]),
                             (
@@ -3414,7 +3268,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Union,
-                        expected_info_with_mask(vec![
+                        expected_set_info_with_mask(vec![
                             (NULL_HEADER, None, &[1, 0, 1, 0, 1, 1, 1, 1]),
                             (
                                 "Income1",
@@ -3442,7 +3296,7 @@ mod tests {
                     );
                     expected.insert(
                         JoinType::Full,
-                        expected_info_with_mask(vec![
+                        expected_set_info_with_mask(vec![
                             (NULL_HEADER, None, &[1, 0, 1, 0, 1, 1, 1, 1]),
                             (
                                 "Income1",
@@ -3474,64 +3328,64 @@ mod tests {
         ];
 
         if with_masks {
-            tests_with_masks
+            Ok(tests_with_masks)
         } else {
-            tests_without_masks
+            Ok(tests_without_masks)
         }
     }
 
     #[test]
     fn test_set_intersection() -> Result<()> {
-        join_helper(get_join_test_setup(false), JoinType::Inner, false)?;
+        join_helper(JoinType::Inner, false)?;
 
         Ok(())
     }
 
     #[test]
     fn test_set_intersection_with_masks() -> Result<()> {
-        join_helper(get_join_test_setup(true), JoinType::Inner, true)?;
+        join_helper(JoinType::Inner, true)?;
 
         Ok(())
     }
 
     #[test]
     fn test_left_join() -> Result<()> {
-        join_helper(get_join_test_setup(false), JoinType::Left, false)?;
+        join_helper(JoinType::Left, false)?;
 
         Ok(())
     }
 
     #[test]
     fn test_left_join_with_masks() -> Result<()> {
-        join_helper(get_join_test_setup(true), JoinType::Left, true)?;
+        join_helper(JoinType::Left, true)?;
 
         Ok(())
     }
 
     #[test]
     fn test_union_join() -> Result<()> {
-        join_helper(get_join_test_setup(false), JoinType::Union, false)?;
+        join_helper(JoinType::Union, false)?;
 
         Ok(())
     }
 
     #[test]
     fn test_union_join_with_masks() -> Result<()> {
-        join_helper(get_join_test_setup(true), JoinType::Union, true)?;
+        join_helper(JoinType::Union, true)?;
 
         Ok(())
     }
 
     #[test]
     fn test_full_join() -> Result<()> {
-        join_helper(get_join_test_setup(false), JoinType::Full, false)?;
+        join_helper(JoinType::Full, false)?;
 
         Ok(())
     }
 
     #[test]
     fn test_full_join_with_masks() -> Result<()> {
-        join_helper(get_join_test_setup(true), JoinType::Full, true)?;
+        join_helper(JoinType::Full, true)?;
 
         Ok(())
     }

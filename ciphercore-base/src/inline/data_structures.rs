@@ -33,7 +33,7 @@ pub(super) fn log_depth_sum<T: std::clone::Clone>(
 }
 
 /// Computes prefix sums for the given vector. `combine_op` must be associative.
-/// Returned vector contains sums of items[0]..items[i] at position i.
+/// Returned vector contains sums of `items[0]..items[i]` at position i.
 /// Depth: RoundUp(log(len))
 /// Complexity: len * RoundUp(log(len))
 #[allow(dead_code)]
@@ -58,7 +58,7 @@ pub(super) fn prefix_sums_binary_ascent<T: std::clone::Clone>(
 }
 
 /// Computes prefix sums for the given vector. `combine_op` must be associative.
-/// Returned vector contains sums of items[0]..items[i] at position i.
+/// Returned vector contains sums of `items[0]..items[i]` at position i.
 /// Depth: 2 * RoundUp(sqrt(len))
 /// Complexity: 2 * len
 #[allow(dead_code)]
@@ -89,7 +89,7 @@ pub(super) fn prefix_sums_sqrt_trick<T: std::clone::Clone>(
 }
 
 /// Computes prefix sums for the given vector. `combine_op` must be associative.
-/// Returned vector contains sums of items[0]..items[i] at position i.
+/// Returned vector contains sums of `items[0]..items[i]` at position i.
 /// Depth: RoundUp(log(len)) * 2
 /// Complexity: len * 2
 #[allow(dead_code)]

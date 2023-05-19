@@ -145,6 +145,7 @@ impl ResharingConfig {
                     }
                 }
                 Operation::Join(_, _)
+                | Operation::JoinWithColumnMasks(_, _)
                 | Operation::Truncate(_)
                 | Operation::A2B
                 | Operation::B2A(_)

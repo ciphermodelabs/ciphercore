@@ -1,5 +1,7 @@
 pub mod get_result_util;
-mod join;
+pub(crate) mod join;
+#[cfg(test)]
+pub(crate) mod join_test_utils;
 pub mod simple_evaluator;
 
 use crate::data_values::Value;
