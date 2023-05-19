@@ -3657,8 +3657,7 @@ mod tests {
             let new_type = if h == NULL_HEADER {
                 (**sub_t).clone()
             } else {
-                let mut column_type = ColumnType::new((**sub_t).clone(), false, h)?;
-                column_type.add_mask();
+                let column_type = ColumnType::new((**sub_t).clone(), false, h)?.clone_with_mask();
                 column_type.into()
             };
 

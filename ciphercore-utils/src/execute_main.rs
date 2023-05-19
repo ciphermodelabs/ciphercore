@@ -1,5 +1,4 @@
 //! Wrapper for a main function to run CipherCore
-use crate::errors::ErrorWithBody;
 use log::error;
 use std::fmt::Display;
 use std::process;
@@ -13,7 +12,7 @@ use std::result::Result;
 pub fn execute_main<T, E>(f: T)
 where
     T: FnOnce() -> Result<(), E> + std::panic::UnwindSafe,
-    E: ErrorWithBody + Display,
+    E: Display,
 {
     let result = std::panic::catch_unwind(|| {
         let result = f();

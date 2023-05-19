@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use super::mpc_apply_permutation::ApplyPermutationMPC;
 use super::utils::{convert_main_graph_to_mpc, get_column};
 
-/// Implementation of stable RadixSort from https://eprint.iacr.org/2019/695.pdf (Algorithm 12).
+/// Implementation of stable RadixSort from <https://eprint.iacr.org/2019/695.pdf> (Algorithm 12).
 /// * `key` - name of the column to be sorted.
 /// * `bits_chunk_size` - number of bits to be processed together on the one counting step, aka `L` in section 5.3 "The optimized sorting protocol".
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]

@@ -30,6 +30,8 @@ ndarray = "0.15.1"
 json = "0.12.4"
 arbitrary = { version = "1", optional = true, features = ["derive"] }
 pyo3 = { version = "0.17.1", optional = true, features = ["extension-module"] }
+anyhow = { version = "1.0.70", features = ["backtrace"] }
+tonic = { version = "0.8.3", optional = true }
 
 [dev-dependencies]
 serde_test = "1.0.130"
@@ -43,6 +45,7 @@ futures-util = "0.3.21"
 default = []
 fuzzing = []
 py-binding = ["dep:pyo3", "dep:pywrapper-macro"]
+tonic-errors = ["dep:tonic"]
 
 [[bin]]
 name = "ciphercore_compile"

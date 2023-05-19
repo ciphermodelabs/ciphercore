@@ -114,9 +114,21 @@ impl ColumnType {
         self.get_data_shape().iter().skip(1).product::<u64>() as usize
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn add_mask(&mut self) {
-        self.mask_t = Some(array_type(vec![self.get_num_entries()], BIT));
+    pub(crate) fn get_row_size_in_bits(&self) -> u64 {
+        self.get_row_size_in_elements() as u64 * self.get_scalar_type().size_in_bits()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clone_with_mask(&self) -> ColumnType {
+        let mask_t = Some(array_type(vec![self.get_num_entries()], BIT));
+        ColumnType {
+            mask_t,
+            data_t: self.data_t.clone(),
+        }
+    }
+
+    pub(crate) fn has_mask(&self) -> bool {
+        self.mask_t.is_some()
     }
 }
 

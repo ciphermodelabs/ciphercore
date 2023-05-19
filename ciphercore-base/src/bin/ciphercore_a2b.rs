@@ -55,7 +55,7 @@ fn gen_b2a_graph(context: Context, k: u32, st: ScalarType) -> Result<Graph> {
 ///
 /// # Usage
 ///
-/// < this_binary > -s <st> <k>
+/// `< this_binary > -s <st> <k>`
 fn main() {
     // Initialize a logger that collects information about errors and panics within CipherCore.
     // This information can be accessed via RUST_LOG.
