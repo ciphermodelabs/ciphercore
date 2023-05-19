@@ -1,3 +1,7 @@
+# Changes in CipherCore 0.3.0
+
+* **Private set intersection of sparse columns** Implemented as a new operation `JoinWithColumnMasks`.
+
 # Changes in CipherCore 0.2.0
 
 * **Added support for 128-bit integers** 
