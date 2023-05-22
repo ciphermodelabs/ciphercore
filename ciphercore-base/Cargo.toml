@@ -16,7 +16,8 @@ ciphercore-utils = { path = "../ciphercore-utils" }
 pywrapper-macro = { path = "../ciphercore-wrappers/pywrapper-macro", optional = true}
 serde = { version = "1.0.130", features = ["derive", "rc"] }
 serde_json = { version = "1.0.94", features = ["arbitrary_precision"] }
-typetag = "0.1.7"
+getrandom = { version = "0.2.9", features = ["js"] }
+typetag = "0.2.8"
 petgraph = "0.6.0"
 maplit = "1.0.2"
 openssl = "0.10"
