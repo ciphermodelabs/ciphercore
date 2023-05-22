@@ -20,7 +20,6 @@ getrandom = { version = "0.2.9", features = ["js"] }
 typetag = "0.2.8"
 petgraph = "0.6.0"
 maplit = "1.0.2"
-openssl = "0.10"
 rand = "0.8"
 uuid = { version = "0.8.2", features = ["v4"] }
 chrono = "0.4.19"
@@ -33,6 +32,8 @@ arbitrary = { version = "1", optional = true, features = ["derive"] }
 pyo3 = { version = "0.17.1", optional = true, features = ["extension-module"] }
 anyhow = { version = "1.0.70", features = ["backtrace"] }
 tonic = { version = "0.8.3", optional = true }
+aes = "0.8.2"
+cipher = { version = "0.4.4", features = ["block-padding"] }
 
 [dev-dependencies]
 serde_test = "1.0.130"
