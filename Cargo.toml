@@ -11,3 +11,8 @@ default-members = [
     "ciphercore-utils",
     "ciphercore-base",
 ]
+
+# If you want to use the local crates, uncomment the following lines
+[patch.crates-io]
+# ciphercore-utils = { path = "ciphercore-utils" }
+# pywrapper-macro = { path = "ciphercore-wrappers/pywrapper-macro" }
