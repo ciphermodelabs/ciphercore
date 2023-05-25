@@ -21,6 +21,11 @@ use crate::data_values::PyBindingValue;
 #[cfg(feature = "py-binding")]
 use pywrapper_macro::struct_wrapper;
 
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::convert::*;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::describe::WasmDescribe;
+
 /// A structure that stores pointer to a value and its type that corresponds to an input, output or an intermediate result of
 /// a computation.
 ///
@@ -106,6 +111,37 @@ impl PyBindingTypedValue {
     }
     fn __repr__(&self) -> pyo3::PyResult<String> {
         self.__str__()
+    }
+}
+
+// There are several blockers for proper WASM bindings:
+// * All wasm-bound classes need to implement `Copy`;
+// * `Type` in `TypedValue` is a Rust enum, but only plain C-style enums are supported by wasm-bindgen.
+// To circumvent this, we use a simple (but not very functional) binding - JSON representation of the `TypedValue`.
+// Note that this can have consequences for efficiency if we pass large `TypedValue`s between Rust and JS code.
+#[cfg(target_arch = "wasm32")]
+impl WasmDescribe for TypedValue {
+    fn describe() {
+        <String as wasm_bindgen::describe::WasmDescribe>::describe()
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl FromWasmAbi for TypedValue {
+    type Abi = <String as FromWasmAbi>::Abi;
+
+    unsafe fn from_abi(js: Self::Abi) -> Self {
+        let json: String = FromWasmAbi::from_abi(js);
+        serde_json::from_str(&json).unwrap()
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl IntoWasmAbi for TypedValue {
+    type Abi = <String as FromWasmAbi>::Abi;
+
+    fn into_abi(self) -> Self::Abi {
+        serde_json::to_string(&self).unwrap().into_abi()
     }
 }
 
