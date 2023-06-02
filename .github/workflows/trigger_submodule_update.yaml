@@ -1,9 +1,10 @@
 name: "Update submodules in ciphercore_private"
 
 on:
-  push:
-    branches:
-      - main
+  # Dependabot should create PR automatically
+  # push:
+  #   branches:
+  #     - main
   workflow_dispatch:
 
 jobs:
