@@ -1,0 +1,51 @@
+name: CI
+on:
+  pull_request:
+  workflow_dispatch:
+
+# How to use sccache:
+# https://www.infinyon.com/blog/2021/04/github-actions-best-practices/
+
+jobs:
+  ci:
+    name: CI
+    runs-on: [self-hosted, linux]
+    env:
+      RUSTC_WRAPPER: sccache
+      # See https://matklad.github.io/2021/09/04/fast-rust-builds.html
+      CARGO_INCREMENTAL: 0
+      # It assumes it is already installed:
+      # https://github.com/rui314/mold
+      RUSTFLAGS: -D warnings -C link-arg=-fuse-ld=mold
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install libs
+        run: sudo apt install -y g++ gcc pkg-config libssl-dev cmake libpq-dev clang libclang-dev llvm-dev librocksdb-dev
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: 1.69
+          override: true
+          components: rustfmt, clippy
+      - name: Toolchain info
+        run: |
+          cargo --version --verbose
+          rustc --version
+          cargo clippy --version
+      - name: Make sccache available
+        # It assumes it is already installed:
+        # https://github.com/mozilla/sccache
+        run: echo "$HOME/.local/bin" >> $GITHUB_PATH
+      - name: Print sccache stats (before run)
+        run: sccache --show-stats
+      - name: Cargo fmt
+        run: cargo fmt --check
+      - name: Cargo clippy
+        run: cargo clippy --workspace
+      - name: Cargo docs
+        run: cargo doc --no-deps
+      - name: Cargo test
+        run: cargo test --workspace
+      - name: Print sccache stats (after run)
+        run: sccache --show-stats
