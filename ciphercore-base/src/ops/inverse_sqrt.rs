@@ -1,14 +1,12 @@
 //! Inverse square root approximation via [the Newton-Raphson method](https://en.wikipedia.org/wiki/Newton%27s_method#Square_root).
-use crate::custom_ops::{CustomOperation, CustomOperationBody, Or};
-use crate::data_types::{array_type, scalar_type, Type, BIT, INT64, UINT64};
-use crate::data_values::Value;
+use crate::custom_ops::CustomOperationBody;
+use crate::data_types::{Type, INT64, UINT64};
 use crate::errors::Result;
-use crate::graphs::{Context, Graph, GraphAnnotation};
-use crate::ops::utils::{pull_out_bits, put_in_bits};
+use crate::graphs::{Context, Graph};
 
 use serde::{Deserialize, Serialize};
 
-use super::utils::{constant_scalar, multiply_fixed_point, single_bit_to_arithmetic};
+use super::utils::{constant_scalar, inverse_sqrt_initial_approximation, multiply_fixed_point};
 
 /// A structure that defines the custom operation InverseSqrt that computes an approximate inverse square root using Newton iterations.
 ///
@@ -95,31 +93,8 @@ impl CustomOperationBody for InverseSqrt {
             return Err(runtime_error!("denominator_cap_2k is too small."));
         }
 
-        let bit_type = if t.is_scalar() {
-            scalar_type(BIT)
-        } else {
-            array_type(t.get_shape(), BIT)
-        };
-
-        // Graph for identifying highest one bit.
-        let g_highest_one_bit = context.create_graph()?;
-        {
-            let input_state = g_highest_one_bit.input(bit_type.clone())?;
-            let input_bit = g_highest_one_bit.input(bit_type.clone())?;
-
-            let one = g_highest_one_bit.ones(scalar_type(BIT))?;
-            let not_input_state = one.add(input_state.clone())?;
-            // If input state is 1, then the highest bit has been already encountered.
-            // All other bits can be set to zero.
-            let output = not_input_state.multiply(input_bit)?;
-            // new_state is equal to input_state OR input_bit
-            // Hence, input state becomes and stays 1 once the highest bit has been encountered.
-            let new_state = input_state.add(output.clone())?;
-            let output_tuple = g_highest_one_bit.create_tuple(vec![new_state, output])?;
-            output_tuple.set_as_output()?;
-        }
-        g_highest_one_bit.add_annotation(GraphAnnotation::AssociativeOperation)?;
-        g_highest_one_bit.finalize()?;
+        let g_initial_approximation =
+            inverse_sqrt_initial_approximation(&context, t.clone(), self.denominator_cap_2k)?;
 
         let g = context.create_graph()?;
         let divisor = g.input(t.clone())?;
@@ -129,40 +104,7 @@ impl CustomOperationBody for InverseSqrt {
             let two = constant_scalar(&g, 2, sc)?;
             g.zeros(t)?.add(two)?
         } else {
-            let divisor_bits = pull_out_bits(divisor.a2b()?)?.array_to_vector()?;
-            let mut divisor_bits_reversed = vec![];
-            for i in 0..self.denominator_cap_2k {
-                // We group pairs of consecutive bits together for the purpose of the initial approximation.
-                // Namely, consider divisor to have digits (d_0, ..., d_31) in base-4. Then, if d_k is the highest
-                // non-zero digit, our approximation will be 2 ** (cap - k).
-                // Indeed, 4 ** k <= divisor < 4 ** (k + 1), so 2 ** (-k - 1) < 1 / sqrt(divisor) < 2 ** -k.
-                let index1 = constant_scalar(&g, 2 * self.denominator_cap_2k - 2 * i - 1, UINT64)?;
-                let index2 = constant_scalar(&g, 2 * self.denominator_cap_2k - 2 * i - 2, UINT64)?;
-                let bit1 = divisor_bits.vector_get(index1)?;
-                let bit2 = divisor_bits.vector_get(index2)?;
-                let bit = g.custom_op(CustomOperation::new(Or {}), vec![bit1, bit2])?;
-                divisor_bits_reversed.push(bit);
-            }
-            let zero = g.zeros(bit_type.clone())?;
-            let highest_one_bit_binary = g
-                .iterate(
-                    g_highest_one_bit,
-                    zero,
-                    g.create_vector(bit_type, divisor_bits_reversed)?,
-                )?
-                .tuple_get(1)?
-                .vector_to_array()?;
-            let highest_one_bit = single_bit_to_arithmetic(highest_one_bit_binary, sc)?;
-            let first_approximation_bits = put_in_bits(highest_one_bit)?;
-            let mut powers_of_two = vec![];
-            for i in 0..self.denominator_cap_2k {
-                powers_of_two.push(1u64 << i);
-            }
-            let powers_of_two_node = g.constant(
-                array_type(vec![self.denominator_cap_2k], sc),
-                Value::from_flattened_array(&powers_of_two, sc)?,
-            )?;
-            first_approximation_bits.dot(powers_of_two_node)?
+            g.call(g_initial_approximation, vec![divisor.clone()])?
         };
         // Now, we do Newton approximation for computing 1 / sqrt(x), where x = divisor / (2 ** cap).
         // We use F(t) = 1 / (t ** 2) - d;
@@ -197,6 +139,8 @@ mod tests {
 
     use crate::custom_ops::run_instantiation_pass;
     use crate::custom_ops::CustomOperation;
+    use crate::data_types::array_type;
+    use crate::data_types::scalar_type;
     use crate::data_types::ScalarType;
     use crate::data_values::Value;
     use crate::evaluators::random_evaluate;
@@ -270,7 +214,9 @@ mod tests {
 
     #[test]
     fn test_inverse_sqrt_scalar() {
-        for i in vec![1, 2, 3, 123, 300, 500, 700] {
+        for i in vec![
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 123, 255, 256, 257, 700, 1000, 10000, 100000, 1000000,
+        ] {
             let expected = (1024.0 / (i as f64).powf(0.5)) as i64;
             assert!((scalar_helper(i, None, UINT64).unwrap() as i64 - expected).abs() <= 1);
             assert!((scalar_helper(i, None, INT64).unwrap() as i64 - expected).abs() <= 1);

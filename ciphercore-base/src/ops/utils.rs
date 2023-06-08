@@ -273,6 +273,57 @@ pub fn inverse_initial_approximation(
     approximation.set_as_output()?;
     g.finalize()
 }
+
+// Works only on positive integers from (0; 2^(2 * denominator_cap_2k)).
+// First let's get the highest bit of the divisor.
+// We group pairs of consecutive bits together for the purpose of the initial approximation.
+// Namely, consider divisor to have digits (d_0, ..., d_31) in base-4. Then, if d_k is the highest
+// non-zero digit, our approximation will be 2 ** (cap - k).
+// Indeed, 4 ** k <= divisor < 4 ** (k + 1), so 2 ** (-k - 1) < 1 / sqrt(divisor) < 2 ** -k.
+pub fn inverse_sqrt_initial_approximation(
+    context: &Context,
+    t: Type,
+    denominator_cap_2k: u64,
+) -> Result<Graph> {
+    let sc = t.get_scalar_type();
+    let g = context.create_graph()?;
+    let divisor = g.input(t)?;
+    let divisor_bits = pull_out_bits(divisor.a2b()?)?;
+    let significant_bits = denominator_cap_2k * 2;
+    let cum_or = cumulative_or(divisor_bits, significant_bits)?;
+    let highest_one_bit_binary = g.add(
+        cum_or.get_slice(vec![SliceElement::SubArray(
+            None,
+            Some(significant_bits as i64),
+            None,
+        )])?,
+        cum_or.get_slice(vec![SliceElement::SubArray(
+            Some(1),
+            Some(significant_bits as i64 + 1),
+            None,
+        )])?,
+    )?;
+    let mut result = vec![];
+    for i in 0..denominator_cap_2k {
+        let index1 = 2 * denominator_cap_2k - 2 * i - 1;
+        let index2 = 2 * denominator_cap_2k - 2 * i - 2;
+        result.push(
+            highest_one_bit_binary
+                .get(vec![index1])?
+                .add(highest_one_bit_binary.get(vec![index2])?)?,
+        );
+    }
+    for _ in denominator_cap_2k..sc.size_in_bits() {
+        result.push(zeros_like(result[0].clone())?);
+    }
+    let approximation = g
+        .create_vector(result[0].get_type()?, result)?
+        .vector_to_array()?;
+    let approximation = put_in_bits(approximation)?.b2a(sc)?;
+
+    approximation.set_as_output()?;
+    g.finalize()
+}
 // Another incarnation of `expand_dims`, following the contract https://pytorch.org/docs/stable/generated/torch.unsqueeze.html
 // (in particular, the `axis` argument can be negative).
 pub fn unsqueeze(x: Node, axis: i64) -> Result<Node> {
