@@ -3,7 +3,7 @@
 set -ex
 
 
-python -m venv /tmp/test-env
+python3 -m venv /tmp/test-env
 source /tmp/test-env/bin/activate
 
 pip install setuptools_rust

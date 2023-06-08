@@ -1,6 +1,6 @@
 [package]
 name = "ciphercore-base"
-version = "0.3.1"
+version = "0.3.3"
 authors = ["CipherMode Labs, Inc."]
 edition = "2021"
 description = "The base package of CipherCore: computation graphs API, Secure MPC Compiler, utilities for graph evaluation and inspection"
