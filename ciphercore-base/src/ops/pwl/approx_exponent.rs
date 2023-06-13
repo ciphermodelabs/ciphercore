@@ -75,14 +75,18 @@ impl CustomOperationBody for ApproxExponent {
         //    log_buckets=7 => 22%.
         // Note that it is not monotonic due to numerical issues for very low values. From this table, the best value is 5.
         // -- flatten_left/flatten_right: exponent is flat on the left, so we replicate this in our approximation (we don't want to go to 0 and below).
+        // However, due to the issues with Truncate on non-power-of-2 denominators, we want (right - left) to be a power of 2,
+        // so we round the boundaries to +/- 16, and increase the log_buckets to 6.
         let result = create_approximation(
             arg,
             |x| x.exp(),
-            -10.0,
-            10.0,
+            // The boundaries are chosen in a way that (left - right) * precision is a power of 2.
+            // It is important because otherwise we get non-power-of-2 truncations during the approximation.
+            -16.0,
+            16.0,
             self.precision,
             PWLConfig {
-                log_buckets: 5,
+                log_buckets: 6,
                 flatten_left: true,
                 flatten_right: false,
             },

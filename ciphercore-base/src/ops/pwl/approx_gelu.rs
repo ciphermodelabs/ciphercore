@@ -32,13 +32,23 @@ use super::approx_pointwise::{create_approximation, PWLConfig};
 /// let g = c.create_graph().unwrap();
 /// let t = array_type(vec![3], INT64);
 /// let x = g.input(t.clone()).unwrap();
-/// let n = g.custom_op(CustomOperation::new(ApproxGelu {precision: 4}), vec![x]).unwrap();
+/// let n = g.custom_op(CustomOperation::new(ApproxGelu {precision: 4, ..Default::default()}), vec![x]).unwrap();
 ///
 // TODO: generalize to other types.
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub struct ApproxGelu {
     /// Assume that we're operating in fixed precision arithmetic with denominator 2 ** precision.
     pub precision: u64,
+    pub approximation_log_buckets: u64,
+}
+
+impl Default for ApproxGelu {
+    fn default() -> Self {
+        ApproxGelu {
+            precision: 15,
+            approximation_log_buckets: 5,
+        }
+    }
 }
 
 #[typetag::serde]
@@ -76,11 +86,13 @@ impl CustomOperationBody for ApproxGelu {
         let result = create_approximation(
             arg,
             approximate_gelu,
+            // The boundaries are chosen in a way that (left - right) * precision is a power of 2.
+            // It is important because otherwise we get non-power-of-2 truncations during the approximation.
             -4.0,
             4.0,
             self.precision,
             PWLConfig {
-                log_buckets: 5,
+                log_buckets: self.approximation_log_buckets,
                 flatten_left: true,
                 flatten_right: false,
             },
@@ -121,7 +133,13 @@ mod tests {
     fn scalar_helper(arg: i64, precision: u64) -> Result<i64> {
         let c = simple_context(|g| {
             let i = g.input(scalar_type(INT64))?;
-            g.custom_op(CustomOperation::new(ApproxGelu { precision }), vec![i])
+            g.custom_op(
+                CustomOperation::new(ApproxGelu {
+                    precision,
+                    ..Default::default()
+                }),
+                vec![i],
+            )
         })?;
         let mapped_c = run_instantiation_pass(c)?;
         let result = random_evaluate(
@@ -136,7 +154,13 @@ mod tests {
         let array_t = array_type(vec![arg.len() as u64], INT64);
         let c = simple_context(|g| {
             let i = g.input(array_t.clone())?;
-            g.custom_op(CustomOperation::new(ApproxGelu { precision: 10 }), vec![i])
+            g.custom_op(
+                CustomOperation::new(ApproxGelu {
+                    precision: 10,
+                    ..Default::default()
+                }),
+                vec![i],
+            )
         })?;
         let mapped_c = run_instantiation_pass(c)?;
         let result = random_evaluate(

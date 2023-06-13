@@ -32,12 +32,22 @@ use super::approx_pointwise::{create_approximation, PWLConfig};
 /// let g = c.create_graph().unwrap();
 /// let t = array_type(vec![3], INT64);
 /// let x = g.input(t.clone()).unwrap();
-/// let n = g.custom_op(CustomOperation::new(ApproxGeluDerivative {precision: 4}), vec![x]).unwrap();
+/// let n = g.custom_op(CustomOperation::new(ApproxGeluDerivative {precision: 4, ..Default::default()}), vec![x]).unwrap();
 ///
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub struct ApproxGeluDerivative {
     /// Assume that we're operating in fixed precision arithmetic with denominator 2 ** precision.
     pub precision: u64,
+    pub approximation_log_buckets: u64,
+}
+
+impl Default for ApproxGeluDerivative {
+    fn default() -> Self {
+        ApproxGeluDerivative {
+            precision: 15,
+            approximation_log_buckets: 5,
+        }
+    }
 }
 
 #[typetag::serde]
@@ -76,11 +86,13 @@ impl CustomOperationBody for ApproxGeluDerivative {
         let result = create_approximation(
             arg,
             approximate_gelu_derivative,
+            // The boundaries are chosen in a way that (left - right) * precision is a power of 2.
+            // It is important because otherwise we get non-power-of-2 truncations during the approximation.
             -4.0,
             4.0,
             self.precision,
             PWLConfig {
-                log_buckets: 5,
+                log_buckets: self.approximation_log_buckets,
                 flatten_left: true,
                 flatten_right: true,
             },
@@ -119,7 +131,10 @@ mod tests {
         let context = simple_context(|g| {
             let i = g.input(scalar_type(INT64))?;
             g.custom_op(
-                CustomOperation::new(ApproxGeluDerivative { precision }),
+                CustomOperation::new(ApproxGeluDerivative {
+                    precision,
+                    ..Default::default()
+                }),
                 vec![i],
             )
         })?;
@@ -144,6 +159,7 @@ mod tests {
             g.custom_op(
                 CustomOperation::new(ApproxGeluDerivative {
                     precision: PRECISION_BITS,
+                    ..Default::default()
                 }),
                 vec![i],
             )

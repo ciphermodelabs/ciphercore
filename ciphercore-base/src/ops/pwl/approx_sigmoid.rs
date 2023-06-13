@@ -32,13 +32,23 @@ use super::approx_pointwise::{create_approximation, PWLConfig};
 /// let g = c.create_graph().unwrap();
 /// let t = array_type(vec![3], INT64);
 /// let x = g.input(t.clone()).unwrap();
-/// let n = g.custom_op(CustomOperation::new(ApproxSigmoid {precision: 4}), vec![x]).unwrap();
+/// let n = g.custom_op(CustomOperation::new(ApproxSigmoid {precision: 4, ..Default::default()}), vec![x]).unwrap();
 ///
 // TODO: generalize to other types.
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Hash)]
 pub struct ApproxSigmoid {
     /// Assume that we're operating in fixed precision arithmetic with denominator 2 ** precision.
     pub precision: u64,
+    pub approximation_log_buckets: u64,
+}
+
+impl Default for ApproxSigmoid {
+    fn default() -> Self {
+        ApproxSigmoid {
+            precision: 15,
+            approximation_log_buckets: 5,
+        }
+    }
 }
 
 #[typetag::serde]
@@ -68,7 +78,7 @@ impl CustomOperationBody for ApproxSigmoid {
         let g = context.create_graph()?;
         let arg = g.input(t)?;
         // Choice of parameters:
-        // -- left/right: our typical use-case is precision=15, leading to minimum value around 3e-5. Sigmoid(-10) is 4.5e-5, so right=-left=10 is a reasonable choice with our precision;
+        // -- left/right: our typical use-case is precision=15, leading to minimum value around 3e-5. Sigmoid(-10) is 3.e-4, so right=-left=10 is a reasonable choice with our precision;
         // -- log_buckets: we look at max absolute difference to the real sigmoid. It looks as follows:
         //    log_buckets=4 => 0.0163,
         //    log_buckets=5 => 0.0045,
@@ -78,11 +88,13 @@ impl CustomOperationBody for ApproxSigmoid {
         let result = create_approximation(
             arg,
             |x| 1.0 / (1.0 + (-x).exp()),
-            -10.0,
-            10.0,
+            // The boundaries are chosen in a way that (left - right) * precision is a power of 2.
+            // It is important because otherwise we get non-power-of-2 truncations during the approximation.
+            -8.0,
+            8.0,
             self.precision,
             PWLConfig {
-                log_buckets: 5,
+                log_buckets: self.approximation_log_buckets,
                 flatten_left: true,
                 flatten_right: true,
             },
@@ -112,7 +124,13 @@ mod tests {
     fn scalar_helper(arg: i64, precision: u64) -> Result<i64> {
         let c = simple_context(|g| {
             let i = g.input(scalar_type(INT64))?;
-            g.custom_op(CustomOperation::new(ApproxSigmoid { precision }), vec![i])
+            g.custom_op(
+                CustomOperation::new(ApproxSigmoid {
+                    precision,
+                    ..Default::default()
+                }),
+                vec![i],
+            )
         })?;
         let mapped_c = run_instantiation_pass(c)?;
         let result = random_evaluate(
@@ -128,7 +146,10 @@ mod tests {
         let c = simple_context(|g| {
             let i = g.input(array_t.clone())?;
             g.custom_op(
-                CustomOperation::new(ApproxSigmoid { precision: 10 }),
+                CustomOperation::new(ApproxSigmoid {
+                    precision: 10,
+                    ..Default::default()
+                }),
                 vec![i],
             )
         })?;

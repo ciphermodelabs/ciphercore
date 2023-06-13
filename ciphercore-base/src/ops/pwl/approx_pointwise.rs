@@ -68,16 +68,16 @@ where
         let y1 = ys[i];
         let c = ((y1 - y0) << precision) / (x1 - x0);
         alphas.push(c);
-        betas.push(y0 - ((c * x0) >> precision));
+        betas.push((y0 << precision) - (c * x0));
     }
     if config.flatten_left {
         alphas[0] = 0;
-        betas[0] = ys[0];
+        betas[0] = ys[0] << precision;
     }
     if config.flatten_right {
         let n = alphas.len() - 1;
         alphas[n] = 0;
-        betas[n] = ys[ys.len() - 2];
+        betas[n] = ys[ys.len() - 2] << precision;
     }
 
     let alphas_arr = g.constant(
@@ -92,10 +92,7 @@ where
     let mut x_shape = x.get_type()?.get_dimensions();
     x_shape.push(1);
     let expanded_x = x.reshape(array_type(x_shape, st))?;
-    let all_vals = expanded_x
-        .multiply(alphas_arr)?
-        .truncate(1 << precision)?
-        .add(betas_arr)?;
+    let all_vals = expanded_x.multiply(alphas_arr)?.add(betas_arr)?;
     // Bring the dimension with segments to the front.
     let mut perm: Vec<u64> = (0..all_vals.get_type()?.get_shape().len())
         .map(|x| x as u64)
@@ -114,6 +111,8 @@ where
     } else {
         ((right - left) as u128) >> (log_buckets - precision)
     };
+    // Note: this can be DANGEROUS if `divisor` is not a power of 2: our SMPC Truncate implementation can return
+    // random garbage for such Truncate's with some low probability.
     let scaled_x = shifted_x.truncate(divisor)?;
 
     let bits = pull_out_bits(scaled_x.a2b()?)?;
@@ -154,6 +153,7 @@ where
     let result = main_result_masked
         .add(left_result_masked)?
         .add(right_result_masked)?;
+    let result = result.truncate(1 << precision)?;
 
     Ok(result)
 }
