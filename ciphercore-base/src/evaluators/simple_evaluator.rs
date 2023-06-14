@@ -1,3 +1,5 @@
+use ciphercore_utils::eprintln_or_log;
+
 use crate::broadcast::{index_to_number, number_to_index};
 use crate::bytes::{
     add_u128, add_vectors_u128, dot_vectors_u128, multiply_u128, multiply_vectors_u128,
@@ -1368,7 +1370,7 @@ impl Evaluator for SimpleEvaluator {
                 let t = node.get_node_dependencies()[0].get_type()?;
                 let val = dependencies_values[0].clone();
                 let tv = TypedValue::new(t, val.clone())?;
-                eprintln!("{message}: {tv:?}");
+                eprintln_or_log!("{message}: {tv:?}");
                 Ok(val)
             }
             Operation::Assert(message) => {

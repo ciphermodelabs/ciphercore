@@ -1,3 +1,5 @@
+use ciphercore_utils::{eprint_or_log, eprintln_or_log};
+
 use crate::custom_ops::run_instantiation_pass;
 use crate::data_types::Type;
 use crate::evaluators::Evaluator;
@@ -94,9 +96,9 @@ pub fn get_evaluator_result<T: Evaluator>(
     let mut input_values = vec![];
     let mut prng = PRNG::new(None)?;
     for i in 0..inputs.len() {
-        eprint!("Input {i}: ");
+        eprint_or_log!("Input {i}: ");
         if inputs[i].value.check_type(input_types[i].clone())? {
-            eprintln!("Using as is");
+            eprintln_or_log!("Using as is");
             input_values.push(inputs[i].value.clone());
         } else {
             let e = Err(runtime_error!("Invalid input value"));
@@ -110,7 +112,7 @@ pub fn get_evaluator_result<T: Evaluator>(
                 && v[0] == v[2]
                 && inputs[i].value.check_type((*v[0]).clone())?
             {
-                eprintln!("Secret-sharing");
+                eprintln_or_log!("Secret-sharing");
                 // This is a nasty hack.
                 // It allows to pass an array of i32's to a graph
                 // that accepts bit arrays etc.

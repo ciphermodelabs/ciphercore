@@ -54,6 +54,7 @@ default = []
 fuzzing = []
 py-binding = ["dep:pyo3", "dep:pywrapper-macro"]
 tonic-errors = ["dep:tonic"]
+stderr-to-log = []
 
 [[bin]]
 name = "ciphercore_compile"

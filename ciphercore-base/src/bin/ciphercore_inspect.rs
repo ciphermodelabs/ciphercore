@@ -11,6 +11,7 @@ use ciphercore_base::graphs::{Context, Graph, Node, NodeAnnotation, Operation};
 use ciphercore_base::inline::inline_common::DepthOptimizationLevel;
 use ciphercore_base::inline::inline_ops::{InlineConfig, InlineMode};
 use ciphercore_base::mpc::mpc_compiler::prepare_context;
+use ciphercore_utils::eprintln_or_log;
 use ciphercore_utils::execute_main::execute_main;
 use std::fs;
 
@@ -355,7 +356,7 @@ fn main() {
             context
         };
 
-        eprintln!("Calculating stats...");
+        eprintln_or_log!("Calculating stats...");
         print_stats(context2.get_main_graph()?)?;
         Ok(())
     });

@@ -1,3 +1,5 @@
+use ciphercore_utils::eprintln_or_log;
+
 use crate::custom_ops::{run_instantiation_pass, ContextMappings, CustomOperation, MappedContext};
 use crate::data_types::{array_type, scalar_type, tuple_type, Type, TypePointer, BIT, UINT64};
 use crate::data_values::Value;
@@ -1168,10 +1170,10 @@ fn print_stats(graph: Graph) -> Result<()> {
     }
     let mut entries: Vec<(String, u64)> = cnt.iter().map(|e| (e.0.clone(), *e.1)).collect();
     entries.sort_by_key(|e| -(e.1 as i64));
-    eprintln!("-------Stats--------");
-    eprintln!("Total ops: {}", graph.get_nodes().len());
+    eprintln_or_log!("-------Stats--------");
+    eprintln_or_log!("Total ops: {}", graph.get_nodes().len());
     for e in entries {
-        eprintln!("{}\t{}", e.0, e.1);
+        eprintln_or_log!("{}\t{}", e.0, e.1);
     }
     Ok(())
 }
@@ -1185,14 +1187,14 @@ pub fn prepare_context<E>(
 where
     E: Evaluator + Sized,
 {
-    eprintln!("Instantiating...");
+    eprintln_or_log!("Instantiating...");
     let context2 = run_instantiation_pass(context)?.get_context();
-    eprintln!("Inlining...");
+    eprintln_or_log!("Inlining...");
     let context3 = inline_operations(context2, inline_config)?;
     if print_unoptimized_stats {
         print_stats(context3.get_main_graph()?)?;
     }
-    eprintln!("Optimizing...");
+    eprintln_or_log!("Optimizing...");
     optimize_context(context3, evaluator)
 }
 
@@ -1225,8 +1227,8 @@ where
             input_parties.len()
         ));
     }
-    eprintln!("input_parties = {input_parties:?}");
-    eprintln!("output_parties = {output_parties:?}");
+    eprintln_or_log!("input_parties = {input_parties:?}");
+    eprintln_or_log!("output_parties = {output_parties:?}");
     let compiled_context0 = prepare_for_mpc_evaluation(
         context4,
         vec![input_parties],

@@ -5,6 +5,7 @@ use ciphercore_base::evaluators::get_result_util::get_evaluator_result;
 use ciphercore_base::evaluators::simple_evaluator::SimpleEvaluator;
 use ciphercore_base::graphs::Context;
 use ciphercore_base::typed_value::TypedValue;
+use ciphercore_utils::eprintln_or_log;
 use ciphercore_utils::execute_main::execute_main;
 use std::fs;
 
@@ -62,7 +63,7 @@ fn main() {
         )?;
         // Depending on the input argument, print whether the output is revealed
         if args.reveal_output {
-            eprintln!("Revealing the output");
+            eprintln_or_log!("Revealing the output");
         }
         // Print the serialized result to stdout
         println!("{}", serde_json::to_string(&result)?);
