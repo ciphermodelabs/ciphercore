@@ -1125,7 +1125,12 @@ pub fn uniquify_prf_id(context: Context) -> Result<Context> {
                 .iter()
                 .map(|x| context_map.get_graph((*x).clone()))
                 .collect();
-            let new_node = out_graph.add_node(new_node_dependencies, new_graph_dependencies, op)?;
+            let new_node = out_graph.add_node_with_type(
+                new_node_dependencies,
+                new_graph_dependencies,
+                op,
+                node.get_type()?,
+            )?;
             let annotations = node.get_annotations()?;
             for anno in annotations {
                 new_node.add_annotation(anno)?;

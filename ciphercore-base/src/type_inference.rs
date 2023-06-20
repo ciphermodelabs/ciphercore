@@ -530,7 +530,7 @@ fn can_atomic_reshape(t1: Type, t2: Type) -> bool {
 }
 
 impl TypeInferenceWorker {
-    fn register_result(&mut self, node: Node, result: Type) -> Result<()> {
+    pub(crate) fn register_result(&mut self, node: Node, result: Type) -> Result<()> {
         if !result.is_valid() {
             return Err(runtime_error!("Trying to register invalid type"));
         }

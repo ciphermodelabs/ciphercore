@@ -103,7 +103,12 @@ pub(super) fn optimize_graph_constants(
                     constant_nodes.insert(node.clone(), value_ptr.clone());
                     resolve_const(node.get_type()?, value_ptr.clone(), node.get_name()?)?
                 } else {
-                    let result = out_graph.add_node(deps, vec![], node.get_operation())?;
+                    let result = out_graph.add_node_with_type(
+                        deps,
+                        vec![],
+                        node.get_operation(),
+                        node.get_type()?,
+                    )?;
                     for annotation in node.get_annotations()? {
                         result.add_annotation(annotation)?;
                     }

@@ -242,10 +242,11 @@ fn recursively_inline_graph(
                 }
                 new_graph_dependencies.push(inlining_context.get_graph(subgraph).clone());
             }
-            let new_node = output_graph.add_node(
+            let new_node = output_graph.add_node_with_type(
                 new_dependencies,
                 new_graph_dependencies,
                 node.get_operation(),
+                node.get_type()?,
             )?;
             inlining_context.insert_node(node.clone(), new_node.clone());
             let annotations = node.get_annotations()?;

@@ -65,7 +65,12 @@ pub(super) fn optimize_graph_meta_operations(graph: Graph, out_graph: Graph) -> 
                 }
             }
         }
-        let simple_node = out_graph.add_node(deps.clone(), vec![], node.get_operation())?;
+        let simple_node = out_graph.add_node_with_type(
+            deps.clone(),
+            vec![],
+            node.get_operation(),
+            node.get_type()?,
+        )?;
         copy_node_name(node.clone(), simple_node.clone())?;
         let meta_node = match node.get_operation() {
             Operation::Constant(t, v) => {

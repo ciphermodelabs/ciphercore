@@ -37,7 +37,8 @@ pub(super) fn optimize_graph_dangling_nodes(graph: Graph, out_graph: Graph) -> R
                 "Graph must be fully inlined to use the optimizer"
             ));
         }
-        let new_node = out_graph.add_node(deps, vec![], node.get_operation())?;
+        let new_node =
+            out_graph.add_node_with_type(deps, vec![], node.get_operation(), node.get_type()?)?;
         for annotation in node.get_annotations()? {
             new_node.add_annotation(annotation)?;
         }

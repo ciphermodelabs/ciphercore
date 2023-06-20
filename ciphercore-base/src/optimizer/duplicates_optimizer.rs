@@ -96,7 +96,12 @@ pub(super) fn optimize_graph_duplicates(graph: Graph, out_graph: Graph) -> Resul
         let new_node = if let Some(new_node) = maybe_new_node {
             new_node.clone()
         } else {
-            let new_node = out_graph.add_node(deps, vec![], node.get_operation())?;
+            let new_node = out_graph.add_node_with_type(
+                deps,
+                vec![],
+                node.get_operation(),
+                node.get_type()?,
+            )?;
             for annotation in node.get_annotations()? {
                 new_node.add_annotation(annotation)?;
             }

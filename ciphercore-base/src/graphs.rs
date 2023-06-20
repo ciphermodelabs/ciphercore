@@ -3363,40 +3363,70 @@ impl Graph {
         graph_dependencies: Vec<Graph>,
         operation: Operation,
     ) -> Result<Node> {
+        self.add_node_internal(node_dependencies, graph_dependencies, operation, None)
+    }
+
+    #[doc(hidden)]
+    pub fn add_node_with_type(
+        &self,
+        node_dependencies: Vec<Node>,
+        graph_dependencies: Vec<Graph>,
+        operation: Operation,
+        output_type: Type,
+    ) -> Result<Node> {
+        self.add_node_internal(
+            node_dependencies,
+            graph_dependencies,
+            operation,
+            Some(output_type),
+        )
+    }
+
+    fn add_node_internal(
+        &self,
+        node_dependencies: Vec<Node>,
+        graph_dependencies: Vec<Graph>,
+        operation: Operation,
+        output_type: Option<Type>,
+    ) -> Result<Node> {
         if self.is_finalized() {
             return Err(runtime_error!("Can't add a node to a finalized graph"));
         }
-        for dependency in &node_dependencies {
-            if dependency.get_graph() != *self
-                || dependency.get_id() >= self.body.borrow().nodes.len() as u64
-                || self.body.borrow().nodes[dependency.get_id() as usize] != *dependency
-            {
-                return Err(runtime_error!(
-                    "Can't add a node with invalid node dependencies"
-                ));
+        let id = {
+            let graph_cell = self.body.borrow();
+            let id = graph_cell.nodes.len() as u64;
+            for dependency in &node_dependencies {
+                if dependency.get_graph() != *self
+                    || dependency.get_id() >= id
+                    || graph_cell.nodes[dependency.get_id() as usize] != *dependency
+                {
+                    return Err(runtime_error!(
+                        "Can't add a node with invalid node dependencies"
+                    ));
+                }
             }
-        }
-        for dependency in &graph_dependencies {
-            if !dependency.is_finalized() {
-                return Err(runtime_error!(
-                    "Can't add a node with not finilized graph dependency"
-                ));
+            for dependency in &graph_dependencies {
+                if !dependency.is_finalized() {
+                    return Err(runtime_error!(
+                        "Can't add a node with not finilized graph dependency"
+                    ));
+                }
+                if dependency.get_id() >= self.get_id() {
+                    return Err(runtime_error!(
+                        "Can't add a node with graph dependency with bigger id. {} >= {}",
+                        dependency.get_id(),
+                        self.get_id()
+                    ));
+                }
+                if dependency.get_context() != self.get_context() {
+                    return Err(runtime_error!(
+                        "Can't add a node with graph dependency from different context"
+                    ));
+                }
             }
-            if dependency.get_id() >= self.get_id() {
-                return Err(runtime_error!(
-                    "Can't add a node with graph dependency with bigger id. {} >= {}",
-                    dependency.get_id(),
-                    self.get_id()
-                ));
-            }
-            if dependency.get_context() != self.get_context() {
-                return Err(runtime_error!(
-                    "Can't add a node with graph dependency from different context"
-                ));
-            }
-        }
-        let id = self.body.borrow().nodes.len() as u64;
-        let result = Node {
+            id
+        };
+        let node = Node {
             body: Arc::new(AtomicRefCell::new(NodeBody {
                 graph: self.downgrade(),
                 node_dependencies: node_dependencies.iter().map(|n| n.downgrade()).collect(),
@@ -3407,45 +3437,56 @@ impl Graph {
         };
         {
             let mut cell = self.body.borrow_mut();
-            cell.nodes.push(result.clone());
+            cell.nodes.push(node.clone());
         }
-        let mut context_has_type_checker = false;
-        {
-            let context = self.get_context();
-            let mut context_cell = context.body.borrow_mut();
-            let type_checker = &mut context_cell.type_checker;
-            if type_checker.is_some() {
-                context_has_type_checker = true;
-            }
-        }
-        if context_has_type_checker {
-            let type_checking_result = result.get_type();
-            if type_checking_result.is_err() {
-                self.remove_last_node(result)?;
-                return Err(type_checking_result.expect_err("Should not be here"));
-            }
-            let type_result = type_checking_result?;
 
-            let size_estimate = get_size_estimation_in_bits(type_result);
+        let context = self.get_context();
+        let context_has_type_checker = {
+            let context = self.get_context();
+            let context_cell = context.body.borrow();
+            context_cell.type_checker.is_some()
+        };
+        let output_type = if context_has_type_checker {
+            match output_type {
+                // No type was provided, compute the type.
+                None => match node.get_type() {
+                    Ok(t) => Some(t),
+                    Err(err) => {
+                        self.remove_last_node(node)?;
+                        return Err(err);
+                    }
+                },
+                // Register provided type with the type checker.
+                Some(t) => {
+                    if let Some(type_checker) = &mut context.body.borrow_mut().type_checker {
+                        type_checker.register_result(node.clone(), t.clone())?;
+                    }
+                    Some(t)
+                }
+            }
+        } else {
+            output_type
+        };
+        if let Some(t) = output_type {
+            let size_estimate = get_size_estimation_in_bits(t);
             if size_estimate.is_err() {
-                self.remove_last_node(result)?;
+                self.remove_last_node(node)?;
                 return Err(runtime_error!("Trying to add a node with invalid size"));
             }
             if size_estimate? > type_size_limit_constants::MAX_INDIVIDUAL_NODE_SIZE {
-                self.remove_last_node(result)?;
+                self.remove_last_node(node)?;
                 return Err(runtime_error!(
                     "Trying to add a node larger than MAX_INDIVIDUAL_NODE_SIZE"
                 ));
             }
 
-            let context = self.get_context();
-            let size_checking_result = context.try_update_total_size(result.clone());
+            let size_checking_result = context.try_update_total_size(node.clone());
             if size_checking_result.is_err() {
-                self.remove_last_node(result)?;
+                self.remove_last_node(node)?;
                 return Err(size_checking_result.expect_err("Should not be here"));
             }
         }
-        Ok(result)
+        Ok(node)
     }
 
     fn remove_last_node(&self, n: Node) -> Result<()> {
