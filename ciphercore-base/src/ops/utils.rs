@@ -484,18 +484,14 @@ pub fn custom_reduce_vec(
     result.ok_or_else(|| runtime_error!("Internal error: no result"))
 }
 
-pub fn precise_goldshmidt_division(
-    num: Node,
-    den: Node,
-    iterations: u64,
-    denominator_cap_2k: u64,
-) -> Result<Node> {
+pub fn precise_goldschmidt_division(num: Node, den: Node) -> Result<Node> {
+    let denominator_cap_2k = 30;
     let g = num.get_graph();
     let num = bits_64_to_128(num)?;
     let den = bits_64_to_128(den)?;
     let res = g.custom_op(
         CustomOperation::new(GoldschmidtDivision {
-            iterations,
+            iterations: 7,
             denominator_cap_2k,
         }),
         vec![num, den],
@@ -505,10 +501,12 @@ pub fn precise_goldshmidt_division(
 }
 
 fn u128_to_u64(a: Node, truncate_bits: i64) -> Result<Node> {
-    a.a2b()?.get_slice(vec![
-        SliceElement::Ellipsis,
-        SliceElement::SubArray(Some(truncate_bits), Some(truncate_bits - 64), None),
-    ])
+    a.a2b()?
+        .get_slice(vec![
+            SliceElement::Ellipsis,
+            SliceElement::SubArray(Some(truncate_bits), Some(truncate_bits - 64), None),
+        ])?
+        .b2a(ScalarType::U64)
 }
 
 fn i128_to_i64(a: Node, truncate_bits: i64) -> Result<Node> {
@@ -552,16 +550,9 @@ fn i64_to_i128(a: Node) -> Result<Node> {
     let g = a.get_graph();
     let a = a.a2b()?;
     let t = a.get_type()?;
-    let last_axis = t.get_dimensions().len() - 1;
+    let last_axis = t.get_dimensions().len() as u64 - 1;
     // If sign bit is 1, most significant bits after conversion will be 1s, otherwise 0s.
     let z = g.ones(a.get_type()?)?;
-
-    // For the unsigned type just concatenate with zeros.
-    if !t.get_scalar_type().is_signed() {
-        return g
-            .concatenate(vec![a, z], last_axis as u64)?
-            .b2a(ScalarType::U128);
-    }
 
     // Extract sign bit.
     let sgn = unsqueeze(
@@ -574,7 +565,7 @@ fn i64_to_i128(a: Node) -> Result<Node> {
         SliceElement::SubArray(None, Some(-1), None),
     ])?;
     // Concatenate sign bit to the end.
-    g.concatenate(vec![a, z, sgn], last_axis as u64)?
+    g.concatenate(vec![a, z, sgn], last_axis)?
         .b2a(ScalarType::I128)
 }
 
@@ -682,22 +673,11 @@ mod tests {
         Ok(())
     }
 
-    fn scalar_division_helper(
-        dividend: i128,
-        divisor: i128,
-        st: ScalarType,
-        denominator_cap_2k: u64,
-    ) -> Result<Value> {
+    fn scalar_division_helper(dividend: i128, divisor: i128, st: ScalarType) -> Result<Value> {
         let c = simple_context(|g| {
             let dividend_node = g.input(scalar_type(st))?;
             let divisor_node = g.input(scalar_type(st))?;
-            g.custom_op(
-                CustomOperation::new(GoldschmidtDivision {
-                    iterations: 5,
-                    denominator_cap_2k,
-                }),
-                vec![dividend_node, divisor_node],
-            )
+            precise_goldschmidt_division(dividend_node, divisor_node)
         })?;
         let mapped_c = run_instantiation_pass(c)?;
         let result = random_evaluate(
@@ -711,29 +691,23 @@ mod tests {
     }
 
     #[test]
-    fn test_precise_goldshmidt_division() -> Result<()> {
-        let dividend = 1234567890123456789;
+    fn test_precise_goldschmidt_division() -> Result<()> {
+        let dividend = 1234567890;
         let div_v = vec![1, 2, 3, 123, 300, 500, 700];
-        for denominator_cap_2k in [10, 20, 30] {
-            for i in div_v.clone() {
-                for st in [ScalarType::I128, ScalarType::U128] {
-                    let result =
-                        scalar_division_helper(dividend, i, st, denominator_cap_2k)?.to_i128(st)?;
-                    let expected = dividend * (1 << denominator_cap_2k) / i;
-                    assert!(((result - expected).abs() * 100) / expected <= 1);
-                }
-            }
-        }
-        let dividend = -1234567890123456789;
-        let div_v = vec![1, 2, 3, 123, 300, 500, 700];
-        for denominator_cap_2k in [10, 20, 30] {
-            for i in div_v.clone() {
-                let result =
-                    scalar_division_helper(dividend, i, ScalarType::I128, denominator_cap_2k)?
-                        .to_i128(ScalarType::I128)?;
-                let expected = dividend * (1 << denominator_cap_2k) / i;
+        for i in div_v.clone() {
+            for st in [ScalarType::I64, ScalarType::U64] {
+                let result = scalar_division_helper(dividend, i, st)?.to_i128(st)?;
+                let expected = dividend / i;
                 assert!(((result - expected).abs() * 100) / expected <= 1);
             }
+        }
+        let dividend = -1234567890;
+        let div_v = vec![1, 2, 3, 123, 300, 500, 700];
+        let st = ScalarType::I64;
+        for i in div_v.clone() {
+            let result = scalar_division_helper(dividend, i, st)?.to_i128(st)?;
+            let expected = dividend / i;
+            assert!(((result - expected).abs() * 100) / expected <= 1);
         }
         Ok(())
     }
