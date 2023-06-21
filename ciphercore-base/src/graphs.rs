@@ -352,7 +352,7 @@ struct SerializableNodeBody {
     operation: Operation,
 }
 
-type NodeBodyPointer = Arc<AtomicRefCell<NodeBody>>;
+type NodeBodyPointer = Arc<NodeBody>;
 
 /// A structure that stores a pointer to a computation graph node that corresponds to an operation.
 ///
@@ -427,7 +427,7 @@ impl Node {
     ///
     /// Parent graph of the node
     pub fn get_graph(&self) -> Graph {
-        self.body.borrow().graph.upgrade()
+        self.body.graph.upgrade()
     }
 
     /// Returns the dependency nodes that are used to compute the value in the current node.
@@ -437,7 +437,6 @@ impl Node {
     /// Vector of nodes used by the node to perform its operation
     pub fn get_node_dependencies(&self) -> Vec<Node> {
         self.body
-            .borrow()
             .node_dependencies
             .iter()
             .map(|n| n.upgrade())
@@ -453,7 +452,6 @@ impl Node {
     /// Vector of graphs used by the node to perform its operation
     pub fn get_graph_dependencies(&self) -> Vec<Graph> {
         self.body
-            .borrow()
             .graph_dependencies
             .iter()
             .map(|g| g.upgrade())
@@ -469,7 +467,7 @@ impl Node {
     ///
     /// Node ID
     pub fn get_id(&self) -> u64 {
-        self.body.borrow().id
+        self.body.id
     }
 
     /// Returns the pair of the parent graph ID and node ID
@@ -487,7 +485,7 @@ impl Node {
     ///
     /// Operation associated with the node
     pub fn get_operation(&self) -> Operation {
-        self.body.borrow().operation.clone()
+        self.body.operation.clone()
     }
 
     /// Returns the type of the value computed by the node.
@@ -1341,7 +1339,7 @@ impl Node {
             .get_node_annotations(self.clone())
     }
 }
-type WeakNodeBodyPointer = Weak<AtomicRefCell<NodeBody>>;
+type WeakNodeBodyPointer = Weak<NodeBody>;
 
 struct WeakNode {
     body: WeakNodeBodyPointer,
@@ -3427,13 +3425,13 @@ impl Graph {
             id
         };
         let node = Node {
-            body: Arc::new(AtomicRefCell::new(NodeBody {
+            body: Arc::new(NodeBody {
                 graph: self.downgrade(),
                 node_dependencies: node_dependencies.iter().map(|n| n.downgrade()).collect(),
                 graph_dependencies: graph_dependencies.iter().map(|g| g.downgrade()).collect(),
                 operation,
                 id,
-            })),
+            }),
         };
         {
             let mut cell = self.body.borrow_mut();
@@ -4696,17 +4694,17 @@ fn graphs_deep_equal(graph1: Graph, graph2: Graph) -> bool {
     for j in 0..graph1_body.nodes.len() {
         let node1 = graph1_body.nodes[j].clone();
         let node2 = graph2_body.nodes[j].clone();
-        let node1_body = node1.body.borrow();
-        let node2_body = node2.body.borrow();
-        if node1_body.operation != node2_body.operation {
+        if node1.body.operation != node2.body.operation {
             return false;
         }
-        let node_dependencies1: Vec<u64> = node1_body
+        let node_dependencies1: Vec<u64> = node1
+            .body
             .node_dependencies
             .iter()
             .map(|n| n.upgrade().get_id())
             .collect();
-        let node_dependencies2: Vec<u64> = node2_body
+        let node_dependencies2: Vec<u64> = node2
+            .body
             .node_dependencies
             .iter()
             .map(|n| n.upgrade().get_id())
@@ -4714,12 +4712,14 @@ fn graphs_deep_equal(graph1: Graph, graph2: Graph) -> bool {
         if node_dependencies1 != node_dependencies2 {
             return false;
         }
-        let graph_dependencies1: Vec<u64> = node1_body
+        let graph_dependencies1: Vec<u64> = node1
+            .body
             .graph_dependencies
             .iter()
             .map(|g| g.upgrade().get_id())
             .collect();
-        let graph_dependencies2: Vec<u64> = node2_body
+        let graph_dependencies2: Vec<u64> = node2
+            .body
             .graph_dependencies
             .iter()
             .map(|g| g.upgrade().get_id())
@@ -5006,24 +5006,24 @@ mod tests {
         let e1 = graph.add(input1.clone(), input2.clone());
         assert!(e1.is_err());
         let fake_node = Node {
-            body: Arc::new(AtomicRefCell::new(NodeBody {
+            body: Arc::new(NodeBody {
                 graph: graph.downgrade(),
                 node_dependencies: vec![],
                 graph_dependencies: vec![],
                 operation: Operation::Input(scalar_type(BIT)),
                 id: 0,
-            })),
+            }),
         };
         let e2 = graph.add(fake_node.clone(), input1.clone());
         assert!(e2.is_err());
         let fake_node_2 = Node {
-            body: Arc::new(AtomicRefCell::new(NodeBody {
+            body: Arc::new(NodeBody {
                 graph: graph.downgrade(),
                 node_dependencies: vec![],
                 graph_dependencies: vec![],
                 operation: Operation::Input(scalar_type(BIT)),
                 id: 31337,
-            })),
+            }),
         };
         let e3 = graph.add(fake_node_2.clone(), input1.clone());
         assert!(e3.is_err());
