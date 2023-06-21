@@ -1,9 +1,12 @@
 use std::ops::Not;
 
+use crate::custom_ops::CustomOperation;
 use crate::data_types::{array_type, scalar_type, ArrayShape, ScalarType, Type, BIT};
 use crate::errors::Result;
 use crate::graphs::{Context, Graph, Node, SliceElement};
 use crate::typed_value::TypedValue;
+
+use super::goldschmidt_division::GoldschmidtDivision;
 
 /// This function tests that two given inputs containing arrays or scalars of bitstrings
 /// are compatible for binary custom operations on bits that involve broadcasting,
@@ -481,6 +484,108 @@ pub fn custom_reduce_vec(
     result.ok_or_else(|| runtime_error!("Internal error: no result"))
 }
 
+pub fn precise_goldshmidt_division(
+    num: Node,
+    den: Node,
+    iterations: u64,
+    denominator_cap_2k: u64,
+) -> Result<Node> {
+    let g = num.get_graph();
+    let num = bits_64_to_128(num)?;
+    let den = bits_64_to_128(den)?;
+    let res = g.custom_op(
+        CustomOperation::new(GoldschmidtDivision {
+            iterations,
+            denominator_cap_2k,
+        }),
+        vec![num, den],
+    )?;
+    let res = bits_128_to_64(res, denominator_cap_2k)?;
+    Ok(res)
+}
+
+fn u128_to_u64(a: Node, truncate_bits: i64) -> Result<Node> {
+    a.a2b()?.get_slice(vec![
+        SliceElement::Ellipsis,
+        SliceElement::SubArray(Some(truncate_bits), Some(truncate_bits - 64), None),
+    ])
+}
+
+fn i128_to_i64(a: Node, truncate_bits: i64) -> Result<Node> {
+    let g = a.get_graph();
+    let a = a.a2b()?;
+    let sgn = unsqueeze(
+        a.get_slice(vec![SliceElement::Ellipsis, SliceElement::SingleIndex(-1)])?,
+        -1,
+    )?;
+    // Truncate (remove least significant bits) and slice the rest.
+    let a = a.get_slice(vec![
+        SliceElement::Ellipsis,
+        SliceElement::SubArray(Some(truncate_bits), Some(truncate_bits - 65), None),
+    ])?;
+    let last_axis = a.get_type()?.get_dimensions().len() - 1;
+    // Concatenate sign bit with the rest of the bits.
+    g.concatenate(vec![a, sgn], last_axis as u64)?
+        .b2a(ScalarType::I64)
+}
+
+fn bits_128_to_64(a: Node, truncate_bits: u64) -> Result<Node> {
+    let truncate_bits = truncate_bits as i64;
+    if a.get_type()?.get_scalar_type().is_signed() {
+        i128_to_i64(a, truncate_bits)
+    } else {
+        u128_to_u64(a, truncate_bits)
+    }
+}
+
+fn u64_to_u128(a: Node) -> Result<Node> {
+    // To convert u64 to u128 we need to append 64 0s to the most significant bits
+    let g = a.get_graph();
+    let a = a.a2b()?;
+    let z = g.zeros(a.get_type()?)?;
+    let last_axis = a.get_type()?.get_dimensions().len() - 1;
+    g.concatenate(vec![a, z], last_axis as u64)?
+        .b2a(ScalarType::U128)
+}
+
+fn i64_to_i128(a: Node) -> Result<Node> {
+    let g = a.get_graph();
+    let a = a.a2b()?;
+    let t = a.get_type()?;
+    let last_axis = t.get_dimensions().len() - 1;
+    // If sign bit is 1, most significant bits after conversion will be 1s, otherwise 0s.
+    let z = g.ones(a.get_type()?)?;
+
+    // For the unsigned type just concatenate with zeros.
+    if !t.get_scalar_type().is_signed() {
+        return g
+            .concatenate(vec![a, z], last_axis as u64)?
+            .b2a(ScalarType::U128);
+    }
+
+    // Extract sign bit.
+    let sgn = unsqueeze(
+        a.get_slice(vec![SliceElement::Ellipsis, SliceElement::SingleIndex(-1)])?,
+        -1,
+    )?;
+    let z = z.multiply(sgn.clone())?;
+    let a = a.get_slice(vec![
+        SliceElement::Ellipsis,
+        SliceElement::SubArray(None, Some(-1), None),
+    ])?;
+    // Concatenate sign bit to the end.
+    g.concatenate(vec![a, z, sgn], last_axis as u64)?
+        .b2a(ScalarType::I128)
+}
+
+fn bits_64_to_128(a: Node) -> Result<Node> {
+    if a.get_type()?.get_scalar_type().is_signed() {
+        i64_to_i128(a)
+    } else {
+        u64_to_u128(a)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ndarray::{array, Array};
@@ -573,6 +678,62 @@ mod tests {
             let result = custom_reduce_helper(input, |first, second| Ok(first.add(second)?))?;
             let output = result.to_flattened_array_u64(array_type(vec![1], UINT32))?;
             assert_eq!(output, [(n * (n + 1) / 2) as u64]);
+        }
+        Ok(())
+    }
+
+    fn scalar_division_helper(
+        dividend: i128,
+        divisor: i128,
+        st: ScalarType,
+        denominator_cap_2k: u64,
+    ) -> Result<Value> {
+        let c = simple_context(|g| {
+            let dividend_node = g.input(scalar_type(st))?;
+            let divisor_node = g.input(scalar_type(st))?;
+            g.custom_op(
+                CustomOperation::new(GoldschmidtDivision {
+                    iterations: 5,
+                    denominator_cap_2k,
+                }),
+                vec![dividend_node, divisor_node],
+            )
+        })?;
+        let mapped_c = run_instantiation_pass(c)?;
+        let result = random_evaluate(
+            mapped_c.get_context().get_main_graph()?,
+            vec![
+                Value::from_scalar(dividend, st)?,
+                Value::from_scalar(divisor, st)?,
+            ],
+        )?;
+        Ok(result)
+    }
+
+    #[test]
+    fn test_precise_goldshmidt_division() -> Result<()> {
+        let dividend = 1234567890123456789;
+        let div_v = vec![1, 2, 3, 123, 300, 500, 700];
+        for denominator_cap_2k in [10, 20, 30] {
+            for i in div_v.clone() {
+                for st in [ScalarType::I128, ScalarType::U128] {
+                    let result =
+                        scalar_division_helper(dividend, i, st, denominator_cap_2k)?.to_i128(st)?;
+                    let expected = dividend * (1 << denominator_cap_2k) / i;
+                    assert!(((result - expected).abs() * 100) / expected <= 1);
+                }
+            }
+        }
+        let dividend = -1234567890123456789;
+        let div_v = vec![1, 2, 3, 123, 300, 500, 700];
+        for denominator_cap_2k in [10, 20, 30] {
+            for i in div_v.clone() {
+                let result =
+                    scalar_division_helper(dividend, i, ScalarType::I128, denominator_cap_2k)?
+                        .to_i128(ScalarType::I128)?;
+                let expected = dividend * (1 << denominator_cap_2k) / i;
+                assert!(((result - expected).abs() * 100) / expected <= 1);
+            }
         }
         Ok(())
     }
