@@ -1083,6 +1083,7 @@ impl TypeInferenceWorker {
                     result_shape[axis as usize] += shape[axis as usize];
                 }
                 let result = array_type(result_shape, st);
+                self.register_result(node, result.clone())?;
                 Ok(result)
             }
             Operation::Constant(t, ref value) => {
