@@ -2474,7 +2474,8 @@ mod tests {
                         default_mode: InlineMode::Simple,
                         ..Default::default()
                     },
-                )?;
+                )?
+                .get_context();
 
                 let result_hashmap = generate_equivalence_class(
                     inlined_c.clone(),
@@ -2786,7 +2787,8 @@ mod tests {
                         default_mode: InlineMode::Simple,
                         ..Default::default()
                     },
-                )?;
+                )?
+                .get_context();
 
                 let result_hashmap = generate_equivalence_class(
                     inlined_c.clone(),
@@ -3197,7 +3199,7 @@ mod tests {
             input_parties.push(IOStatus::Public);
         }
 
-        prepare_for_mpc_evaluation(
+        Ok(prepare_for_mpc_evaluation(
             c,
             vec![input_parties],
             vec![vec![IOStatus::Party(0)]],
@@ -3205,7 +3207,8 @@ mod tests {
                 default_mode: InlineMode::DepthOptimized(DepthOptimizationLevel::Default),
                 ..Default::default()
             },
-        )
+        )?
+        .get_context())
     }
 
     fn deterministic_join_helper(

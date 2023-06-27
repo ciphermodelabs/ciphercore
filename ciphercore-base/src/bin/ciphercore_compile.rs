@@ -205,7 +205,8 @@ fn main() {
                 ..Default::default()
             },
             get_evaluator,
-        )?;
+        )?
+        .get_context();
         // Print the serialized and compiled context to stdout
         println!("{}", serde_json::to_string(&compiled_context).unwrap());
         Ok(())

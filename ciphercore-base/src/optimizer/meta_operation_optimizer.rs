@@ -1,4 +1,5 @@
 use crate::bytes::vec_u64_from_bytes;
+use crate::custom_ops::ContextMappings;
 use crate::data_types::UINT64;
 use crate::errors::Result;
 use crate::graphs::{copy_node_name, Graph, Node, Operation, SliceElement};
@@ -33,8 +34,11 @@ struct ProxyObjectWithNode {
 /// This process leaves a bunch of dangling nodes, which then can be removed later.
 /// This function preserves annotations and node names of remaining nodes.
 /// If a node or a group of nodes is replaced by another node, the related names are not preserved.
-pub(super) fn optimize_graph_meta_operations(graph: Graph, out_graph: Graph) -> Result<()> {
-    let mut node_mapping = HashMap::<Node, Node>::new();
+pub(super) fn optimize_graph_meta_operations(
+    graph: Graph,
+    out_graph: Graph,
+) -> Result<ContextMappings> {
+    let mut mapping = ContextMappings::default();
     let mut meta_objects = HashMap::<Node, ProxyObjectWithNode>::new();
     for node in graph.get_nodes() {
         if !node.get_graph_dependencies().is_empty() {
@@ -46,13 +50,7 @@ pub(super) fn optimize_graph_meta_operations(graph: Graph, out_graph: Graph) -> 
         let mut meta_deps = vec![];
         let mut all_meta_deps = true;
         for dep in node.get_node_dependencies() {
-            let resolved_dep = node_mapping.get(&dep);
-            match resolved_dep {
-                Some(resolved_dep_node) => deps.push(resolved_dep_node.clone()),
-                None => {
-                    panic!("Logic error: unprocessed node in dependencies");
-                }
-            };
+            deps.push(mapping.get_node(&dep));
 
             let meta_dep = meta_objects.get(&dep);
             match meta_dep {
@@ -214,9 +212,9 @@ pub(super) fn optimize_graph_meta_operations(graph: Graph, out_graph: Graph) -> 
         if node == graph.get_output_node()? {
             new_node.set_as_output()?;
         }
-        node_mapping.insert(node, new_node);
+        mapping.insert_node(node, new_node);
     }
-    Ok(())
+    Ok(mapping)
 }
 
 /// Tries to apply an operation while simplifying the graph.

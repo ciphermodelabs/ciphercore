@@ -1,3 +1,4 @@
+use crate::custom_ops::ContextMappings;
 use crate::errors::Result;
 use crate::graphs::{copy_node_name, Graph, Node, NodeAnnotation, Operation};
 use std::cmp::Eq;
@@ -69,10 +70,11 @@ impl Eq for NodeKey {}
 /// This optimization assumes that the graph is fully inlined.
 /// It traverses the nodes in order, eliminating duplicates (same dependencies and annotations).
 /// For node names, the name of the first occurrence of the node is taken.
-pub(super) fn optimize_graph_duplicates(graph: Graph, out_graph: Graph) -> Result<()> {
+pub(super) fn optimize_graph_duplicates(graph: Graph, out_graph: Graph) -> Result<ContextMappings> {
     graph.check_finalized()?;
-    let mut node_mapping = HashMap::<Node, Node>::new();
+    let mut mapping = ContextMappings::default();
     let mut node_signatures = HashMap::<NodeKey, Node>::new();
+    let graph_output_node = graph.get_output_node()?;
     for node in graph.get_nodes() {
         if !node.get_graph_dependencies().is_empty() {
             return Err(runtime_error!(
@@ -82,7 +84,7 @@ pub(super) fn optimize_graph_duplicates(graph: Graph, out_graph: Graph) -> Resul
         let mut deps = vec![];
         let mut dep_ids = vec![];
         for dep in node.get_node_dependencies() {
-            let new_dep = node_mapping.get(&dep).unwrap();
+            let new_dep = mapping.get_node(&dep);
             deps.push(new_dep.clone());
             dep_ids.push(new_dep.get_id());
         }
@@ -109,15 +111,15 @@ pub(super) fn optimize_graph_duplicates(graph: Graph, out_graph: Graph) -> Resul
             new_node
         };
 
-        if node == graph.get_output_node()? {
+        if node == graph_output_node {
             new_node.set_as_output()?;
         }
-        node_mapping.insert(node, new_node.clone());
+        mapping.insert_node(node, new_node.clone());
         if let Some(key) = &node_key {
             node_signatures.insert(key.clone(), new_node);
         }
     }
-    Ok(())
+    Ok(mapping)
 }
 
 #[cfg(test)]

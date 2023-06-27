@@ -476,7 +476,13 @@ mod tests {
             g.truncate(i, scale)
         })?;
 
-        prepare_for_mpc_evaluation(c, vec![vec![party_id]], vec![output_parties], inline_config)
+        Ok(prepare_for_mpc_evaluation(
+            c,
+            vec![vec![party_id]],
+            vec![output_parties],
+            inline_config,
+        )?
+        .get_context())
     }
 
     fn prepare_input(input: Vec<u128>, input_status: IOStatus, t: Type) -> Result<Vec<Value>> {

@@ -361,19 +361,69 @@ impl CustomOperationBody for Or {
 /// so in general it's not a good idea to enumerate the entries
 /// of the maps using iterators, since it's not deterministic.
 /// Instead, one should sort by IDs, and then enumerate.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct ContextMappings {
     node_mapping: HashMap<Node, Node>,
+    /// The node mapping is not 1-to-1 because of various optimizations. So additionally
+    /// to the `node_mapping` we store another data structure `rev_node_mapping`. For each
+    /// node in the new context we store the initial node that it was transformed from.
+    ///
+    /// If some node [a] were tranformed into [b] and [c], then the `rev_node_mapping`
+    /// will contain both [b] -> [a] and [c] -> [a] entries.
+    ///
+    /// If two nodes [a] and [b] were merged into [c], then the `rev_node_mapping`
+    /// will contain only one of [c] to [a] or [c] to [b] (no guarantee which one).
+    ///
+    /// This structure could be used for debugging purposes to get a better understanding
+    /// about how the final graph was generated.
+    rev_node_mapping: HashMap<Node, Node>,
     graph_mapping: HashMap<Graph, Graph>,
 }
 
 impl ContextMappings {
+    pub fn join(&self, other: &Self) -> Self {
+        // For each pair (v1->v2) in map1, and (v2->v3) in map2, adds (v1->v3) to the result.
+        fn join_mappings<T>(map1: &HashMap<T, T>, map2: &HashMap<T, T>) -> HashMap<T, T>
+        where
+            T: Eq + Hash + Clone,
+        {
+            let mut result = HashMap::new();
+            for (v1, v2) in map1.iter() {
+                if let Some(v3) = map2.get(v2) {
+                    result.insert(v1.clone(), v3.clone());
+                }
+            }
+            result
+        }
+
+        Self {
+            node_mapping: join_mappings(&self.node_mapping, &other.node_mapping),
+            rev_node_mapping: join_mappings(&other.rev_node_mapping, &self.rev_node_mapping),
+            graph_mapping: join_mappings(&self.graph_mapping, &other.graph_mapping),
+        }
+    }
+
+    pub fn extend(&mut self, other: Self) {
+        self.node_mapping.extend(other.node_mapping);
+        self.rev_node_mapping.extend(other.rev_node_mapping);
+        self.graph_mapping.extend(other.graph_mapping);
+    }
+
+    /// Constructs a new mapping sequentially joining all mappings from the input
+    pub fn new_from_chain(mappings: &[Self]) -> Self {
+        let mut result = mappings[0].clone();
+        for mapping in mappings[1..].iter() {
+            result = result.join(mapping);
+        }
+        result
+    }
+
     pub fn contains_graph(&self, graph: Graph) -> bool {
         self.graph_mapping.contains_key(&graph)
     }
 
-    pub fn contains_node(&self, node: Node) -> bool {
-        self.node_mapping.contains_key(&node)
+    pub fn contains_node(&self, node: &Node) -> bool {
+        self.node_mapping.contains_key(node)
     }
 
     /// Panics if `graph` is not in `graph_mapping`
@@ -385,11 +435,15 @@ impl ContextMappings {
     }
 
     /// Panics if `node` is not in `node_mapping`
-    pub fn get_node(&self, node: Node) -> Node {
+    pub fn get_node(&self, node: &Node) -> Node {
         self.node_mapping
-            .get(&node)
+            .get(node)
             .expect("Node is not found in node_mapping")
             .clone()
+    }
+
+    pub fn get_rev_node(&self, node: &Node) -> Option<Node> {
+        self.rev_node_mapping.get(node).cloned()
     }
 
     /// Panics if `old_graph` has already been inserted
@@ -403,9 +457,30 @@ impl ContextMappings {
     /// Panics if `old_node` has already been inserted
     pub fn insert_node(&mut self, old_node: Node, new_node: Node) {
         assert!(
-            self.node_mapping.insert(old_node, new_node).is_none(),
+            self.node_mapping
+                .insert(old_node.clone(), new_node.clone())
+                .is_none(),
             "Node has already been inserted in node_mapping"
         );
+        self.insert_node_to_rev_mapping(&old_node, &new_node);
+    }
+
+    /// Usually it is called automatically by `insert_node` method, so you don't need to call it manually.
+    ///
+    /// However, when inlining `Operation::Call` in most cases we want `old_node` to be a `Call` node for all
+    /// new nodes, not the corresping node from the inlined graph. The only exception -- when we inline
+    /// the main graph during MPC-compilation.
+    pub fn insert_node_to_rev_mapping(&mut self, old_node: &Node, new_node: &Node) {
+        if self.rev_node_mapping.contains_key(new_node) {
+            return;
+        }
+        self.rev_node_mapping
+            .insert(new_node.clone(), old_node.clone());
+        // When some node [a] is expanded to a big subgraph [b]->[c]->[d]. `insert_node` is only called
+        // once for ([a], [d]). So we need to propagate the mapping to [b] and [c] as well.
+        for dep in new_node.get_node_dependencies() {
+            self.insert_node_to_rev_mapping(old_node, &dep);
+        }
     }
 
     /// Panics if `old_graph` is not inserted
@@ -427,16 +502,33 @@ impl ContextMappings {
 
 #[doc(hidden)]
 pub struct MappedContext {
+    // we store a reference to the old_context here to make sure that all "weak" pointers
+    // inside `mappings` are valid
+    #[allow(dead_code)]
+    old_context: Context,
     pub context: Context,
     // old -> new mappings
     pub mappings: ContextMappings,
 }
 
 impl MappedContext {
-    pub fn new(context: Context) -> Self {
+    pub fn new(old_context: Context, context: Context) -> Self {
         MappedContext {
             context,
             mappings: ContextMappings::default(),
+            old_context,
+        }
+    }
+
+    pub fn new_with_mappings(
+        old_context: Context,
+        context: Context,
+        mappings: ContextMappings,
+    ) -> Self {
+        MappedContext {
+            context,
+            mappings,
+            old_context,
         }
     }
 
@@ -630,7 +722,7 @@ pub fn run_instantiation_pass(context: Context) -> Result<MappedContext> {
                 let node_dependencies = node.get_node_dependencies();
                 let new_node_dependencies: Vec<Node> = node_dependencies
                     .iter()
-                    .map(|node| mapping.get_node(node.clone()))
+                    .map(|node| mapping.get_node(node))
                     .collect();
                 let new_node = match node.get_operation() {
                     Operation::Custom(_) => {
@@ -667,7 +759,7 @@ pub fn run_instantiation_pass(context: Context) -> Result<MappedContext> {
                 }
                 mapping.insert_node(node, new_node);
             }
-            glued_graph.set_output_node(mapping.get_node(graph_to_glue.get_output_node()?))?;
+            glued_graph.set_output_node(mapping.get_node(&graph_to_glue.get_output_node()?))?;
             glued_graph.finalize()?;
         }
         Ok(mapping)
@@ -694,7 +786,7 @@ pub fn run_instantiation_pass(context: Context) -> Result<MappedContext> {
         glued_instantiations_cache.insert(instantiation.clone(), mapped_graph);
     }
     // Glue the final context.
-    let mut result = MappedContext::new(result_context.clone());
+    let mut result = MappedContext::new(context.clone(), result_context.clone());
     result.mappings = glue_context(&glued_instantiations_cache, context.clone())?;
     result_context.set_main_graph(result.mappings.get_graph(context.get_main_graph()?))?;
     result_context.finalize()?;

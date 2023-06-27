@@ -352,6 +352,7 @@ fn main() {
                 evaluator0,
                 false,
             )?
+            .get_context()
         } else {
             context
         };

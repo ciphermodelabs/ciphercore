@@ -403,7 +403,10 @@ mod tests {
             let t = g.create_named_tuple(vec![(key.clone(), i)])?;
             g.sort(t, key.clone())?.named_tuple_get(key)
         })?;
-        prepare_for_mpc_evaluation(c, vec![input_status], vec![output_parties], inline_config)
+        Ok(
+            prepare_for_mpc_evaluation(c, vec![input_status], vec![output_parties], inline_config)?
+                .get_context(),
+        )
     }
 
     fn prepare_input(input: TypedValue, input_status: IOStatus) -> Result<Value> {

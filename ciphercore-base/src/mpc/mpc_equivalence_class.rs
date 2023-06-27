@@ -1658,7 +1658,8 @@ mod tests {
                     ..Default::default()
                 },
             )
-            .unwrap();
+            .unwrap()
+            .get_context();
             let test_class1 = generate_equivalence_class(
                 compiled_c.clone(),
                 vec![vec![IOStatus::Shared, IOStatus::Public]],
@@ -1693,7 +1694,8 @@ mod tests {
                     ..Default::default()
                 },
             )
-            .unwrap();
+            .unwrap()
+            .get_context();
             let test_class1 = generate_equivalence_class(
                 compiled_c.clone(),
                 vec![vec![IOStatus::Shared, IOStatus::Public]],
@@ -1752,7 +1754,8 @@ mod tests {
                     ..Default::default()
                 },
             )
-            .unwrap();
+            .unwrap()
+            .get_context();
             let test_class1 = generate_equivalence_class(
                 compiled_c.clone(),
                 vec![vec![IOStatus::Shared, IOStatus::Public]],

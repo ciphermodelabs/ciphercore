@@ -1,12 +1,16 @@
+use crate::custom_ops::ContextMappings;
 use crate::errors::Result;
 use crate::graphs::{copy_node_name, Graph, Node};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 /// This optimization removes the nodes from which the output node is not reachable.
 /// This can happen if the graph is constructed inefficiently, or (more common) as a result
 /// of other graph optimizations.
 /// This function preserves annotations and names of remaining nodes.
-pub(super) fn optimize_graph_dangling_nodes(graph: Graph, out_graph: Graph) -> Result<()> {
+pub(super) fn optimize_graph_dangling_nodes(
+    graph: Graph,
+    out_graph: Graph,
+) -> Result<ContextMappings> {
     graph.check_finalized()?;
     let mut useful_nodes = HashSet::<Node>::new();
     useful_nodes.insert(graph.get_output_node()?);
@@ -17,20 +21,14 @@ pub(super) fn optimize_graph_dangling_nodes(graph: Graph, out_graph: Graph) -> R
             }
         }
     }
-    let mut node_mapping = HashMap::<Node, Node>::new();
+    let mut mapping = ContextMappings::default();
     for node in graph.get_nodes() {
         if !node.get_operation().is_input() && !useful_nodes.contains(&node) {
             continue;
         }
         let mut deps = vec![];
         for dep in node.get_node_dependencies() {
-            let new_dep = node_mapping.get(&dep);
-            match new_dep {
-                Some(new_dep_node) => deps.push(new_dep_node.clone()),
-                None => {
-                    panic!("Logic error: node dependency not found");
-                }
-            }
+            deps.push(mapping.get_node(&dep));
         }
         if !node.get_graph_dependencies().is_empty() {
             return Err(runtime_error!(
@@ -46,9 +44,9 @@ pub(super) fn optimize_graph_dangling_nodes(graph: Graph, out_graph: Graph) -> R
         if node == graph.get_output_node()? {
             new_node.set_as_output()?;
         }
-        node_mapping.insert(node, new_node);
+        mapping.insert_node(node, new_node);
     }
-    Ok(())
+    Ok(mapping)
 }
 
 #[cfg(test)]

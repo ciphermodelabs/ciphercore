@@ -1,3 +1,4 @@
+use crate::custom_ops::ContextMappings;
 use crate::data_types::Type;
 use crate::data_values::Value;
 use crate::errors::Result;
@@ -38,11 +39,12 @@ pub(super) fn optimize_graph_constants(
     graph: Graph,
     out_graph: Graph,
     evaluator: &mut dyn Evaluator,
-) -> Result<()> {
+) -> Result<ContextMappings> {
     graph.check_finalized()?;
     let mut constant_cache = HashMap::<ConstantKey, Node>::new();
-    let mut node_mapping = HashMap::<Node, Node>::new();
+    let mut mapping = ContextMappings::default();
     let mut constant_nodes = HashMap::<Node, Value>::new();
+    let graph_output_node = graph.get_output_node()?;
     for node in graph.get_nodes() {
         if !node.get_graph_dependencies().is_empty() {
             return Err(runtime_error!(
@@ -82,13 +84,7 @@ pub(super) fn optimize_graph_constants(
                 let mut deps = vec![];
                 let mut is_const_node = op.is_const_optimizable()?;
                 for dep in node.get_node_dependencies() {
-                    let resolved_dep = node_mapping.get(&dep);
-                    match resolved_dep {
-                        Some(resolved_dep_node) => deps.push(resolved_dep_node.clone()),
-                        None => {
-                            panic!("Logic error: unprocessed node in dependencies");
-                        }
-                    };
+                    deps.push(mapping.get_node(&dep));
                     if !constant_nodes.contains_key(&dep) {
                         is_const_node = false;
                     }
@@ -118,12 +114,12 @@ pub(super) fn optimize_graph_constants(
             }
         };
 
-        if node == graph.get_output_node()? {
+        if node == graph_output_node {
             new_node.set_as_output()?;
         }
-        node_mapping.insert(node, new_node);
+        mapping.insert_node(node, new_node);
     }
-    Ok(())
+    Ok(mapping)
 }
 
 #[cfg(test)]

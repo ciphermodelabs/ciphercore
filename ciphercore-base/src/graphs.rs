@@ -3478,7 +3478,7 @@ impl Graph {
                 ));
             }
 
-            let size_checking_result = context.try_update_total_size(node.clone());
+            let size_checking_result = context.try_update_total_size(&node);
             if size_checking_result.is_err() {
                 self.remove_last_node(node)?;
                 return Err(size_checking_result.expect_err("Should not be here"));
@@ -3642,6 +3642,8 @@ pub enum NodeAnnotation {
     PRFMultiplication,
     PRFB2A,
     PRFTruncate,
+    // Used to correctly update `node_rev_mapping` in the `ContextMappings`
+    MpcCall,
 }
 
 #[doc(hidden)]
@@ -4431,7 +4433,7 @@ impl Context {
         self.body.borrow_mut().total_size_nodes = size;
     }
 
-    fn try_update_total_size(&self, node: Node) -> Result<()> {
+    fn try_update_total_size(&self, node: &Node) -> Result<()> {
         let node_type = match node.get_operation() {
             Operation::Input(input_type) => input_type,
             Operation::Constant(t, _) => t,
@@ -4874,6 +4876,7 @@ pub mod util {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::custom_ops::MappedContext;
     use crate::data_types::{
         array_type, scalar_type, tuple_type, vector_type, BIT, UINT16, UINT64,
     };
@@ -5820,7 +5823,7 @@ mod tests {
         input_party_map: Vec<Vec<IOStatus>>,
         output_parties: Vec<Vec<IOStatus>>,
         inline_config: InlineConfig,
-    ) -> Result<Context> {
+    ) -> Result<MappedContext> {
         prepare_for_mpc_evaluation(context, input_party_map, output_parties, inline_config)
     }
 

@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 type CachedResults = HashMap<(u64, u64), Type>;
 type CachedInstantiations = HashMap<Instantiation, Type>;
 
-fn get_node_global_id(node: Node) -> (u64, u64) {
+fn get_node_global_id(node: &Node) -> (u64, u64) {
     let graph_id = node.get_graph().get_id();
     let node_id = node.get_id();
     (graph_id, node_id)
@@ -534,12 +534,13 @@ impl TypeInferenceWorker {
         if !result.is_valid() {
             return Err(runtime_error!("Trying to register invalid type"));
         }
-        self.cached_results.insert(get_node_global_id(node), result);
+        self.cached_results
+            .insert(get_node_global_id(&node), result);
         Ok(())
     }
 
     pub(super) fn unregister_node(&mut self, node: Node) -> Result<()> {
-        self.cached_results.remove(&get_node_global_id(node));
+        self.cached_results.remove(&get_node_global_id(&node));
         Ok(())
     }
 
@@ -550,7 +551,7 @@ impl TypeInferenceWorker {
             ));
         }
 
-        let node_global_id = get_node_global_id(node.clone());
+        let node_global_id = get_node_global_id(node);
         Ok(self.cached_results.get(&node_global_id).cloned())
     }
 

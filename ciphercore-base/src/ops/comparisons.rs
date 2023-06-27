@@ -2349,7 +2349,8 @@ mod tests {
                 ..Default::default()
             };
             let instantiated_context = run_instantiation_pass(c)?.get_context();
-            let inlined_context = inline_operations(instantiated_context, inline_config.clone())?;
+            let inlined_context =
+                inline_operations(instantiated_context, inline_config.clone())?.get_context();
             let num_nodes = inlined_context.get_main_graph()?.get_num_nodes();
 
             assert!(num_nodes <= 200);

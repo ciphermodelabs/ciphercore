@@ -268,7 +268,8 @@ mod tests {
             ..Default::default()
         };
         let instantiated_context = run_instantiation_pass(c)?.get_context();
-        let inlined_context = inline_operations(instantiated_context, inline_config.clone())?;
+        let inlined_context =
+            inline_operations(instantiated_context, inline_config.clone())?.get_context();
         let _unused = prepare_for_mpc_evaluation(
             inlined_context,
             vec![vec![IOStatus::Shared]],

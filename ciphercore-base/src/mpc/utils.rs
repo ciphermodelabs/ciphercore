@@ -237,7 +237,8 @@ pub(super) fn convert_main_graph_to_mpc(
             default_mode: InlineMode::DepthOptimized(DepthOptimizationLevel::Default),
             ..Default::default()
         },
-    )?;
+    )?
+    .get_context();
 
     let mut context_map = ContextMappings::default();
 
@@ -353,7 +354,8 @@ mod tests {
                     default_mode: InlineMode::Simple,
                     ..Default::default()
                 },
-            )?;
+            )?
+            .get_context();
 
             let result_class = generate_equivalence_class(
                 inlined_c.clone(),

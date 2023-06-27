@@ -352,7 +352,7 @@ mod tests {
             }
         })?;
         let instantiated_context = run_instantiation_pass(c)?.get_context();
-        inline_operations(instantiated_context, inline_config)
+        Ok(inline_operations(instantiated_context, inline_config)?.get_context())
     }
 
     fn prepare_input(input: TypedValue, input_status: IOStatus) -> Result<Value> {

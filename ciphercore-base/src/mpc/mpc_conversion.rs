@@ -363,7 +363,8 @@ fn get_binary_adder_graph(context: Context, bits_t: Type) -> Result<Graph> {
             default_mode: InlineMode::DepthOptimized(DepthOptimizationLevel::Default),
             ..Default::default()
         },
-    )?;
+    )?
+    .get_context();
 
     let mut context_map = ContextMappings::default();
 
@@ -438,7 +439,13 @@ mod tests {
             g.add_node(vec![i], vec![], op)
         })?;
 
-        prepare_for_mpc_evaluation(c, vec![vec![party_id]], vec![output_parties], inline_config)
+        Ok(prepare_for_mpc_evaluation(
+            c,
+            vec![vec![party_id]],
+            vec![output_parties],
+            inline_config,
+        )?
+        .get_context())
     }
 
     fn prepare_input(

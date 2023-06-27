@@ -1,3 +1,4 @@
+use crate::custom_ops::{ContextMappings, MappedContext};
 use crate::errors::Result;
 use crate::evaluators::Evaluator;
 use crate::graphs::{create_context, Context, Graph, Operation};
@@ -12,33 +13,49 @@ use super::duplicates_optimizer::optimize_graph_duplicates;
 /// The graphs must be fully inlined.
 /// The primary targets of the optimizations here are to remove inefficiencies
 /// which happen because of the boilerplate from Iterate inlining.
-pub fn optimize_context<T: Evaluator>(context: Context, mut evaluator: T) -> Result<Context> {
+pub fn optimize_context<T: Evaluator>(context: Context, mut evaluator: T) -> Result<MappedContext> {
     context.check_finalized()?;
     evaluator.preprocess(context.clone())?;
+    let mut mappings = ContextMappings::default();
     let output_context = create_context()?;
     for graph in context.get_graphs() {
         let (_const_context, const_graph) = graph_in_new_context(graph.clone())?;
-        optimize_graph_constants(graph.clone(), const_graph.clone(), &mut evaluator)?;
+        let node_mapping1 =
+            optimize_graph_constants(graph.clone(), const_graph.clone(), &mut evaluator)?;
         const_graph.finalize()?;
 
         let (_meta_context, meta_graph) = graph_in_new_context(graph.clone())?;
-        optimize_graph_meta_operations(const_graph.clone(), meta_graph.clone())?;
+        let node_mapping2 =
+            optimize_graph_meta_operations(const_graph.clone(), meta_graph.clone())?;
         meta_graph.finalize()?;
 
         let (_dup_context, dup_graph) = graph_in_new_context(graph.clone())?;
-        optimize_graph_duplicates(meta_graph.clone(), dup_graph.clone())?;
+        let node_mapping3 = optimize_graph_duplicates(meta_graph.clone(), dup_graph.clone())?;
         dup_graph.finalize()?;
 
         let final_graph = add_graph_to_context(output_context.clone(), graph.clone())?;
-        optimize_graph_dangling_nodes(dup_graph.clone(), final_graph.clone())?;
+        let node_mapping4 = optimize_graph_dangling_nodes(dup_graph.clone(), final_graph.clone())?;
         final_graph.finalize()?;
 
         if graph == context.get_main_graph()? {
             final_graph.set_as_main()?;
         }
+
+        let mapping = ContextMappings::new_from_chain(&[
+            node_mapping1,
+            node_mapping2,
+            node_mapping3,
+            node_mapping4,
+        ]);
+        mappings.extend(mapping);
     }
     output_context.finalize()?;
-    Ok(output_context)
+
+    Ok(MappedContext::new_with_mappings(
+        context,
+        output_context,
+        mappings,
+    ))
 }
 
 fn add_graph_to_context(context: Context, source_graph: Graph) -> Result<Graph> {
@@ -105,7 +122,8 @@ mod tests {
                 n.add(g.constant(scalar_type(UINT64), Value::from_scalar(1, UINT64)?)?)
             })?;
 
-            let optimized_c = optimize_context(c.clone(), SimpleEvaluator::new(None)?)?;
+            let optimized_c =
+                optimize_context(c.clone(), SimpleEvaluator::new(None)?)?.get_context();
             stress_test(
                 c,
                 optimized_c,

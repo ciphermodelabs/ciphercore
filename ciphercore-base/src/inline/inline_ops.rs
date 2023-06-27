@@ -1,7 +1,7 @@
-use crate::custom_ops::ContextMappings;
+use crate::custom_ops::{ContextMappings, MappedContext};
 use crate::data_types::Type;
 use crate::errors::Result;
-use crate::graphs::{copy_node_name, create_context, Context};
+use crate::graphs::{copy_node_name, create_context, Context, NodeAnnotation};
 use crate::graphs::{Graph, GraphAnnotation, Node, Operation};
 use crate::inline::associative_iterate_inliner::inline_iterate_associative;
 use crate::inline::empty_state_iterate_inliner::inline_iterate_empty_state;
@@ -86,18 +86,22 @@ impl InliningContext {
         self.context_mapping.insert_graph(old_graph, new_graph)
     }
 
-    fn get_node(&self, node: Node) -> Node {
-        if self.ephemeral_context_mapping.contains_node(node.clone()) {
+    fn get_node(&self, node: &Node) -> Node {
+        if self.ephemeral_context_mapping.contains_node(node) {
             return self.ephemeral_context_mapping.get_node(node);
         }
         self.context_mapping.get_node(node)
     }
 
-    fn insert_node(&mut self, old_node: Node, new_node: Node) {
-        if self.context_mapping.contains_node(old_node.clone()) {
+    fn insert_node(&mut self, old_node: Node, new_node: Node, caller_node: &Option<Node>) {
+        if self.context_mapping.contains_node(&old_node) {
             self.ephemeral_context_mapping
                 .insert_node(old_node, new_node)
         } else {
+            if let Some(caller_node) = caller_node {
+                self.context_mapping
+                    .insert_node_to_rev_mapping(caller_node, &new_node);
+            }
             self.context_mapping.insert_node(old_node, new_node)
         }
     }
@@ -122,7 +126,12 @@ impl<'a> InlineState for InlineStateImpl<'a> {
     }
 
     fn recursively_inline_graph(&mut self, graph: Graph) -> Result<Node> {
-        recursively_inline_graph(graph, self.output_graph.clone(), self.inlining_context)
+        recursively_inline_graph(
+            graph,
+            self.output_graph.clone(),
+            self.inlining_context,
+            &None,
+        )
     }
 
     fn output_graph(&self) -> Graph {
@@ -136,7 +145,7 @@ impl<'a> InlineState for InlineStateImpl<'a> {
 /// recursively processed with the same config.
 /// The inlining process preserves node annotations and names of nodes in the main graph.
 /// The name of a to-be-inlined Call/Iterate node is passed to a node containing its output.
-pub fn inline_operations(context: Context, config: InlineConfig) -> Result<Context> {
+pub fn inline_operations(context: Context, config: InlineConfig) -> Result<MappedContext> {
     context.check_finalized()?;
     // First, collect all graphs reachable from the main graph which won't be
     // inlined.
@@ -166,7 +175,7 @@ pub fn inline_operations(context: Context, config: InlineConfig) -> Result<Conte
             }
             inlining_context.insert_graph(graph.clone(), new_graph.clone());
             let output_node =
-                recursively_inline_graph(graph, new_graph.clone(), &mut inlining_context)?;
+                recursively_inline_graph(graph, new_graph.clone(), &mut inlining_context, &None)?;
             new_graph.set_output_node(output_node)?;
             new_graph.finalize()?;
         }
@@ -174,7 +183,11 @@ pub fn inline_operations(context: Context, config: InlineConfig) -> Result<Conte
 
     output_context.set_main_graph(inlining_context.get_graph(main_graph))?;
     output_context.finalize()?;
-    Ok(output_context)
+    Ok(MappedContext::new_with_mappings(
+        context,
+        output_context,
+        inlining_context.context_mapping,
+    ))
 }
 
 /// Determines all subgraphs reachable from graph which won't be inlined.
@@ -210,6 +223,9 @@ fn recursively_inline_graph(
     graph: Graph,
     output_graph: Graph,
     inlining_context: &mut InliningContext,
+    // If the `caller_node` is set, it is used as the source node in `rev_node_mapping`
+    // in the `inline_context->context_mapping`
+    caller_node: &Option<Node>,
 ) -> Result<Node> {
     graph.check_finalized()?;
     if output_graph.is_finalized() {
@@ -222,7 +238,7 @@ fn recursively_inline_graph(
         // in another place. The former can only happen with ephemeral_context_mapping.
         if inlining_context
             .ephemeral_context_mapping
-            .contains_node(node.clone())
+            .contains_node(&node)
         {
             if !node.get_operation().is_input() {
                 panic!("Logic error: non-input node is already processed");
@@ -231,7 +247,7 @@ fn recursively_inline_graph(
         }
         let mut new_dependencies = vec![];
         for node_dep in node.get_node_dependencies() {
-            new_dependencies.push(inlining_context.get_node(node_dep));
+            new_dependencies.push(inlining_context.get_node(&node_dep));
         }
         let mode = get_mode_for_node(node.clone(), inlining_context.config.clone());
         if mode == InlineMode::Noop {
@@ -248,7 +264,7 @@ fn recursively_inline_graph(
                 node.get_operation(),
                 node.get_type()?,
             )?;
-            inlining_context.insert_node(node.clone(), new_node.clone());
+            inlining_context.insert_node(node.clone(), new_node.clone(), caller_node);
             let annotations = node.get_annotations()?;
             if !annotations.is_empty() {
                 for annotation in annotations {
@@ -264,18 +280,31 @@ fn recursively_inline_graph(
         }
         match node.get_operation() {
             Operation::Call => {
+                let annotations = node.get_annotations()?;
+                let mut caller_node = caller_node.clone();
+                if caller_node.is_none() {
+                    // In the case of inlining graph, which was generated during `compile_to_mpc_context`, we actually want to
+                    // save the mapping to the graph, which is being called (as it is the initial graph provided by the user).
+                    //
+                    // In all other cases we want to map all nodes to the `Call` node, which was probably generated from
+                    // some `CustomOp` present in the user's graph.
+                    if !annotations.contains(&NodeAnnotation::MpcCall) {
+                        caller_node = Some(node.clone());
+                    }
+                };
                 let output_node = inline_call(
                     node.get_graph_dependencies()[0].clone(),
                     output_graph.clone(),
                     new_dependencies,
                     mode,
                     inlining_context,
+                    &caller_node,
                 )?;
                 // Every node name in the main graph is copied
                 if is_main_graph {
                     copy_node_name(node.clone(), output_node.clone())?;
                 }
-                inlining_context.insert_node(node.clone(), output_node.clone());
+                inlining_context.insert_node(node.clone(), output_node.clone(), &caller_node);
             }
             Operation::Iterate => {
                 let output_node = inline_iterate(
@@ -289,7 +318,7 @@ fn recursively_inline_graph(
                 if is_main_graph {
                     copy_node_name(node.clone(), output_node.clone())?;
                 }
-                inlining_context.insert_node(node.clone(), output_node.clone());
+                inlining_context.insert_node(node.clone(), output_node.clone(), caller_node);
             }
             _ => {
                 return Err(runtime_error!(
@@ -298,7 +327,7 @@ fn recursively_inline_graph(
             }
         }
     }
-    Ok(inlining_context.get_node(graph.get_output_node()?))
+    Ok(inlining_context.get_node(&graph.get_output_node()?))
 }
 
 fn assign_input_nodes(
@@ -329,7 +358,7 @@ fn unassign_nodes(graph: Graph, inlining_context: &mut InliningContext) -> Resul
         // from the output node.
         if inlining_context
             .ephemeral_context_mapping
-            .contains_node(node.clone())
+            .contains_node(&node)
         {
             inlining_context.remove_ephemeral_node(node);
         }
@@ -343,11 +372,17 @@ fn inline_call(
     dependencies: Vec<Node>,
     mode: InlineMode,
     inlining_context: &mut InliningContext,
+    caller_node: &Option<Node>,
 ) -> Result<Node> {
     match mode {
         InlineMode::Simple | InlineMode::DepthOptimized(_) => {
             assign_input_nodes(graph.clone(), dependencies, inlining_context)?;
-            let result = recursively_inline_graph(graph.clone(), output_graph, inlining_context)?;
+            let result = recursively_inline_graph(
+                graph.clone(),
+                output_graph,
+                inlining_context,
+                caller_node,
+            )?;
             unassign_nodes(graph, inlining_context)?;
             Ok(result)
         }
@@ -491,7 +526,7 @@ mod tests {
                     ..Default::default()
                 },
             )?;
-            assert!(contexts_deep_equal(c.clone(), c_out.clone()));
+            assert!(contexts_deep_equal(c.clone(), c_out.get_context().clone()));
             assert_eq!(o2.clone().get_annotations()?.len(), 1);
             Ok(())
         }()
@@ -547,7 +582,8 @@ mod tests {
                     default_mode: InlineMode::Simple,
                     ..Default::default()
                 },
-            )?;
+            )?
+            .get_context();
             assert!(!contexts_deep_equal(c.clone(), c_out.clone()));
             assert!(c_out.is_finalized());
             assert_eq!(c_out.get_graphs().len(), 1);
@@ -620,7 +656,8 @@ mod tests {
                     default_mode: InlineMode::Simple,
                     ..Default::default()
                 },
-            )?;
+            )?
+            .get_context();
             verify_on_all_inputs(g2.clone(), c_out.get_main_graph()?)?;
             Ok(())
         }()
@@ -662,7 +699,8 @@ mod tests {
                     override_iterate_mode: Some(InlineMode::Noop),
                     ..Default::default()
                 },
-            )?;
+            )?
+            .get_context();
             verify_on_all_inputs(g1.clone(), c_out.get_main_graph()?)?;
             Ok(())
         }()
@@ -706,7 +744,8 @@ mod tests {
                     default_mode: mode,
                     ..Default::default()
                 },
-            )?;
+            )?
+            .get_context();
             assert_eq!(c_out.get_graphs().len(), 1);
             verify_on_all_inputs(g1.clone(), c_out.get_main_graph()?)?;
             // Check names
@@ -775,7 +814,8 @@ mod tests {
                     default_mode: mode,
                     ..Default::default()
                 },
-            )?;
+            )?
+            .get_context();
             assert_eq!(c_out.get_graphs().len(), 1);
             verify_on_all_inputs(g2.clone(), c_out.get_main_graph()?)?;
             Ok(())
@@ -867,7 +907,8 @@ mod tests {
                     default_mode: mode,
                     ..Default::default()
                 },
-            )?;
+            )?
+            .get_context();
             assert_eq!(c_out.get_graphs().len(), 1);
             verify_on_random_inputs(c.get_main_graph()?, c_out.get_main_graph()?)?;
             Ok(())
@@ -938,7 +979,8 @@ mod tests {
                     default_mode: mode,
                     ..Default::default()
                 },
-            )?;
+            )?
+            .get_context();
             assert_eq!(c_out.get_graphs().len(), 1);
             verify_on_all_inputs(g1.clone(), c_out.get_main_graph()?)?;
             Ok(())
@@ -1045,7 +1087,8 @@ mod tests {
                     default_mode: mode,
                     ..Default::default()
                 },
-            )?;
+            )?
+            .get_context();
             assert_eq!(c_out.get_graphs().len(), 1);
             verify_on_random_inputs(c.get_main_graph()?, c_out.get_main_graph()?)?;
             Ok(())
@@ -1106,7 +1149,8 @@ mod tests {
                     default_mode: mode,
                     ..Default::default()
                 },
-            )?;
+            )?
+            .get_context();
             assert_eq!(c_out.get_graphs().len(), 1);
             verify_on_random_inputs(c.get_main_graph()?, c_out.get_main_graph()?)?;
             Ok(())
@@ -1181,7 +1225,8 @@ mod tests {
                     default_mode: mode,
                     ..Default::default()
                 },
-            )?;
+            )?
+            .get_context();
             let inputs = vec![
                 Value::from_flattened_array(&x1, UINT64)?,
                 Value::from_flattened_array(&x2, UINT64)?,

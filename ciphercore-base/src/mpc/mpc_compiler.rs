@@ -469,8 +469,8 @@ pub(super) fn compile_to_mpc_graph(
                 let dependencies = node.get_node_dependencies();
                 let input0 = dependencies[0].clone();
                 let input1 = dependencies[1].clone();
-                let new_input0 = out_mapping.get_node(input0);
-                let new_input1 = out_mapping.get_node(input1);
+                let new_input0 = out_mapping.get_node(&input0);
+                let new_input1 = out_mapping.get_node(&input1);
                 match op.clone() {
                     Operation::Add => add_mpc(new_input0, new_input1)?,
                     Operation::Subtract => subtract_mpc(new_input0, new_input1)?,
@@ -485,8 +485,8 @@ pub(super) fn compile_to_mpc_graph(
                 let dependencies = node.get_node_dependencies();
                 let input0 = dependencies[0].clone();
                 let input1 = dependencies[1].clone();
-                let new_input0 = out_mapping.get_node(input0.clone());
-                let new_input1 = out_mapping.get_node(input1.clone());
+                let new_input0 = out_mapping.get_node(&input0);
+                let new_input1 = out_mapping.get_node(&input1);
                 // Don't reshare the product node.
                 // Let compiler to check the following nodes and decide.
                 general_multiply_mpc(new_input0, new_input1, op, prf_keys_mul.clone(), false)?
@@ -495,8 +495,8 @@ pub(super) fn compile_to_mpc_graph(
                 let dependencies = node.get_node_dependencies();
                 let input0 = dependencies[0].clone();
                 let input1 = dependencies[1].clone();
-                let new_input0 = out_mapping.get_node(input0.clone());
-                let new_input1 = out_mapping.get_node(input1.clone());
+                let new_input0 = out_mapping.get_node(&input0);
+                let new_input1 = out_mapping.get_node(&input1);
                 let mut headers_vec = vec![];
                 for headers_pair in headers {
                     headers_vec.push(headers_pair);
@@ -538,8 +538,8 @@ pub(super) fn compile_to_mpc_graph(
                 let dependencies = node.get_node_dependencies();
                 let input = dependencies[0].clone();
                 let permutation = dependencies[1].clone();
-                let new_input = out_mapping.get_node(input.clone());
-                let new_permutation = out_mapping.get_node(permutation.clone());
+                let new_input = out_mapping.get_node(&input);
+                let new_permutation = out_mapping.get_node(&permutation);
                 let custom_op = CustomOperation::new(ApplyPermutationMPC {
                     inverse_permutation,
                     reveal_output: false,
@@ -562,7 +562,7 @@ pub(super) fn compile_to_mpc_graph(
                 let dependencies = node.get_node_dependencies();
                 let mut mapped_dependencies = dependencies
                     .into_iter()
-                    .map(|d| out_mapping.get_node(d))
+                    .map(|d| out_mapping.get_node(&d))
                     .collect::<Vec<Node>>();
                 let custom_op = CustomOperation::new(RadixSortMPC::new(key));
                 if private_nodes.contains(&node) {
@@ -581,7 +581,7 @@ pub(super) fn compile_to_mpc_graph(
             Operation::Truncate(scale) => {
                 let dependencies = node.get_node_dependencies();
                 let input = dependencies[0].clone();
-                let new_input = out_mapping.get_node(input.clone());
+                let new_input = out_mapping.get_node(&input);
                 let custom_op = if scale.is_power_of_two() {
                     let k = scale.trailing_zeros() as u64;
                     CustomOperation::new(TruncateMPC2K { k })
@@ -620,7 +620,7 @@ pub(super) fn compile_to_mpc_graph(
             Operation::A2B => {
                 let dependencies = node.get_node_dependencies();
                 let input = dependencies[0].clone();
-                let new_input = out_mapping.get_node(input.clone());
+                let new_input = out_mapping.get_node(&input);
                 let custom_op = CustomOperation::new(A2BMPC {});
                 if private_nodes.contains(&input) {
                     // If input is private, the MPC protocol requires invoking PRFs.
@@ -639,7 +639,7 @@ pub(super) fn compile_to_mpc_graph(
             Operation::B2A(st) => {
                 let dependencies = node.get_node_dependencies();
                 let input = dependencies[0].clone();
-                let new_input = out_mapping.get_node(input.clone());
+                let new_input = out_mapping.get_node(&input);
                 let custom_op = CustomOperation::new(B2AMPC { st });
                 if private_nodes.contains(&input) {
                     // If input is private, the MPC protocol requires invoking PRFs.
@@ -677,15 +677,15 @@ pub(super) fn compile_to_mpc_graph(
             | Operation::Repeat(_) => {
                 let dependencies = node.get_node_dependencies();
                 let input = dependencies[0].clone();
-                let new_input = out_mapping.get_node(input.clone());
+                let new_input = out_mapping.get_node(&input);
                 apply_op(input, op, vec![new_input], dependencies)?
             }
             Operation::VectorGet => {
                 let dependencies = node.get_node_dependencies();
                 let vector = dependencies[0].clone();
                 let index = dependencies[1].clone();
-                let new_vector = out_mapping.get_node(vector.clone());
-                let new_index = out_mapping.get_node(index.clone());
+                let new_vector = out_mapping.get_node(&vector);
+                let new_index = out_mapping.get_node(&index);
 
                 apply_op(vector, op, vec![new_vector, new_index], vec![])?
             }
@@ -698,7 +698,7 @@ pub(super) fn compile_to_mpc_graph(
                 let dependencies = node.get_node_dependencies();
                 let new_dependencies: Vec<Node> = dependencies
                     .iter()
-                    .map(|x| out_mapping.get_node((*x).clone()))
+                    .map(|x| out_mapping.get_node(x))
                     .collect();
                 apply_op(node.clone(), op, new_dependencies, dependencies)?
             }
@@ -727,7 +727,7 @@ pub(super) fn compile_to_mpc_graph(
         out_mapping.insert_node(node, new_node);
     }
     let old_output_node = in_graph.get_output_node()?;
-    let output_node = out_mapping.get_node(old_output_node);
+    let output_node = out_mapping.get_node(&old_output_node);
     out_graph.set_output_node(output_node)?;
     out_graph.finalize()?;
     Ok(out_graph)
@@ -1017,6 +1017,7 @@ fn compile_to_mpc_context(
 
         // compute the MPC graph on the shared input
         let shared_result = new_graph.call(computation_graph.clone(), shared_input)?;
+        shared_result.add_annotation(NodeAnnotation::MpcCall)?;
         // reveal the output to the given parties
         let is_output_private = {
             let out_node = computation_graph.get_output_node()?;
@@ -1092,14 +1093,14 @@ fn compile_to_mpc(
     let main_graph = context_map.get_graph(old_main_graph);
     new_context.set_main_graph(main_graph)?;
     new_context.finalize()?;
-    let mut mapped_context = MappedContext::new(new_context);
+    let mut mapped_context = MappedContext::new(context, new_context);
     mapped_context.mappings = context_map;
     Ok(mapped_context)
 }
 
 /// Creates a new copy of an input context with PRF nodes containing globally unique inputs (iv's).
 /// These global inputs are taken from the set {1,2,...,n} where n is the total number of PRF nodes.
-pub fn uniquify_prf_id(context: Context) -> Result<Context> {
+pub fn uniquify_prf_id(context: Context) -> Result<MappedContext> {
     let new_context = create_context()?;
     let mut context_map = ContextMappings::default();
     let graphs = context.get_graphs();
@@ -1118,7 +1119,7 @@ pub fn uniquify_prf_id(context: Context) -> Result<Context> {
             let node_dependencies = node.get_node_dependencies();
             let new_node_dependencies: Vec<Node> = node_dependencies
                 .iter()
-                .map(|x| context_map.get_node((*x).clone()))
+                .map(|x| context_map.get_node(x))
                 .collect();
             let graph_dependencies = node.get_graph_dependencies();
             let new_graph_dependencies: Vec<Graph> = graph_dependencies
@@ -1139,7 +1140,7 @@ pub fn uniquify_prf_id(context: Context) -> Result<Context> {
             context_map.insert_node(node, new_node);
         }
         let output_node = graph.get_output_node()?;
-        let new_output_node = context_map.get_node(output_node);
+        let new_output_node = context_map.get_node(&output_node);
         out_graph.set_output_node(new_output_node)?;
         out_graph.finalize()?;
         context_map.insert_graph(graph, out_graph.clone());
@@ -1148,7 +1149,11 @@ pub fn uniquify_prf_id(context: Context) -> Result<Context> {
     let main_graph = context_map.get_graph(old_main_graph);
     new_context.set_main_graph(main_graph)?;
     new_context.finalize()?;
-    Ok(new_context)
+    Ok(MappedContext::new_with_mappings(
+        context,
+        new_context,
+        context_map,
+    ))
 }
 
 /// Converts a given inlined context to its counterpart that operates on MPC shares and is ready for evaluation.
@@ -1160,11 +1165,25 @@ pub fn prepare_for_mpc_evaluation(
     input_party_map: Vec<Vec<IOStatus>>,
     output_parties: Vec<Vec<IOStatus>>,
     inline_config: InlineConfig,
-) -> Result<Context> {
-    let mpc_context = compile_to_mpc(context, input_party_map, output_parties)?.get_context();
-    let instantiated_context = run_instantiation_pass(mpc_context)?.get_context();
-    let inlined_context = inline_operations(instantiated_context, inline_config)?;
-    uniquify_prf_id(inlined_context)
+) -> Result<MappedContext> {
+    let mpc_context = compile_to_mpc(context.clone(), input_party_map, output_parties)?;
+    let instantiated_context = run_instantiation_pass(mpc_context.get_context())?;
+    let inlined_context = inline_operations(instantiated_context.get_context(), inline_config)?;
+    let uniquified_prf_context = uniquify_prf_id(inlined_context.get_context())?;
+    let new_context = uniquified_prf_context.context.clone();
+
+    let mappings = ContextMappings::new_from_chain(&[
+        mpc_context.mappings,
+        instantiated_context.mappings,
+        inlined_context.mappings,
+        uniquified_prf_context.mappings,
+    ]);
+
+    Ok(MappedContext::new_with_mappings(
+        context,
+        new_context,
+        mappings,
+    ))
 }
 
 fn print_stats(graph: Graph) -> Result<()> {
@@ -1188,19 +1207,27 @@ pub fn prepare_context<E>(
     inline_config: InlineConfig,
     evaluator: E,
     print_unoptimized_stats: bool,
-) -> Result<Context>
+) -> Result<MappedContext>
 where
     E: Evaluator + Sized,
 {
     eprintln_or_log!("Instantiating...");
-    let context2 = run_instantiation_pass(context)?.get_context();
+    let mapped_context2 = run_instantiation_pass(context.clone())?;
     eprintln_or_log!("Inlining...");
-    let context3 = inline_operations(context2, inline_config)?;
+    let mapped_context3 = inline_operations(mapped_context2.get_context(), inline_config)?;
     if print_unoptimized_stats {
-        print_stats(context3.get_main_graph()?)?;
+        print_stats(mapped_context3.get_context().get_main_graph()?)?;
     }
     eprintln_or_log!("Optimizing...");
-    optimize_context(context3, evaluator)
+    let mapped_context4 = optimize_context(mapped_context3.get_context(), evaluator)?;
+
+    let mut res = MappedContext::new(context, mapped_context4.get_context());
+    res.mappings = ContextMappings::new_from_chain(&[
+        mapped_context2.mappings,
+        mapped_context3.mappings,
+        mapped_context4.mappings,
+    ]);
+    Ok(res)
 }
 
 /// Takes raw context (no inlining, etc.), and runs the whole pipeline (instantiation+inlining+MPC) on it,
@@ -1211,16 +1238,16 @@ pub fn compile_context<T, E>(
     output_parties: Vec<IOStatus>,
     inline_config: InlineConfig,
     get_evaluator: T,
-) -> Result<Context>
+) -> Result<MappedContext>
 where
     T: Fn() -> Result<E>,
     E: Evaluator + Sized,
 {
     let evaluator0 = get_evaluator()?;
-    let context4 = prepare_context(context, inline_config.clone(), evaluator0, true)?;
-    print_stats(context4.get_main_graph()?)?;
+    let context4 = prepare_context(context.clone(), inline_config.clone(), evaluator0, true)?;
+    print_stats(context4.get_context().get_main_graph()?)?;
     let mut number_of_inputs = 0;
-    for node in context4.get_main_graph()?.get_nodes() {
+    for node in context4.get_context().get_main_graph()?.get_nodes() {
         if node.get_operation().is_input() {
             number_of_inputs += 1;
         }
@@ -1235,17 +1262,25 @@ where
     eprintln_or_log!("input_parties = {input_parties:?}");
     eprintln_or_log!("output_parties = {output_parties:?}");
     let compiled_context0 = prepare_for_mpc_evaluation(
-        context4,
+        context4.get_context(),
         vec![input_parties],
         vec![output_parties],
         inline_config,
     )?;
-    print_stats(compiled_context0.get_main_graph()?)?;
+    print_stats(compiled_context0.get_context().get_main_graph()?)?;
 
     let evaluator1 = get_evaluator()?;
-    let compiled_context = optimize_context(compiled_context0, evaluator1)?;
-    print_stats(compiled_context.get_main_graph()?)?;
-    Ok(compiled_context)
+    let compiled_context = optimize_context(compiled_context0.get_context(), evaluator1)?;
+    print_stats(compiled_context.get_context().get_main_graph()?)?;
+    Ok(MappedContext::new_with_mappings(
+        context,
+        compiled_context.get_context(),
+        ContextMappings::new_from_chain(&[
+            context4.mappings,
+            compiled_context0.mappings,
+            compiled_context.mappings,
+        ]),
+    ))
 }
 
 #[cfg(test)]
@@ -1566,7 +1601,8 @@ mod tests {
             vec![input_party_map.clone()],
             vec![output_parties.clone()],
             inline_config,
-        )?;
+        )?
+        .get_context();
         let mpc_graph = mpc_c.get_main_graph()?;
         // Check names
         let mpc_node_result = mpc_c.retrieve_node(mpc_graph.clone(), "Plaintext operation");
@@ -1785,7 +1821,8 @@ mod tests {
             vec![input_party_map.clone()],
             vec![output_parties.clone()],
             inline_config,
-        )?;
+        )?
+        .get_context();
         let mpc_graph = mpc_c.get_main_graph()?;
         // Check names
         let mpc_node_result = mpc_c.retrieve_node(mpc_graph.clone(), "Plaintext operation");
@@ -2013,12 +2050,14 @@ mod tests {
                     default_mode: InlineMode::Simple,
                     ..Default::default()
                 },
-            )?;
+            )?
+            .get_context();
             assert!(check_prf_id(inlined_context.clone()).is_err());
 
-            let validated_instantiated_context = uniquify_prf_id(instantiated_context)?;
+            let validated_instantiated_context =
+                uniquify_prf_id(instantiated_context)?.get_context();
             assert!(check_prf_id(validated_instantiated_context).is_ok());
-            let validated_inlined_context = uniquify_prf_id(inlined_context)?;
+            let validated_inlined_context = uniquify_prf_id(inlined_context)?.get_context();
             assert!(check_prf_id(validated_inlined_context).is_ok());
             Ok(())
         }()
@@ -2057,7 +2096,7 @@ mod tests {
         c.finalize()?;
         assert!(check_prf_id(c.clone()).is_err());
 
-        let c = uniquify_prf_id(c)?;
+        let c = uniquify_prf_id(c)?.get_context();
         assert!(check_prf_id(c).is_ok());
         Ok(())
     }

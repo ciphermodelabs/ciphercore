@@ -664,7 +664,8 @@ mod tests {
             vec![input_party_map],
             vec![output_parties],
             inline_config,
-        )?;
+        )?
+        .get_context();
         // Check names
         let mpc_graph = mpc_c.get_main_graph()?;
         assert!(mpc_c.retrieve_node(mpc_graph.clone(), "Input 1").is_ok());
@@ -1153,7 +1154,8 @@ mod tests {
                 default_mode: InlineMode::Simple,
                 ..Default::default()
             },
-        )?;
+        )?
+        .get_context();
         let result_class = generate_equivalence_class(
             inlined_c.clone(),
             vec![vec![IOStatus::Shared, IOStatus::Shared]],
