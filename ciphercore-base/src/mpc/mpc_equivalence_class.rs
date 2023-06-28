@@ -199,7 +199,7 @@ fn unflatten_classes(
 //As the index of VectorGet depends on the input data, we cannot return a correct EquivalenceClasses without the knowledge of the input data. Thus, we restrict that all elements in the input Vector should have a same EquivalenceClasses.
 #[allow(dead_code)]
 pub(super) fn generate_equivalence_class(
-    context: Context,
+    context: &Context,
     input_party_map: Vec<Vec<IOStatus>>,
 ) -> Result<HashMap<(u64, u64), EquivalenceClasses>> {
     let mut equivalence_classes: HashMap<(u64, u64), EquivalenceClasses> = HashMap::new();
@@ -650,6 +650,8 @@ mod tests {
 
     type ClassesMap = HashMap<(u64, u64), EquivalenceClasses>;
 
+    // Seems like a bug in clippy?
+    #[allow(clippy::redundant_clone)]
     #[test]
     fn eq_equivalence_class_test() {
         let share0_12 = EquivalenceClasses::Atomic(vec![vec![0], vec![1, 2]]);
@@ -741,10 +743,10 @@ mod tests {
             g.input(tuple_type(vec![t.clone(), t.clone(), t.clone()]))?
                 .set_name("i1")?;
             g.input(t.clone())?.set_name("i2")?;
-            g.input(t.clone())?.set_name("i3")?;
+            g.input(t)?.set_name("i3")?;
 
             let result_classes = generate_equivalence_class(
-                c.clone(),
+                &c,
                 vec![vec![IOStatus::Shared, IOStatus::Public, IOStatus::Party(0)]],
             )?;
 
@@ -774,11 +776,11 @@ mod tests {
             let t = array_type(vec![10], BIT);
             let shared_tuple = g.input(tuple_type(vec![t.clone(), t.clone(), t.clone()]))?;
             let public_array = g.input(t.clone())?;
-            let private_array = g.input(t.clone())?;
+            let private_array = g.input(t)?;
 
-            g.stack(vec![public_array.clone(), private_array.clone()], vec![2])?
+            g.stack(vec![public_array.clone(), private_array], vec![2])?
                 .set_name("stack1")?;
-            g.stack(vec![public_array.clone(), public_array.clone()], vec![2])?
+            g.stack(vec![public_array.clone(), public_array], vec![2])?
                 .set_name("stack2")?;
             g.stack(
                 vec![shared_tuple.tuple_get(0)?, shared_tuple.tuple_get(1)?],
@@ -792,7 +794,7 @@ mod tests {
             .set_name("stack4")?;
 
             let result_classes = generate_equivalence_class(
-                c.clone(),
+                &c,
                 vec![vec![IOStatus::Shared, IOStatus::Public, IOStatus::Party(1)]],
             )?;
 
@@ -828,12 +830,10 @@ mod tests {
             let public_array = g.input(t.clone())?;
             let private_array = g.input(t.clone())?;
 
-            let vector1 =
-                g.create_vector(t.clone(), vec![public_array.clone(), private_array.clone()])?;
+            let vector1 = g.create_vector(t.clone(), vec![public_array.clone(), private_array])?;
             vector1.vector_to_array()?.set_name("vector_to_array1")?;
 
-            let vector2 =
-                g.create_vector(t.clone(), vec![public_array.clone(), public_array.clone()])?;
+            let vector2 = g.create_vector(t.clone(), vec![public_array.clone(), public_array])?;
             vector2.vector_to_array()?.set_name("vector_to_array2")?;
 
             let vector3 = g.create_vector(
@@ -843,13 +843,13 @@ mod tests {
             vector3.vector_to_array()?.set_name("vector_to_array3")?;
 
             let vector4 = g.create_vector(
-                t.clone(),
+                t,
                 vec![shared_tuple.tuple_get(1)?, shared_tuple.tuple_get(1)?],
             )?;
             vector4.vector_to_array()?.set_name("vector_to_array4")?;
 
             let result_classes = generate_equivalence_class(
-                c.clone(),
+                &c,
                 vec![vec![IOStatus::Shared, IOStatus::Public, IOStatus::Party(1)]],
             )?;
 
@@ -889,10 +889,7 @@ mod tests {
                 .reshape(vector_type(3, t.clone()))?
                 .set_name("reshape1")?;
             shared_tuple
-                .reshape(tuple_type(vec![
-                    t.clone(),
-                    tuple_type(vec![t.clone(), t.clone()]),
-                ]))?
+                .reshape(tuple_type(vec![t.clone(), tuple_type(vec![t.clone(), t])]))?
                 .set_name("reshape2")?;
             public_array
                 .reshape(array_type(vec![2, 5], BIT))?
@@ -902,7 +899,7 @@ mod tests {
                 .set_name("reshape4")?;
 
             let result_classes = generate_equivalence_class(
-                c.clone(),
+                &c,
                 vec![vec![IOStatus::Shared, IOStatus::Public, IOStatus::Party(1)]],
             )?;
 
@@ -931,6 +928,8 @@ mod tests {
         .unwrap();
     }
 
+    // Seems like a bug in clippy?
+    #[allow(clippy::redundant_clone)]
     #[test]
     fn test_generate_equivalence_class() {
         let context1 = || -> Result<Context> {
@@ -959,15 +958,15 @@ mod tests {
                 scalar_type(BIT),
             ]))?;
             i5.set_name("i5")?;
-            let add_op1 = g.tuple_get(i1.clone(), 0)?;
+            let add_op1 = g.tuple_get(i1, 0)?;
             add_op1.set_name("add_op1")?;
-            let add_op2 = g.tuple_get(i2.clone(), 1)?;
+            let add_op2 = g.tuple_get(i2, 1)?;
             add_op2.set_name("add_op2")?;
             let add1 = g.add(add_op1.clone(), add_op2.clone())?;
             add1.set_name("add1")?;
             let subtract = g.subtract(add_op1.clone(), add_op2.clone())?;
             subtract.set_name("subtract")?;
-            let multiply = g.multiply(add_op1.clone(), add_op2.clone())?;
+            let multiply = g.multiply(add_op1, add_op2)?;
             multiply.set_name("multiply")?;
 
             let rand1 = g.random(scalar_type(BIT))?;
@@ -978,7 +977,7 @@ mod tests {
                 array_type(vec![1, 1, 1, 1], BIT),
             ]))?;
             rand2.set_name("rand2")?;
-            let nop_node = g.nop(rand1.clone())?;
+            let nop_node = g.nop(rand1)?;
             nop_node.set_name("nop_node")?;
             nop_node.add_annotation(NodeAnnotation::Send(0, 1))?;
             nop_node.add_annotation(NodeAnnotation::Send(0, 2))?;
@@ -989,9 +988,9 @@ mod tests {
             )?;
             prf1.set_name("prf1")?;
 
-            let tuple_get1 = g.tuple_get(i5.clone(), 1)?;
+            let tuple_get1 = g.tuple_get(i5, 1)?;
             tuple_get1.set_name("tuple_get1")?;
-            let tuple_get2 = g.tuple_get(rand2.clone(), 0)?;
+            let tuple_get2 = g.tuple_get(rand2, 0)?;
             tuple_get2.set_name("tuple_get2")?;
             let create_tuple = g.create_tuple(vec![tuple_get1, tuple_get2])?;
             create_tuple.set_name("create_tuple")?;
@@ -1000,7 +999,7 @@ mod tests {
         .unwrap();
 
         let test_class1 = generate_equivalence_class(
-            context1.clone(),
+            &context1,
             vec![vec![
                 IOStatus::Shared,
                 IOStatus::Shared,
@@ -1239,24 +1238,24 @@ mod tests {
 
             let a2b = g.a2b(i3.clone())?;
             a2b.set_name("a2b")?;
-            let b2a = g.b2a(a2b.clone(), UINT64)?;
+            let b2a = g.b2a(a2b, UINT64)?;
             b2a.set_name("b2a")?;
 
-            let tuple_get1 = g.tuple_get(i1.clone(), 0)?;
+            let tuple_get1 = g.tuple_get(i1, 0)?;
             tuple_get1.set_name("tuple_get1")?;
-            let tuple_get2 = g.tuple_get(i2.clone(), 1)?;
+            let tuple_get2 = g.tuple_get(i2, 1)?;
             tuple_get2.set_name("tuple_get2")?;
 
-            let repeat = g.repeat(tuple_get1.clone(), 4)?;
+            let repeat = g.repeat(tuple_get1, 4)?;
             repeat.set_name("repeat")?;
 
-            let vector_to_array = g.vector_to_array(repeat.clone())?;
+            let vector_to_array = g.vector_to_array(repeat)?;
             vector_to_array.set_name("vector_to_array")?;
 
             let permuteaxes = g.permute_axes(vector_to_array.clone(), vec![0])?;
             permuteaxes.set_name("permuteaxes")?;
 
-            let reshape = g.reshape(permuteaxes.clone(), array_type(vec![2, 2], UINT64))?;
+            let reshape = g.reshape(permuteaxes, array_type(vec![2, 2], UINT64))?;
             reshape.set_name("reshape")?;
 
             let stack = g.stack(vec![reshape.clone(), reshape.clone()], vec![2, 1])?;
@@ -1269,7 +1268,7 @@ mod tests {
             trunc.set_name("trunc")?;
 
             let get_slice = g.get_slice(
-                trunc.clone(),
+                trunc,
                 vec![
                     SliceElement::Ellipsis,
                     SliceElement::SubArray(None, None, Some(-1)),
@@ -1280,49 +1279,45 @@ mod tests {
             let array_to_vector = g.array_to_vector(reshape.clone())?;
             array_to_vector.set_name("array_to_vector")?;
 
-            let zip = g.zip(vec![array_to_vector.clone(), array_to_vector.clone()])?;
+            let zip = g.zip(vec![array_to_vector.clone(), array_to_vector])?;
             zip.set_name("zip")?;
 
-            let vector_get = g.vector_get(zip.clone(), i3.clone())?;
+            let vector_get = g.vector_get(zip, i3.clone())?;
             vector_get.set_name("vector_get")?;
 
             let sum = g.sum(reshape.clone(), vec![0, 1])?;
             sum.set_name("sum")?;
 
-            let matmul = g.matmul(reshape.clone(), reshape.clone())?;
+            let matmul = g.matmul(reshape.clone(), reshape)?;
             matmul.set_name("matmul")?;
 
             let get = g.get(vector_to_array.clone(), vec![2])?;
             get.set_name("get")?;
 
-            let dot = g.dot(vector_to_array.clone(), vector_to_array.clone())?;
+            let dot = g.dot(vector_to_array.clone(), vector_to_array)?;
             dot.set_name("dot")?;
 
-            let create_named_tuple = g.create_named_tuple(vec![
-                ("dot".to_string(), dot.clone()),
-                ("get".to_string(), get.clone()),
-            ])?;
+            let create_named_tuple =
+                g.create_named_tuple(vec![("dot".to_string(), dot), ("get".to_string(), get)])?;
             create_named_tuple.set_name("create_named_tuple")?;
 
-            let named_tuple_get =
-                g.named_tuple_get(create_named_tuple.clone(), "get".to_string())?;
+            let named_tuple_get = g.named_tuple_get(create_named_tuple, "get".to_string())?;
             named_tuple_get.set_name("named_tuple_get")?;
 
-            let create_vector =
-                g.create_vector(scalar_type(UINT64), vec![i3.clone(), i3.clone()])?;
+            let create_vector = g.create_vector(scalar_type(UINT64), vec![i3.clone(), i3])?;
             create_vector.set_name("create_vector")?;
             Ok(context)
         }()
         .unwrap();
 
         let test_class2 = generate_equivalence_class(
-            context2.clone(),
+            &context2,
             vec![vec![IOStatus::Shared, IOStatus::Shared, IOStatus::Public]],
         )
         .unwrap();
 
         let class2_i1 = vector_class(vec![share0_class(), share1_class(), share2_class()]);
-        let class2_i2 = class_i1.clone();
+        let class2_i2 = class_i1;
         let class2_i3 = public_class();
         let class2_a2b = public_class();
         let class2_b2a = public_class();
@@ -1650,7 +1645,7 @@ mod tests {
         c.finalize().unwrap();
         {
             let compiled_c = prepare_for_mpc_evaluation(
-                c.clone(),
+                &c,
                 vec![vec![IOStatus::Shared, IOStatus::Public]],
                 vec![vec![]],
                 InlineConfig {
@@ -1661,7 +1656,7 @@ mod tests {
             .unwrap()
             .get_context();
             let test_class1 = generate_equivalence_class(
-                compiled_c.clone(),
+                &compiled_c,
                 vec![vec![IOStatus::Shared, IOStatus::Public]],
             )
             .unwrap();
@@ -1673,8 +1668,8 @@ mod tests {
             assert_eq!(*test_class1.get(&(0, 3)).unwrap(), share1_class());
             assert_eq!(*test_class1.get(&(0, 4)).unwrap(), private_class());
             assert_eq!(*test_class1.get(&(0, 5)).unwrap(), share2_class());
-            assert_eq!(*test_class1.get(&(0, 6)).unwrap(), shared.clone());
-            assert_eq!(*test_class1.get(&(0, 7)).unwrap(), shared.clone());
+            assert_eq!(*test_class1.get(&(0, 6)).unwrap(), shared);
+            assert_eq!(*test_class1.get(&(0, 7)).unwrap(), shared);
             assert_eq!(*test_class1.get(&(0, 8)).unwrap(), public_class());
             assert_eq!(*test_class1.get(&(0, 9)).unwrap(), share0_class());
             assert_eq!(*test_class1.get(&(0, 10)).unwrap(), share0_class());
@@ -1682,11 +1677,11 @@ mod tests {
             assert_eq!(*test_class1.get(&(0, 12)).unwrap(), share1_class());
             assert_eq!(*test_class1.get(&(0, 13)).unwrap(), share2_class());
             assert_eq!(*test_class1.get(&(0, 14)).unwrap(), share2_class());
-            assert_eq!(*test_class1.get(&(0, 15)).unwrap(), shared.clone());
+            assert_eq!(*test_class1.get(&(0, 15)).unwrap(), shared);
         }
         {
             let compiled_c = prepare_for_mpc_evaluation(
-                c.clone(),
+                &c,
                 vec![vec![IOStatus::Shared, IOStatus::Public]],
                 vec![vec![IOStatus::Party(0)]],
                 InlineConfig {
@@ -1697,7 +1692,7 @@ mod tests {
             .unwrap()
             .get_context();
             let test_class1 = generate_equivalence_class(
-                compiled_c.clone(),
+                &compiled_c,
                 vec![vec![IOStatus::Shared, IOStatus::Public]],
             )
             .unwrap();
@@ -1711,9 +1706,9 @@ mod tests {
             assert_eq!(*test_class1.get(&(0, 4)).unwrap(), private_class());
             assert_eq!(*test_class1.get(&(0, 5)).unwrap(), share2_class());
             // Create PRF triple
-            assert_eq!(*test_class1.get(&(0, 6)).unwrap(), shared.clone());
+            assert_eq!(*test_class1.get(&(0, 6)).unwrap(), shared);
             // Shared input
-            assert_eq!(*test_class1.get(&(0, 7)).unwrap(), shared.clone());
+            assert_eq!(*test_class1.get(&(0, 7)).unwrap(), shared);
             // Public input
             assert_eq!(*test_class1.get(&(0, 8)).unwrap(), public_class());
             // Extract share 0
@@ -1729,7 +1724,7 @@ mod tests {
             // Multiply share 2 by the public value
             assert_eq!(*test_class1.get(&(0, 14)).unwrap(), share2_class());
             // Shared product
-            assert_eq!(*test_class1.get(&(0, 15)).unwrap(), shared.clone());
+            assert_eq!(*test_class1.get(&(0, 15)).unwrap(), shared);
             // Extract shares
             assert_eq!(*test_class1.get(&(0, 16)).unwrap(), share0_class());
             assert_eq!(*test_class1.get(&(0, 17)).unwrap(), share1_class());
@@ -1746,7 +1741,7 @@ mod tests {
         }
         {
             let compiled_c = prepare_for_mpc_evaluation(
-                c.clone(),
+                &c,
                 vec![vec![IOStatus::Shared, IOStatus::Public]],
                 vec![vec![IOStatus::Party(0), IOStatus::Party(2)]],
                 InlineConfig {
@@ -1757,7 +1752,7 @@ mod tests {
             .unwrap()
             .get_context();
             let test_class1 = generate_equivalence_class(
-                compiled_c.clone(),
+                &compiled_c,
                 vec![vec![IOStatus::Shared, IOStatus::Public]],
             )
             .unwrap();
@@ -1771,9 +1766,9 @@ mod tests {
             assert_eq!(*test_class1.get(&(0, 4)).unwrap(), private_class());
             assert_eq!(*test_class1.get(&(0, 5)).unwrap(), share2_class());
             // Create PRF triple
-            assert_eq!(*test_class1.get(&(0, 6)).unwrap(), shared.clone());
+            assert_eq!(*test_class1.get(&(0, 6)).unwrap(), shared);
             // Shared input
-            assert_eq!(*test_class1.get(&(0, 7)).unwrap(), shared.clone());
+            assert_eq!(*test_class1.get(&(0, 7)).unwrap(), shared);
             // Public input
             assert_eq!(*test_class1.get(&(0, 8)).unwrap(), public_class());
             // Extract share 0
@@ -1789,7 +1784,7 @@ mod tests {
             // Multiply share 2 by the public value
             assert_eq!(*test_class1.get(&(0, 14)).unwrap(), share2_class());
             // Shared product
-            assert_eq!(*test_class1.get(&(0, 15)).unwrap(), shared.clone());
+            assert_eq!(*test_class1.get(&(0, 15)).unwrap(), shared);
             // Extract shares
             assert_eq!(*test_class1.get(&(0, 16)).unwrap(), share0_class());
             assert_eq!(*test_class1.get(&(0, 17)).unwrap(), share1_class());
@@ -1821,40 +1816,30 @@ mod tests {
                 scalar_type(BIT),
                 scalar_type(BIT),
             ]))?;
-            let nop_node = g.nop(i1.clone())?;
+            let nop_node = g.nop(i1)?;
             nop_node.add_annotation(NodeAnnotation::Send(0, 1))?;
             Ok(context)
         }()
         .unwrap();
-        let test_class1 = generate_equivalence_class(
-            context1.clone(),
-            vec![vec![IOStatus::Shared, IOStatus::Shared]],
-        )
-        .unwrap();
+        let test_class1 =
+            generate_equivalence_class(&context1, vec![vec![IOStatus::Shared, IOStatus::Shared]])
+                .unwrap();
 
         let context2 = || -> Result<Context> {
             let context = create_unchecked_context()?;
             let g = context.create_graph()?;
             let i1 = g.random(scalar_type(BIT))?;
-            let nop_node = g.nop(i1.clone())?;
+            let nop_node = g.nop(i1)?;
             nop_node.add_annotation(NodeAnnotation::Send(0, 1))?;
             Ok(context)
         }()
         .unwrap();
-        let test_class2 = generate_equivalence_class(
-            context2.clone(),
-            vec![vec![IOStatus::Shared, IOStatus::Shared]],
-        )
-        .unwrap();
+        let test_class2 =
+            generate_equivalence_class(&context2, vec![vec![IOStatus::Shared, IOStatus::Shared]])
+                .unwrap();
 
-        assert_eq!(
-            helper_equivalence_class(context1.clone(), &test_class1).unwrap(),
-            false
-        );
-        assert_eq!(
-            helper_equivalence_class(context2.clone(), &test_class2).unwrap(),
-            true
-        );
+        assert!(!helper_equivalence_class(context1, &test_class1).unwrap());
+        assert!(helper_equivalence_class(context2, &test_class2).unwrap());
     }
 
     fn helper_equivalence_class(

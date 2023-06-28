@@ -146,7 +146,7 @@ mod tests {
 
     #[test]
     fn test_approx_exp_scalar() {
-        for i in vec![-10000, -1000, -100, -1, 0, 1, 100, 1000, 10000] {
+        for i in [-10000, -1000, -100, -1, 0, 1, 100, 1000, 10000] {
             let expected = (((i as f64) / 1024.0).exp() * 1024.0) as i64;
             let actual = scalar_helper(i, 10).unwrap();
             let relative_error = ((expected - actual).abs() as f64)

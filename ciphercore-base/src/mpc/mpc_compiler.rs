@@ -1161,14 +1161,14 @@ pub fn uniquify_prf_id(context: Context) -> Result<MappedContext> {
 /// After inlining this function provides a unique input to every PRF node.
 /// The resulting context preserves only the names of input nodes.
 pub fn prepare_for_mpc_evaluation(
-    context: Context,
+    context: &Context,
     input_party_map: Vec<Vec<IOStatus>>,
     output_parties: Vec<Vec<IOStatus>>,
     inline_config: InlineConfig,
 ) -> Result<MappedContext> {
     let mpc_context = compile_to_mpc(context.clone(), input_party_map, output_parties)?;
     let instantiated_context = run_instantiation_pass(mpc_context.get_context())?;
-    let inlined_context = inline_operations(instantiated_context.get_context(), inline_config)?;
+    let inlined_context = inline_operations(&instantiated_context.get_context(), inline_config)?;
     let uniquified_prf_context = uniquify_prf_id(inlined_context.get_context())?;
     let new_context = uniquified_prf_context.context.clone();
 
@@ -1180,7 +1180,7 @@ pub fn prepare_for_mpc_evaluation(
     ]);
 
     Ok(MappedContext::new_with_mappings(
-        context,
+        context.clone(),
         new_context,
         mappings,
     ))
@@ -1214,7 +1214,7 @@ where
     eprintln_or_log!("Instantiating...");
     let mapped_context2 = run_instantiation_pass(context.clone())?;
     eprintln_or_log!("Inlining...");
-    let mapped_context3 = inline_operations(mapped_context2.get_context(), inline_config)?;
+    let mapped_context3 = inline_operations(&mapped_context2.get_context(), inline_config)?;
     if print_unoptimized_stats {
         print_stats(mapped_context3.get_context().get_main_graph()?)?;
     }
@@ -1262,7 +1262,7 @@ where
     eprintln_or_log!("input_parties = {input_parties:?}");
     eprintln_or_log!("output_parties = {output_parties:?}");
     let compiled_context0 = prepare_for_mpc_evaluation(
-        context4.get_context(),
+        &context4.get_context(),
         vec![input_parties],
         vec![output_parties],
         inline_config,
@@ -1329,7 +1329,7 @@ mod tests {
             )
             .is_err());
             assert!(compile_to_mpc(
-                c.clone(),
+                c,
                 vec![vec![IOStatus::Public]],
                 vec![vec![IOStatus::Shared]]
             )
@@ -1341,7 +1341,7 @@ mod tests {
 
     fn reveal_private_value(value: Value, t: Type) -> Result<Value> {
         let shares = value.to_vector()?;
-        if matches!(t.clone(), Type::Array(_, _) | Type::Scalar(_)) {
+        if matches!(t, Type::Array(_, _) | Type::Scalar(_)) {
             let mut res = Value::zero_of_type(t.clone());
             for share in shares {
                 res = evaluate_add_subtract_multiply(
@@ -1356,7 +1356,7 @@ mod tests {
             return Ok(res);
         }
 
-        let vector_types = get_types_vector(t.clone())?;
+        let vector_types = get_types_vector(t)?;
         let mut shares_vec = vec![];
         for i in 0..PARTIES {
             shares_vec.push(shares[i].to_vector()?);
@@ -1390,7 +1390,7 @@ mod tests {
                 let mut inputs = vec![];
                 if input_status == IOStatus::Shared {
                     let tuple_t = tuple_type(vec![t.clone(); PARTIES]);
-                    inputs.push(prng.get_random_value(tuple_t.clone())?);
+                    inputs.push(prng.get_random_value(tuple_t)?);
                 } else {
                     inputs.push(prng.get_random_value(t.clone())?);
                 }
@@ -1409,19 +1409,19 @@ mod tests {
                     // check that output is a sharing of expected
                     if output_parties.is_empty() {
                         let revealed_output = reveal_private_value(output.clone(), t.clone())?;
-                        assert!(output.check_type(tuple_type(vec![t.clone(); PARTIES]))?);
+                        assert!(output.check_type(tuple_type(vec![t; PARTIES]))?);
                         assert_eq!(revealed_output, expected);
                     } else {
                         // check that output is of the right type
-                        assert!(output.check_type(t.clone())?);
-                        assert_eq!(output, expected.clone());
+                        assert!(output.check_type(t)?);
+                        assert_eq!(output, expected);
                     }
                     assert!(computation_output_annotations.contains(&NodeAnnotation::Private));
                 } else {
                     // public input must be shared
                     if output_parties.is_empty() {
                         let revealed_output = reveal_private_value(output.clone(), t.clone())?;
-                        assert!(output.check_type(tuple_type(vec![t.clone(); PARTIES]))?);
+                        assert!(output.check_type(tuple_type(vec![t; PARTIES]))?);
                         assert_eq!(revealed_output, inputs[0]);
                         // check that the final output is private (since it's shared)
                         let output_annotations = mpc_graph.get_output_node()?.get_annotations()?;
@@ -1472,7 +1472,7 @@ mod tests {
     fn prepare_private_value(value: Value, t: Type) -> Result<Vec<Value>> {
         // private shares of value are generated as
         // value = (value + 2, -1, -1)
-        if let Type::Scalar(st) | Type::Array(_, st) = t.clone() {
+        if let Type::Scalar(st) | Type::Array(_, st) = t {
             let mut res = vec![];
             let zero = Value::zero_of_type(t.clone());
             let one = Value::from_scalar(1, st)?;
@@ -1497,7 +1497,7 @@ mod tests {
             return Ok(res);
         }
 
-        let vector_types = get_types_vector(t.clone())?;
+        let vector_types = get_types_vector(t)?;
         let mut shares = vec![vec![]; PARTIES];
         value.access_vector(|vector_values| {
             for i in 0..vector_values.len() {
@@ -1538,7 +1538,7 @@ mod tests {
             mpc_inputs.push(prepare_value(
                 random_value,
                 input_types[i].clone(),
-                is_input_shared[i].clone(),
+                is_input_shared[i],
             )?);
         }
         Ok((plain_inputs, mpc_inputs))
@@ -1552,16 +1552,16 @@ mod tests {
         output_parties: Vec<IOStatus>,
         t: Type,
     ) -> Result<()> {
-        let plain_output = random_evaluate(plain_graph.clone(), plain_inputs)?;
-        let mpc_output = random_evaluate(mpc_graph.clone(), mpc_inputs)?;
+        let plain_output = random_evaluate(plain_graph, plain_inputs)?;
+        let mpc_output = random_evaluate(mpc_graph, mpc_inputs)?;
 
         if output_parties.is_empty() {
             // check that mpc_output is a sharing of plain_output
             assert!(mpc_output.check_type(tuple_type(vec![t.clone(); PARTIES]))?);
-            let value_revealed = reveal_private_value(mpc_output.clone(), t.clone())?;
+            let value_revealed = reveal_private_value(mpc_output, t)?;
             assert_eq!(value_revealed, plain_output);
         } else {
-            assert!(mpc_output.check_type(t.clone())?);
+            assert!(mpc_output.check_type(t)?);
             assert_eq!(mpc_output, plain_output);
         }
 
@@ -1597,7 +1597,7 @@ mod tests {
             ..Default::default()
         };
         let mpc_c = prepare_for_mpc_evaluation(
-            c.clone(),
+            &c,
             vec![input_party_map.clone()],
             vec![output_parties.clone()],
             inline_config,
@@ -1617,7 +1617,7 @@ mod tests {
             .iter()
             .map(|x| *x == IOStatus::Shared)
             .collect();
-        let (plain_inputs, mpc_inputs) = prepare_input(input_types.clone(), is_input_shared)?;
+        let (plain_inputs, mpc_inputs) = prepare_input(input_types, is_input_shared)?;
 
         check_output(
             g,
@@ -1807,7 +1807,7 @@ mod tests {
         let o = g.add_node(input_nodes, vec![], resolved_op)?;
         o.set_name("Plaintext operation")?;
         let output_type = o.get_type()?;
-        g.set_output_node(o.clone())?;
+        g.set_output_node(o)?;
         g.finalize()?;
         c.set_main_graph(g.clone())?;
         c.finalize()?;
@@ -1817,7 +1817,7 @@ mod tests {
             ..Default::default()
         };
         let mpc_c = prepare_for_mpc_evaluation(
-            c.clone(),
+            &c,
             vec![input_party_map.clone()],
             vec![output_parties.clone()],
             inline_config,
@@ -1837,7 +1837,7 @@ mod tests {
             .iter()
             .map(|x| *x == IOStatus::Shared)
             .collect();
-        let (plain_inputs, mpc_inputs) = prepare_input(input_types.clone(), is_input_shared)?;
+        let (plain_inputs, mpc_inputs) = prepare_input(input_types, is_input_shared)?;
 
         check_output(
             g,
@@ -1931,8 +1931,8 @@ mod tests {
             true,
         )?;
         helper_create_ops(
-            input_types.clone(),
-            op.clone(),
+            input_types,
+            op,
             vec![IOStatus::Public, IOStatus::Public, IOStatus::Public],
             vec![],
             true,
@@ -1975,12 +1975,12 @@ mod tests {
     #[test]
     fn test_zip() {
         let t = vector_type(10, array_type(vec![4, 3], INT32));
-        test_helper_create_ops(vec![t.clone(); 3], Operation::Zip).unwrap();
+        test_helper_create_ops(vec![t; 3], Operation::Zip).unwrap();
     }
     #[test]
     fn test_stack() {
         let t = array_type(vec![10, 128], INT32);
-        test_helper_create_ops(vec![t.clone(); 3], Operation::Stack(vec![3])).unwrap();
+        test_helper_create_ops(vec![t; 3], Operation::Stack(vec![3])).unwrap();
     }
     #[test]
     fn test_concatenate() {
@@ -2045,7 +2045,7 @@ mod tests {
             let instantiated_context = run_instantiation_pass(mpc_c)?.get_context();
             assert!(check_prf_id(instantiated_context.clone()).is_err());
             let inlined_context = inline_operations(
-                instantiated_context.clone(),
+                &instantiated_context,
                 InlineConfig {
                     default_mode: InlineMode::Simple,
                     ..Default::default()
@@ -2124,12 +2124,12 @@ mod tests {
             let shared_nodes = propagate_private_annotations(g.clone(), vec![false, true])?.0;
             let reshared_nodes = get_nodes_to_reshare(&g, &shared_nodes)?;
 
-            assert!(reshared_nodes.len() == 0);
+            assert!(reshared_nodes.is_empty());
 
             let shared_nodes = propagate_private_annotations(g.clone(), vec![false, false])?.0;
             let reshared_nodes = get_nodes_to_reshare(&g, &shared_nodes)?;
 
-            assert!(reshared_nodes.len() == 0);
+            assert!(reshared_nodes.is_empty());
         }
 
         {

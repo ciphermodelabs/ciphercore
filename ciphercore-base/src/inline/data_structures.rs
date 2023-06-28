@@ -139,7 +139,7 @@ mod tests {
 
     impl CombineOp<u64> for IntCombiner {
         fn combine(&mut self, arg1: u64, arg2: u64) -> Result<u64> {
-            return Ok(arg1 + arg2);
+            Ok(arg1 + arg2)
         }
     }
 
@@ -191,7 +191,7 @@ mod tests {
     impl CombineOp<u64> for TrackingCombiner {
         fn combine(&mut self, arg1: u64, arg2: u64) -> Result<u64> {
             self.total_calls += 1;
-            return Ok(std::cmp::max(arg1, arg2) + 1); // Return new depth.
+            Ok(std::cmp::max(arg1, arg2) + 1) // Return new depth.
         }
     }
 
@@ -203,7 +203,7 @@ mod tests {
                 let mut combiner = TrackingCombiner { total_calls: 0 };
                 let depth = log_depth_sum(&v, &mut combiner).unwrap();
                 assert!(depth <= (len as f64).log(2.0).ceil() as u64);
-                assert!(combiner.total_calls <= len as u64 - 1);
+                assert!(combiner.total_calls < len as u64);
             }
             {
                 let mut combiner = TrackingCombiner { total_calls: 0 };

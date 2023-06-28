@@ -40,23 +40,18 @@ mod tests {
     fn test_simple_iterate() {
         || -> Result<()> {
             let c = create_context()?;
-            let (g, initial_state, inputs_node, input_vals) = build_test_data(c.clone(), UINT64)?;
+            let (g, initial_state, inputs_node, input_vals) = build_test_data(&c, UINT64)?;
             let mut inliner = MockInlineState {
                 fake_graph: g.clone(),
                 inputs: vec![],
                 inline_graph_calls: vec![],
                 returned_nodes: vec![],
             };
-            let res = inline_iterate_simple(
-                g.clone(),
-                initial_state.clone(),
-                inputs_node.clone(),
-                &mut inliner,
-            )?;
+            let res = inline_iterate_simple(g, initial_state.clone(), inputs_node, &mut inliner)?;
             assert_eq!(inliner.inputs.len(), 5);
             assert_eq!(inliner.inline_graph_calls.len(), 5);
             assert_eq!(inliner.returned_nodes.len(), 5);
-            assert!(initial_state.clone() == inliner.inputs[0][0]);
+            assert!(initial_state == inliner.inputs[0][0]);
             assert!(resolve_tuple_get(res.0) == inliner.returned_nodes[4][0]);
             for i in 0..input_vals.len() {
                 assert!(resolve_tuple_get(res.1[i].clone()) == inliner.returned_nodes[i][1]);

@@ -114,9 +114,9 @@ mod tests {
             c.set_main_graph(g.clone())?;
             c.finalize()?;
             let mapped_c = run_instantiation_pass(c)?;
-            for flag in vec![0, 1] {
-                for x1 in vec![0, 1] {
-                    for x0 in vec![0, 1] {
+            for flag in [0, 1] {
+                for x1 in [0, 1] {
+                    for x0 in [0, 1] {
                         let expected_result = if flag != 0 { x1 } else { x0 };
                         let result = random_evaluate(
                             mapped_c.mappings.get_graph(g.clone()),

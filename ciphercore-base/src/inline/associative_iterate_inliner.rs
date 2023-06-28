@@ -108,20 +108,20 @@ mod tests {
     fn test_associative_iterate_empty_output() {
         || -> Result<()> {
             let c = create_context()?;
-            let (g, initial_state, inputs_node, _input_vals) = build_test_data(c.clone(), UINT64)?;
+            let (g, initial_state, inputs_node, _input_vals) = build_test_data(&c, UINT64)?;
             let mut inliner = MockInlineState {
-                fake_graph: g.clone(),
+                fake_graph: g,
                 inputs: vec![],
                 inline_graph_calls: vec![],
                 returned_nodes: vec![],
             };
             let g_inline = c.create_graph()?;
             let empty = g_inline.create_tuple(vec![])?;
-            g_inline.set_output_node(g_inline.create_tuple(vec![empty.clone(), empty.clone()])?)?;
+            g_inline.set_output_node(g_inline.create_tuple(vec![empty.clone(), empty])?)?;
             let res = inline_iterate_associative(
-                g_inline.clone(),
+                g_inline,
                 initial_state.clone(),
-                inputs_node.clone(),
+                inputs_node,
                 DepthOptimizationLevel::Extreme,
                 &mut inliner,
             )?;
@@ -130,7 +130,7 @@ mod tests {
             assert_eq!(inliner.returned_nodes.len(), 5);
             // We have 5 elements + initial state (0), so the edges of the tree should be:
             // 0-1, 2-3, 4-5, (0+1)-(2+3), (0+1+2+3)-(4+5).
-            assert!(initial_state.clone() == inliner.inputs[0][0]);
+            assert!(initial_state == inliner.inputs[0][0]);
             assert!(
                 inliner.returned_nodes[0][0] == resolve_tuple_get(inliner.inputs[3][0].clone())
             );
@@ -154,7 +154,7 @@ mod tests {
         || -> Result<()> {
             let c = simple_context(|g| {
                 let i = g.input(scalar_type(BIT))?;
-                g.create_tuple(vec![i.clone(), i.clone()])
+                g.create_tuple(vec![i.clone(), i])
             })?;
             let g = c.get_main_graph()?;
             let output_c = create_context()?;
@@ -162,15 +162,15 @@ mod tests {
             let vec = output_g.create_vector(scalar_type(BIT), vec![])?;
             let s0 = output_g.input(scalar_type(BIT))?;
             let mut inliner = MockInlineState {
-                fake_graph: output_g.clone(),
+                fake_graph: output_g,
                 inputs: vec![],
                 inline_graph_calls: vec![],
                 returned_nodes: vec![],
             };
             let res = inline_iterate_associative(
-                g.clone(),
-                s0.clone(),
-                vec.clone(),
+                g,
+                s0,
+                vec,
                 DepthOptimizationLevel::Extreme,
                 &mut inliner,
             )?;
@@ -185,9 +185,9 @@ mod tests {
     fn test_associative_iterate_nonempty_output_min_depth() {
         || -> Result<()> {
             let c = create_context()?;
-            let (g, initial_state, inputs_node, _input_vals) = build_test_data(c.clone(), UINT64)?;
+            let (g, initial_state, inputs_node, _input_vals) = build_test_data(&c, UINT64)?;
             let mut inliner = MockInlineState {
-                fake_graph: g.clone(),
+                fake_graph: g,
                 inputs: vec![],
                 inline_graph_calls: vec![],
                 returned_nodes: vec![],
@@ -195,12 +195,12 @@ mod tests {
             let g_inline = c.create_graph()?;
             let inp = g_inline.input(scalar_type(BIT))?;
             g_inline
-                .create_tuple(vec![inp.clone(), inp.clone()])?
+                .create_tuple(vec![inp.clone(), inp])?
                 .set_as_output()?;
             inline_iterate_associative(
-                g_inline.clone(),
-                initial_state.clone(),
-                inputs_node.clone(),
+                g_inline,
+                initial_state,
+                inputs_node,
                 DepthOptimizationLevel::Extreme,
                 &mut inliner,
             )?;
@@ -214,9 +214,9 @@ mod tests {
     fn test_associative_iterate_nonempty_output_max_depth() {
         || -> Result<()> {
             let c = create_context()?;
-            let (g, initial_state, inputs_node, _input_vals) = build_test_data(c.clone(), UINT64)?;
+            let (g, initial_state, inputs_node, _input_vals) = build_test_data(&c, UINT64)?;
             let mut inliner = MockInlineState {
-                fake_graph: g.clone(),
+                fake_graph: g,
                 inputs: vec![],
                 inline_graph_calls: vec![],
                 returned_nodes: vec![],
@@ -224,12 +224,12 @@ mod tests {
             let g_inline = c.create_graph()?;
             let inp = g_inline.input(scalar_type(BIT))?;
             g_inline
-                .create_tuple(vec![inp.clone(), inp.clone()])?
+                .create_tuple(vec![inp.clone(), inp])?
                 .set_as_output()?;
             inline_iterate_associative(
-                g_inline.clone(),
-                initial_state.clone(),
-                inputs_node.clone(),
+                g_inline,
+                initial_state,
+                inputs_node,
                 DepthOptimizationLevel::Default,
                 &mut inliner,
             )?;

@@ -27,7 +27,7 @@ pub struct TypeInferenceWorker {
 }
 
 #[doc(hidden)]
-pub fn create_type_inference_worker(context: Context) -> TypeInferenceWorker {
+pub fn create_type_inference_worker(context: &Context) -> TypeInferenceWorker {
     TypeInferenceWorker {
         context: context.downgrade(),
         cached_results: CachedResults::new(),
@@ -1682,10 +1682,10 @@ mod tests {
     fn test_malformed() {
         let context1 = create_unchecked_context().unwrap();
         let context2 = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context1.clone());
+        let mut worker = create_type_inference_worker(&context1);
         let graph = context2.create_graph().unwrap();
         let t = scalar_type(BIT);
-        let node = graph.input(t.clone()).unwrap();
+        let node = graph.input(t).unwrap();
         let e = worker.process_node(node);
         assert!(e.is_err());
     }
@@ -1693,17 +1693,17 @@ mod tests {
     #[test]
     fn test_input() {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
         let t = scalar_type(BIT);
         let node = graph.input(t.clone()).unwrap();
-        assert_eq!(worker.process_node(node).unwrap(), t.clone());
+        assert_eq!(worker.process_node(node).unwrap(), t);
     }
 
     #[test]
     fn test_zeros_and_ones() -> Result<()> {
         let context = create_unchecked_context()?;
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph()?;
         assert_eq!(
             worker.process_node(graph.zeros(scalar_type(UINT128))?)?,
@@ -1730,23 +1730,23 @@ mod tests {
     #[test]
     fn test_add() {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
         let i1 = graph.input(array_type(vec![2, 1, 5], BIT)).unwrap();
         let i2 = graph.input(array_type(vec![7, 1], BIT)).unwrap();
-        let o = graph.add(i1.clone(), i2.clone()).unwrap();
-        let t = worker.process_node(o.clone()).unwrap();
+        let o = graph.add(i1, i2).unwrap();
+        let t = worker.process_node(o).unwrap();
         assert_eq!(t, array_type(vec![2, 7, 5], BIT));
     }
 
     fn mixed_multiply_helper(t0: Type, t1: Type, expected: Option<Type>) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
         let i1 = graph.input(t0).unwrap();
         let i2 = graph.input(t1).unwrap();
-        let o = graph.mixed_multiply(i1.clone(), i2.clone()).unwrap();
-        let t = worker.process_node(o.clone());
+        let o = graph.mixed_multiply(i1, i2).unwrap();
+        let t = worker.process_node(o);
         if let Some(expected_t) = expected {
             assert_eq!(t.unwrap(), expected_t);
         } else {
@@ -1797,7 +1797,7 @@ mod tests {
 
     fn test_dot_worker(t0: Type, t1: Type, t2: Type) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
         let i0 = graph.input(t0).unwrap();
         let i1 = graph.input(t1).unwrap();
@@ -1808,7 +1808,7 @@ mod tests {
 
     fn test_dot_worker_fail(t0: Type, t1: Type) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
         let i0 = graph.input(t0).unwrap();
         let i1 = graph.input(t1).unwrap();
@@ -1869,7 +1869,7 @@ mod tests {
 
     fn test_matmul_worker(t0: Type, t1: Type, t2: Type) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
         let i0 = graph.input(t0).unwrap();
         let i1 = graph.input(t1).unwrap();
@@ -1880,7 +1880,7 @@ mod tests {
 
     fn test_matmul_worker_fail(t0: Type, t1: Type) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
         let i0 = graph.input(t0).unwrap();
         let i1 = graph.input(t1).unwrap();
@@ -1952,7 +1952,7 @@ mod tests {
 
     fn test_truncate_worker(t: Type, scale: u128) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
         let i = graph.input(t.clone()).unwrap();
         let out = graph.truncate(i, scale).unwrap();
@@ -1962,9 +1962,9 @@ mod tests {
 
     fn test_truncate_worker_fail(t: Type, scale: u128) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
-        let i = graph.input(t.clone()).unwrap();
+        let i = graph.input(t).unwrap();
         let out = graph.truncate(i, scale).unwrap();
         let e = worker.process_node(out);
         assert!(e.is_err());
@@ -1984,9 +1984,9 @@ mod tests {
 
     fn test_sum_worker(t0: Type, s: ArrayShape, t1: Type) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
-        let i = graph.input(t0.clone()).unwrap();
+        let i = graph.input(t0).unwrap();
         let out = graph.sum(i, s).unwrap();
         let t_result = worker.process_node(out).unwrap();
         assert_eq!(t_result, t1);
@@ -1994,9 +1994,9 @@ mod tests {
 
     fn test_sum_worker_fail(t0: Type, s: ArrayShape) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
-        let i = graph.input(t0.clone()).unwrap();
+        let i = graph.input(t0).unwrap();
         let out = graph.sum(i, s).unwrap();
         let e = worker.process_node(out);
         assert!(e.is_err());
@@ -2033,7 +2033,7 @@ mod tests {
     #[test]
     fn test_cum_sum() -> Result<()> {
         let context = create_unchecked_context()?;
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph()?;
         let mut helper = |shape, scalar_type, axis| {
             let i = graph.input(array_type(shape, scalar_type))?;
@@ -2053,9 +2053,9 @@ mod tests {
 
     fn test_permute_axes_worker(t0: Type, s: ArrayShape, t1: Type) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
-        let i = graph.input(t0.clone()).unwrap();
+        let i = graph.input(t0).unwrap();
         let out = graph.permute_axes(i, s).unwrap();
         let t_result = worker.process_node(out).unwrap();
         assert_eq!(t_result, t1);
@@ -2063,9 +2063,9 @@ mod tests {
 
     fn test_permute_axes_worker_fail(t0: Type, s: ArrayShape) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
-        let i = graph.input(t0.clone()).unwrap();
+        let i = graph.input(t0).unwrap();
         let out = graph.permute_axes(i, s).unwrap();
         let e = worker.process_node(out);
         assert!(e.is_err());
@@ -2097,9 +2097,9 @@ mod tests {
 
     fn test_get_worker(t0: Type, s: ArrayShape, t1: Type) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
-        let i = graph.input(t0.clone()).unwrap();
+        let i = graph.input(t0).unwrap();
         let out = graph.get(i, s).unwrap();
         let t_result = worker.process_node(out).unwrap();
         assert_eq!(t_result, t1);
@@ -2107,9 +2107,9 @@ mod tests {
 
     fn test_get_worker_fail(t0: Type, s: ArrayShape) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
-        let i = graph.input(t0.clone()).unwrap();
+        let i = graph.input(t0).unwrap();
         let out = graph.get(i, s).unwrap();
         let e = worker.process_node(out);
         assert!(e.is_err());
@@ -2140,9 +2140,9 @@ mod tests {
 
     fn test_get_slice_worker(t0: Type, s: Slice, t1: Type) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
-        let i = graph.input(t0.clone()).unwrap();
+        let i = graph.input(t0).unwrap();
         let out = graph.get_slice(i, s).unwrap();
         let t_result = worker.process_node(out).unwrap();
         assert_eq!(t_result, t1);
@@ -2150,9 +2150,9 @@ mod tests {
 
     fn test_get_slice_worker_fail(t0: Type, s: Slice) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
-        let i = graph.input(t0.clone()).unwrap();
+        let i = graph.input(t0).unwrap();
         let out = i.get_slice(s).unwrap();
         assert!(worker.process_node(out).is_err());
     }
@@ -2192,9 +2192,9 @@ mod tests {
 
     fn test_reshape_worker(t0: Type, new_type: Type) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
-        let i = graph.input(t0.clone()).unwrap();
+        let i = graph.input(t0).unwrap();
         let out = graph.reshape(i, new_type.clone()).unwrap();
         let t_result = worker.process_node(out).unwrap();
         assert_eq!(t_result, new_type);
@@ -2202,9 +2202,9 @@ mod tests {
 
     fn test_reshape_worker_fail(t0: Type, new_type: Type) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
-        let i = graph.input(t0.clone()).unwrap();
+        let i = graph.input(t0).unwrap();
         let out_result = graph.reshape(i, new_type);
         if let Ok(out) = out_result {
             let e = worker.process_node(out);
@@ -2214,7 +2214,7 @@ mod tests {
     fn test_reshape_worker_unsuccessful(t0: Type, new_type: Type) {
         let context = create_unchecked_context().unwrap();
         let graph = context.create_graph().unwrap();
-        let i = graph.input(t0.clone()).unwrap();
+        let i = graph.input(t0).unwrap();
         let out_result = graph.reshape(i, new_type);
         assert!(out_result.is_err());
     }
@@ -2296,7 +2296,7 @@ mod tests {
 
     fn test_nop_worker(t: Type) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
         let i = graph.input(t.clone()).unwrap();
         let out = graph.nop(i).unwrap();
@@ -2309,12 +2309,12 @@ mod tests {
         let t1 = array_type(vec![10, 10, 10], BIT);
         let t2 = tuple_type(vec![]);
         let t = named_tuple_type(vec![("field 1".to_owned(), t1), ("field 2".to_owned(), t2)]);
-        test_nop_worker(t.clone());
+        test_nop_worker(t);
     }
 
     fn test_random_worker(t: Type) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
         let out = graph.random(t.clone()).unwrap();
         let t_result = worker.process_node(out).unwrap();
@@ -2323,9 +2323,9 @@ mod tests {
 
     fn test_random_worker_fail(t: Type) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
-        let out = graph.random(t.clone()).unwrap();
+        let out = graph.random(t).unwrap();
         let e = worker.process_node(out);
         assert!(e.is_err());
     }
@@ -2333,7 +2333,7 @@ mod tests {
     #[test]
     fn test_random() {
         let t0 = array_type(vec![31337], BIT);
-        let t = tuple_type(vec![t0.clone(), t0.clone()]);
+        let t = tuple_type(vec![t0.clone(), t0]);
         test_random_worker(t);
         let t1 = array_type(vec![0, 0, 0], BIT);
         test_random_worker_fail(t1);
@@ -2341,7 +2341,7 @@ mod tests {
 
     fn test_prf_worker(t0: Type, iv: u64, t1: Type) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
         let key = graph.input(t0).unwrap();
         let out = graph.prf(key, iv, t1.clone()).unwrap();
@@ -2351,10 +2351,10 @@ mod tests {
 
     fn test_prf_worker_fail(t0: Type, iv: u64, t1: Type) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
         let key = graph.input(t0).unwrap();
-        let out = graph.prf(key, iv, t1.clone()).unwrap();
+        let out = graph.prf(key, iv, t1).unwrap();
         let e = worker.process_node(out);
         assert!(e.is_err());
     }
@@ -2385,7 +2385,7 @@ mod tests {
 
     fn test_permutation_from_prf_worker(t: Type, iv: u64, n: u64) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
         let key = graph.input(t).unwrap();
         let out = graph.permutation_from_prf(key, iv, n).unwrap();
@@ -2395,7 +2395,7 @@ mod tests {
 
     fn test_permutation_from_prf_worker_fail(t: Type, iv: u64, n: u64) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
         let key = graph.input(t).unwrap();
         let out = graph.permutation_from_prf(key, iv, n).unwrap();
@@ -2420,7 +2420,7 @@ mod tests {
 
     fn test_stack_worker(outer_shape: ArrayShape, inner_types: Vec<Type>, result_type: Type) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
         let inputs = inner_types
             .iter()
@@ -2433,7 +2433,7 @@ mod tests {
 
     fn test_stack_worker_fail(outer_shape: ArrayShape, inner_types: Vec<Type>) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
         let inputs = inner_types
             .iter()
@@ -2496,7 +2496,7 @@ mod tests {
 
     fn test_constant_worker(t: Type, v: Value) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
         let out = graph.constant(t.clone(), v).unwrap();
         let out_t = worker.process_node(out).unwrap();
@@ -2505,9 +2505,9 @@ mod tests {
 
     fn test_constant_worker_fail(t: Type, v: Value) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
-        let out = graph.constant(t.clone(), v).unwrap();
+        let out = graph.constant(t, v).unwrap();
         let e = worker.process_node(out);
         assert!(e.is_err());
     }
@@ -2526,7 +2526,7 @@ mod tests {
 
     fn test_a2b_worker(t0: Type, t1: Type) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
         let i = graph.input(t0).unwrap();
         let o = graph.a2b(i).unwrap();
@@ -2536,7 +2536,7 @@ mod tests {
 
     fn test_a2b_worker_fail(t0: Type) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
         let i = graph.input(t0).unwrap();
         let o = graph.a2b(i).unwrap();
@@ -2557,7 +2557,7 @@ mod tests {
 
     fn test_b2a_worker(t0: Type, st: ScalarType, t1: Type) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
         let i = graph.input(t0).unwrap();
         let o = graph.b2a(i, st).unwrap();
@@ -2567,7 +2567,7 @@ mod tests {
 
     fn test_b2a_worker_fail(t0: Type, st: ScalarType) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
         let i = graph.input(t0).unwrap();
         let o = graph.b2a(i, st).unwrap();
@@ -2591,7 +2591,7 @@ mod tests {
 
     fn test_create_tuple_worker(elements: Vec<Type>, expected_result: Type) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
         let nodes: Vec<Node> = elements
             .iter()
@@ -2628,7 +2628,7 @@ mod tests {
         expected_result: Type,
     ) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
         let nodes: Vec<Node> = elements
             .iter()
@@ -2646,7 +2646,7 @@ mod tests {
 
     fn test_create_named_tuple_worker_fail(elements: Vec<Type>, names: Vec<String>) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
         let nodes: Vec<Node> = elements
             .iter()
@@ -2678,14 +2678,14 @@ mod tests {
 
     fn test_create_vector_worker(element_type: Type, elements: Vec<Type>) -> Result<Type> {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
         let nodes: Vec<Node> = elements
             .iter()
             .map(|node| graph.input(node.clone()).unwrap())
             .collect();
         let output = graph.create_vector(element_type, nodes).unwrap();
-        return worker.process_node(output);
+        worker.process_node(output)
     }
 
     #[test]
@@ -2709,20 +2709,20 @@ mod tests {
 
     fn test_tuple_get_worker(t0: Type, ind: u64, t1: Type) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
-        let i = graph.input(t0.clone()).unwrap();
-        let o = graph.tuple_get(i.clone(), ind).unwrap();
+        let i = graph.input(t0).unwrap();
+        let o = graph.tuple_get(i, ind).unwrap();
         let out_t = worker.process_node(o).unwrap();
         assert_eq!(out_t, t1);
     }
 
     fn test_tuple_get_worker_fail(t0: Type, ind: u64) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
-        let i = graph.input(t0.clone()).unwrap();
-        let o = graph.tuple_get(i.clone(), ind).unwrap();
+        let i = graph.input(t0).unwrap();
+        let o = graph.tuple_get(i, ind).unwrap();
         let e = worker.process_node(o);
         assert!(e.is_err());
     }
@@ -2762,42 +2762,42 @@ mod tests {
 
     fn test_named_tuple_get_worker(t0: Type, field_name: String, t1: Type) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
-        let i = graph.input(t0.clone()).unwrap();
-        let o = graph.named_tuple_get(i.clone(), field_name).unwrap();
+        let i = graph.input(t0).unwrap();
+        let o = graph.named_tuple_get(i, field_name).unwrap();
         let out_t = worker.process_node(o).unwrap();
         assert_eq!(out_t, t1);
     }
 
     fn test_named_tuple_get_worker_fail(t0: Type, field_name: String) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
-        let i = graph.input(t0.clone()).unwrap();
-        let o = graph.named_tuple_get(i.clone(), field_name).unwrap();
+        let i = graph.input(t0).unwrap();
+        let o = graph.named_tuple_get(i, field_name).unwrap();
         let e = worker.process_node(o);
         assert!(e.is_err());
     }
 
     fn test_vector_get_worker(t0: Type, t1: Type, expected_out_t: Type) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
-        let i0 = graph.input(t0.clone()).unwrap();
-        let i1 = graph.input(t1.clone()).unwrap();
-        let o = graph.vector_get(i0.clone(), i1.clone()).unwrap();
+        let i0 = graph.input(t0).unwrap();
+        let i1 = graph.input(t1).unwrap();
+        let o = graph.vector_get(i0, i1).unwrap();
         let out_t = worker.process_node(o).unwrap();
         assert_eq!(out_t, expected_out_t);
     }
 
     fn test_vector_get_worker_fail(t0: Type, t1: Type) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
-        let i0 = graph.input(t0.clone()).unwrap();
-        let i1 = graph.input(t1.clone()).unwrap();
-        let o = graph.vector_get(i0.clone(), i1.clone()).unwrap();
+        let i0 = graph.input(t0).unwrap();
+        let i1 = graph.input(t1).unwrap();
+        let o = graph.vector_get(i0, i1).unwrap();
         let e = worker.process_node(o);
         assert!(e.is_err());
     }
@@ -2857,7 +2857,7 @@ mod tests {
 
     fn test_zip_worker(t0: Vec<Type>, t1: Type) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
         let nodes = t0.iter().map(|t| graph.input(t.clone()).unwrap()).collect();
         let o = graph.zip(nodes).unwrap();
@@ -2867,7 +2867,7 @@ mod tests {
 
     fn test_zip_worker_fail(t0: Vec<Type>) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
         let nodes = t0.iter().map(|t| graph.input(t.clone()).unwrap()).collect();
         let o = graph.zip(nodes).unwrap();
@@ -2922,10 +2922,10 @@ mod tests {
 
     fn test_repeat_worker(t0: Type, n: u64, t1: Type) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
         let i = graph.input(t0).unwrap();
-        let o = graph.repeat(i.clone(), n).unwrap();
+        let o = graph.repeat(i, n).unwrap();
         let o_t = worker.process_node(o).unwrap();
         assert_eq!(o_t, t1);
     }
@@ -2943,19 +2943,16 @@ mod tests {
             .map(|t| graph.input(t.clone()).unwrap())
             .collect();
         let output_node = graph
-            .constant(
-                output_type.clone(),
-                Value::zero_of_type(output_type.clone()),
-            )
+            .constant(output_type.clone(), Value::zero_of_type(output_type))
             .unwrap();
-        graph.set_output_node(output_node.clone()).unwrap();
+        graph.set_output_node(output_node).unwrap();
         graph.finalize().unwrap();
         graph
     }
 
     fn test_call_worker(input_types: Vec<Type>, output_type: Type) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let subroutine_graph =
             create_dummy_graph(input_types.clone(), output_type.clone(), context.clone());
         let graph = context.create_graph().unwrap();
@@ -2963,9 +2960,7 @@ mod tests {
             .iter()
             .map(|t| graph.input(t.clone()).unwrap())
             .collect();
-        let output_node = graph
-            .call(subroutine_graph.clone(), input_nodes.clone())
-            .unwrap();
+        let output_node = graph.call(subroutine_graph, input_nodes).unwrap();
         let out_t = worker.process_node(output_node).unwrap();
         assert_eq!(out_t, output_type);
     }
@@ -2976,20 +2971,15 @@ mod tests {
         input_types_actual: Vec<Type>,
     ) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
-        let subroutine_graph = create_dummy_graph(
-            input_types_subroutine.clone(),
-            output_type.clone(),
-            context.clone(),
-        );
+        let mut worker = create_type_inference_worker(&context);
+        let subroutine_graph =
+            create_dummy_graph(input_types_subroutine, output_type, context.clone());
         let graph = context.create_graph().unwrap();
         let input_nodes: Vec<Node> = input_types_actual
             .iter()
             .map(|t| graph.input(t.clone()).unwrap())
             .collect();
-        let output_node = graph
-            .call(subroutine_graph.clone(), input_nodes.clone())
-            .unwrap();
+        let output_node = graph.call(subroutine_graph, input_nodes).unwrap();
         let e = worker.process_node(output_node);
         assert!(e.is_err());
     }
@@ -3024,7 +3014,7 @@ mod tests {
         output_type: Type,
     ) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let subroutine_graph = create_dummy_graph(
             subroutine_input_types,
             subroutine_output_type,
@@ -3043,7 +3033,7 @@ mod tests {
                 input_nodes[1].clone(),
             )
             .unwrap();
-        let output_obtained_type = worker.process_node(output_node.clone()).unwrap();
+        let output_obtained_type = worker.process_node(output_node).unwrap();
         assert_eq!(output_obtained_type, output_type);
     }
 
@@ -3053,7 +3043,7 @@ mod tests {
         input_types: Vec<Type>,
     ) {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let subroutine_graph = create_dummy_graph(
             subroutine_input_types,
             subroutine_output_type,
@@ -3072,7 +3062,7 @@ mod tests {
                 input_nodes[1].clone(),
             )
             .unwrap();
-        let e = worker.process_node(output_node.clone());
+        let e = worker.process_node(output_node);
         assert!(e.is_err());
     }
 
@@ -3127,7 +3117,7 @@ mod tests {
     fn test_array_to_vector_worker(t0: Type, t1: Type) {
         let context = create_unchecked_context().unwrap();
         let graph = context.create_graph().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let i = graph.input(t0).unwrap();
         let o = graph.array_to_vector(i).unwrap();
         let t = worker.process_node(o).unwrap();
@@ -3137,7 +3127,7 @@ mod tests {
     fn test_array_to_vector_worker_fail(t0: Type) {
         let context = create_unchecked_context().unwrap();
         let graph = context.create_graph().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let i = graph.input(t0).unwrap();
         let o = graph.array_to_vector(i).unwrap();
         let e = worker.process_node(o);
@@ -3158,7 +3148,7 @@ mod tests {
     fn test_vector_to_array_worker(t0: Type, t1: Type) {
         let context = create_unchecked_context().unwrap();
         let graph = context.create_graph().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let i = graph.input(t0).unwrap();
         let o = graph.vector_to_array(i).unwrap();
         let t = worker.process_node(o).unwrap();
@@ -3168,7 +3158,7 @@ mod tests {
     fn test_vector_to_array_worker_fail(t0: Type) {
         let context = create_unchecked_context().unwrap();
         let graph = context.create_graph().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let i = graph.input(t0).unwrap();
         let o = graph.vector_to_array(i).unwrap();
         let e = worker.process_node(o);
@@ -3195,7 +3185,7 @@ mod tests {
     ) -> Result<()> {
         let context = create_unchecked_context()?;
         let graph = context.create_graph()?;
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let inp = graph.input(input_t)?;
         let ind = graph.input(indices_t)?;
         let o = graph.gather(inp, ind, axis)?;
@@ -3261,7 +3251,7 @@ mod tests {
     fn test_cuckoo_hash_worker(t0: Type, t1: Type, expected: Type) -> Result<()> {
         let context = create_unchecked_context()?;
         let graph = context.create_graph()?;
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let i = graph.input(t0)?;
         let h = graph.input(t1)?;
         let o = graph.cuckoo_hash(i, h)?;
@@ -3273,7 +3263,7 @@ mod tests {
     fn test_cuckoo_hash_fail(t0: Type, t1: Type) -> Result<()> {
         let context = create_unchecked_context()?;
         let graph = context.create_graph()?;
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let i = graph.input(t0)?;
         let h = graph.input(t1)?;
         let o = graph.cuckoo_hash(i, h)?;
@@ -3325,7 +3315,7 @@ mod tests {
     fn test_random_permutation_worker(n: u64) -> Result<Type> {
         let context = create_unchecked_context()?;
         let graph = context.create_graph()?;
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let o = graph.random_permutation(n)?;
         worker.process_node(o)
     }
@@ -3352,7 +3342,7 @@ mod tests {
     fn test_inverse_permutation_worker(t0: Type, expected: Type) -> Result<()> {
         let context = create_unchecked_context()?;
         let graph = context.create_graph()?;
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let i = graph.input(t0)?;
         let o = graph.inverse_permutation(i)?;
         let t = worker.process_node(o)?;
@@ -3363,7 +3353,7 @@ mod tests {
     fn test_inverse_permutation_fail(t0: Type) -> Result<()> {
         let context = create_unchecked_context()?;
         let graph = context.create_graph()?;
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let i = graph.input(t0)?;
         let o = graph.inverse_permutation(i)?;
         let t = worker.process_node(o);
@@ -3391,7 +3381,7 @@ mod tests {
     fn test_cuckoo_to_permutation_worker(t0: Type, expected: Type) -> Result<()> {
         let context = create_unchecked_context()?;
         let graph = context.create_graph()?;
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let i = graph.input(t0)?;
         let o = graph.cuckoo_to_permutation(i)?;
         let t = worker.process_node(o)?;
@@ -3402,7 +3392,7 @@ mod tests {
     fn test_cuckoo_to_permutation_fail(t0: Type) -> Result<()> {
         let context = create_unchecked_context()?;
         let graph = context.create_graph()?;
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let i = graph.input(t0)?;
         let o = graph.cuckoo_to_permutation(i)?;
         let t = worker.process_node(o);
@@ -3429,7 +3419,7 @@ mod tests {
     fn test_decompose_switching_map_worker(t: Type, n: u64) -> Result<()> {
         let context = create_unchecked_context()?;
         let graph = context.create_graph()?;
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let i = graph.input(t.clone())?;
         let o = i.decompose_switching_map(n)?;
         let res_t = worker.process_node(o)?;
@@ -3445,7 +3435,7 @@ mod tests {
     fn test_decompose_switching_map_fail(t: Type, n: u64) -> Result<()> {
         let context = create_unchecked_context()?;
         let graph = context.create_graph()?;
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let i = graph.input(t)?;
         let o = i.decompose_switching_map(n)?;
         let res_t = worker.process_node(o);
@@ -3473,9 +3463,9 @@ mod tests {
     fn test_segment_cumsum_worker(shape: ArrayShape, st: ScalarType) -> Result<()> {
         let context = create_unchecked_context()?;
         let graph = context.create_graph()?;
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let t = array_type(shape.clone(), st);
-        let i = graph.input(t.clone())?;
+        let i = graph.input(t)?;
         let b = graph.input(array_type(vec![shape[0]], BIT))?;
         let v = if shape.len() > 1 {
             graph.input(array_type(shape[1..].to_vec(), st))?
@@ -3494,7 +3484,7 @@ mod tests {
     fn test_segment_cumsum_fail(input_t: Type, binary_t: Type, first_row_t: Type) -> Result<()> {
         let context = create_unchecked_context()?;
         let graph = context.create_graph()?;
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let i = graph.input(input_t)?;
         let b = graph.input(binary_t)?;
         let v = graph.input(first_row_t)?;
@@ -3593,7 +3583,7 @@ mod tests {
         op: Operation,
         expected_columns: Vec<ColumnDescription>,
     ) -> Result<()> {
-        let has_column_masks = match op.clone() {
+        let has_column_masks = match op {
             Operation::Join(_, _) => false,
             Operation::JoinWithColumnMasks(_, _) => true,
             _ => {
@@ -3602,7 +3592,7 @@ mod tests {
         };
         let context = create_unchecked_context()?;
         let graph = context.create_graph()?;
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let i0 = graph.input(create_table_type(columns0, num0, has_column_masks))?;
         let i1 = graph.input(create_table_type(columns1, num1, has_column_masks))?;
         let o = graph.add_node(vec![i0, i1], vec![], op.clone())?;
@@ -3639,12 +3629,12 @@ mod tests {
             expected_columns.clone(),
         )?;
         check_join_types(
-            columns0.clone(),
+            columns0,
             num0,
-            columns1.clone(),
+            columns1,
             num1,
             Operation::JoinWithColumnMasks(join_t, key_headers),
-            expected_columns.clone(),
+            expected_columns,
         )
     }
 
@@ -3680,12 +3670,12 @@ mod tests {
             |input_t0: Type, input_t1: Type, op: Operation| -> Result<()> {
                 let context = create_unchecked_context()?;
                 let graph = context.create_graph()?;
-                let mut worker = create_type_inference_worker(context.clone());
-                let i0 = graph.input(input_t0.clone())?;
-                let i1 = graph.input(input_t1.clone())?;
+                let mut worker = create_type_inference_worker(&context);
+                let i0 = graph.input(input_t0)?;
+                let i1 = graph.input(input_t1)?;
                 let o = graph.add_node(vec![i0, i1], vec![], op)?;
                 let res_t = worker.process_node(o);
-                assert!(res_t.unwrap_err().to_string().find(expected_msg).is_some());
+                assert!(res_t.unwrap_err().to_string().contains(expected_msg));
                 Ok(())
             };
         check_join_result_type(
@@ -3706,12 +3696,12 @@ mod tests {
     fn join_fail(t0: Type, t1: Type, op: Operation, expected_msg: &str) -> Result<()> {
         let context = create_unchecked_context()?;
         let graph = context.create_graph()?;
-        let mut worker = create_type_inference_worker(context.clone());
-        let i0 = graph.input(t0.clone())?;
-        let i1 = graph.input(t1.clone())?;
+        let mut worker = create_type_inference_worker(&context);
+        let i0 = graph.input(t0)?;
+        let i1 = graph.input(t1)?;
         let o = graph.add_node(vec![i0, i1], vec![], op)?;
         let res_t = worker.process_node(o);
-        assert!(res_t.unwrap_err().to_string().find(expected_msg).is_some());
+        assert!(res_t.unwrap_err().to_string().contains(expected_msg));
         Ok(())
     }
 
@@ -3760,7 +3750,7 @@ mod tests {
                 create_column("Second Name", vec![128], BIT),
             ],
             30,
-            join_t.clone(),
+            join_t,
             HashMap::from([
                 ("ID".to_owned(), "UID".to_owned()),
                 ("Country".to_owned(), "Origin".to_owned()),
@@ -3784,7 +3774,7 @@ mod tests {
                 create_column("ID2", vec![1], UINT64),
             ],
             30,
-            join_t.clone(),
+            join_t,
             HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
             vec![
                 create_column(NULL_HEADER, vec![1], BIT),
@@ -3801,7 +3791,7 @@ mod tests {
                 (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
                 ("ID2".to_owned(), array_type(vec![30], UINT64)),
             ]),
-            join_t.clone(),
+            join_t,
             HashMap::new(),
             "No column headers provided",
         )?;
@@ -3811,7 +3801,7 @@ mod tests {
                 (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
                 ("ID2".to_owned(), array_type(vec![30], UINT64)),
             ]),
-            join_t.clone(),
+            join_t,
             HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
             "Named tuple should contain at least two columns, one of which must be the null column",
         )?;
@@ -3824,7 +3814,7 @@ mod tests {
                 (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
                 ("ID2".to_owned(), array_type(vec![30], BIT)),
             ]),
-            join_t.clone(),
+            join_t,
             HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
             "Null column should be binary",
         )?;
@@ -3837,7 +3827,7 @@ mod tests {
                 (NULL_HEADER.to_owned(), array_type(vec![30], UINT64)),
                 ("ID2".to_owned(), array_type(vec![30], UINT64)),
             ]),
-            join_t.clone(),
+            join_t,
             HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
             "Null column should be binary",
         )?;
@@ -3850,7 +3840,7 @@ mod tests {
                 (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
                 ("ID2".to_owned(), array_type(vec![30], UINT64)),
             ]),
-            join_t.clone(),
+            join_t,
             HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
             "Null column has shape",
         )?;
@@ -3863,7 +3853,7 @@ mod tests {
                 (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
                 ("ID2".to_owned(), array_type(vec![30], UINT64)),
             ]),
-            join_t.clone(),
+            join_t,
             HashMap::from([("ID1".to_owned(), "ID".to_owned())]),
             "There is no header ID in the second named tuple",
         )?;
@@ -3876,7 +3866,7 @@ mod tests {
                 (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
                 ("ID2".to_owned(), array_type(vec![30], UINT64)),
             ]),
-            join_t.clone(),
+            join_t,
             HashMap::from([("ID".to_owned(), "ID2".to_owned())]),
             "There is no header ID in the first named tuple",
         )?;
@@ -3889,7 +3879,7 @@ mod tests {
                 (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
                 ("ID2".to_owned(), array_type(vec![30], UINT64)),
             ]),
-            join_t.clone(),
+            join_t,
             HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
             "Number of entries should be the same in each column",
         )?;
@@ -3902,7 +3892,7 @@ mod tests {
                 (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
                 ("ID2".to_owned(), array_type(vec![50], UINT64)),
             ]),
-            join_t.clone(),
+            join_t,
             HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
             "Number of entries should be the same in each column",
         )?;
@@ -3915,7 +3905,7 @@ mod tests {
                 (NULL_HEADER.to_owned(), array_type(vec![30], BIT)),
                 ("ID2".to_owned(), array_type(vec![30], UINT64)),
             ]),
-            join_t.clone(),
+            join_t,
             HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
             "Columns with names ID1 ID2 have incompatible scalar types to be compared",
         )?;
@@ -3928,7 +3918,7 @@ mod tests {
                 (NULL_HEADER.to_owned(), array_type(vec![50], BIT)),
                 ("ID2".to_owned(), array_type(vec![50], UINT64)),
             ]),
-            join_t.clone(),
+            join_t,
             HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
             "Columns with names ID1 ID2 have incompatible shapes to be compared",
         )?;
@@ -3943,7 +3933,7 @@ mod tests {
                 ("ID2".to_owned(), array_type(vec![50], UINT64)),
                 ("Name".to_owned(), array_type(vec![50], UINT64)),
             ]),
-                join_t.clone(),
+                join_t,
                 HashMap::from([("ID1".to_owned(), "ID2".to_owned())]), 
             "Both tuples contain columns named Name that don't participate in the join. Rename one of these to a unique name."
         )?;
@@ -3954,7 +3944,7 @@ mod tests {
                 ("ID2".to_owned(), array_type(vec![50], UINT64)),
                 ("Name".to_owned(), array_type(vec![50], UINT64)),
             ]),
-            join_t.clone(),
+            join_t,
             HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
             "Can't get named types. Input type must be NamedTuple.",
         )?;
@@ -3967,7 +3957,7 @@ mod tests {
                 ("ID2".to_owned(), array_type(vec![30], UINT64)),
                 ("Name2".to_owned(), array_type(vec![30], UINT64)),
             ]),
-            join_t.clone(),
+            join_t,
             HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
             "Named tuple should contain the null column",
         )?;
@@ -4001,7 +3991,7 @@ mod tests {
                 ),
             ]),
             Operation::JoinWithColumnMasks(
-                join_t.clone(),
+                join_t,
                 HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
             ),
             "Column should contain a tuple",
@@ -4017,7 +4007,7 @@ mod tests {
                 ("ID2".to_owned(), array_type(vec![50], UINT64)),
                 ("Name2".to_owned(), array_type(vec![50], UINT64)),
             ]),
-            join_t.clone(),
+            join_t,
             HashMap::from([(NULL_HEADER.to_owned(), NULL_HEADER.to_owned())]),
             "Join along the null column is forbidden",
         )?;
@@ -4054,7 +4044,7 @@ mod tests {
                 ),
             ]),
             Operation::JoinWithColumnMasks(
-                join_t.clone(),
+                join_t,
                 HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
             ),
             "Column should have an array with data",
@@ -4095,7 +4085,7 @@ mod tests {
                 ),
             ]),
             Operation::JoinWithColumnMasks(
-                join_t.clone(),
+                join_t,
                 HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
             ),
             "ID1 column mask should be binary",
@@ -4136,7 +4126,7 @@ mod tests {
                 ),
             ]),
             Operation::JoinWithColumnMasks(
-                join_t.clone(),
+                join_t,
                 HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
             ),
             "ID1 column mask should have shape [30]",
@@ -4155,7 +4145,7 @@ mod tests {
                 ("ID2".to_owned(), array_type(vec![50], UINT64)),
                 ("Name2".to_owned(), array_type(vec![50], UINT64)),
             ]),
-            join_t.clone(),
+            join_t,
             HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
             "Null column should be a binary array",
         )?;
@@ -4196,7 +4186,7 @@ mod tests {
                 ),
             ]),
             Operation::JoinWithColumnMasks(
-                join_t.clone(),
+                join_t,
                 HashMap::from([("ID1".to_owned(), "ID2".to_owned())]),
             ),
             "Column should contain a tuple with two arrays",
@@ -4226,7 +4216,7 @@ mod tests {
 
     fn test_concatenate_worker(ts: Vec<Type>, axis: u64, expected_t: Type) -> Result<()> {
         let context = create_unchecked_context()?;
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph()?;
         let mut nodes = vec![];
         for t in ts {
@@ -4240,7 +4230,7 @@ mod tests {
 
     fn test_concatenate_worker_fail(ts: Vec<Type>, axis: u64) -> Result<()> {
         let context = create_unchecked_context()?;
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph()?;
         let mut nodes = vec![];
         for t in ts {
@@ -4346,7 +4336,7 @@ mod tests {
         t2: Type,
     ) -> Result<()> {
         let context = create_unchecked_context()?;
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph()?;
         let i0 = graph.input(t0)?;
         let i1 = graph.input(t1)?;
@@ -4358,7 +4348,7 @@ mod tests {
 
     fn test_gemm_worker_fail(t0: Type, t1: Type, transpose0: bool, transpose1: bool) -> Result<()> {
         let context = create_unchecked_context().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph().unwrap();
         let i0 = graph.input(t0).unwrap();
         let i1 = graph.input(t1).unwrap();
@@ -4595,7 +4585,7 @@ mod tests {
     fn test_print_worker(t: Type) {
         let context = create_unchecked_context().unwrap();
         let graph = context.create_graph().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let i = graph.input(t.clone()).unwrap();
         let o = graph.print("I:".into(), i).unwrap();
         let ot = worker.process_node(o).unwrap();
@@ -4612,7 +4602,7 @@ mod tests {
     fn test_assert_worker(t0: Type, t1: Type) {
         let context = create_unchecked_context().unwrap();
         let graph = context.create_graph().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let i0 = graph.input(t0).unwrap();
         let i1 = graph.input(t1.clone()).unwrap();
         let o = graph.assert("i0 is true".into(), i0, i1).unwrap();
@@ -4623,9 +4613,9 @@ mod tests {
     fn test_assert_worker_fail(t0: Type, t1: Type) {
         let context = create_unchecked_context().unwrap();
         let graph = context.create_graph().unwrap();
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let i0 = graph.input(t0).unwrap();
-        let i1 = graph.input(t1.clone()).unwrap();
+        let i1 = graph.input(t1).unwrap();
         let o = graph.assert("i0 is true".into(), i0, i1).unwrap();
         let res = worker.process_node(o);
         assert!(res.is_err());
@@ -4659,7 +4649,7 @@ mod tests {
     ) -> Result<()> {
         let context = create_unchecked_context()?;
         let graph = context.create_graph()?;
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let i = graph.input(named_tuple_type(
             headers_types
                 .iter()
@@ -4678,7 +4668,7 @@ mod tests {
     fn test_shard_fail(input_t: Type, shard_config: ShardConfig) -> Result<()> {
         let context = create_unchecked_context()?;
         let graph = context.create_graph()?;
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let i = graph.input(input_t)?;
         let o = graph.shard(i, shard_config)?;
         let t = worker.process_node(o);
@@ -4757,7 +4747,7 @@ mod tests {
                 ("Income".to_owned(), array_type(vec![80], UINT64)),
                 ("ID".to_owned(), array_type(vec![80], UINT64)),
             ]),
-            shard_config.clone(),
+            shard_config,
         )?;
         test_shard_fail(
             named_tuple_type(vec![
@@ -4799,7 +4789,7 @@ mod tests {
     #[test]
     fn test_apply_permutation() -> Result<()> {
         let context = create_unchecked_context()?;
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph()?;
         // 2-d array.
         let tin = array_type(vec![10, 20], UINT64);
@@ -4821,19 +4811,19 @@ mod tests {
         let o = graph.apply_permutation(i, p)?;
         assert!(worker.process_node(o).is_err());
         // Incorrect permutation type.
-        let i = graph.input(tin.clone())?;
+        let i = graph.input(tin)?;
         let p = graph.input(vector_type(10, scalar_type(UINT64)))?;
         let o = graph.apply_permutation(i, p)?;
         assert!(worker.process_node(o).is_err());
         // Incorrect array type.
         let tin = vector_type(10, scalar_type(UINT32));
-        let i = graph.input(tin.clone())?;
+        let i = graph.input(tin)?;
         let p = graph.input(array_type(vec![10], UINT64))?;
         let o = graph.apply_permutation(i, p)?;
         assert!(worker.process_node(o).is_err());
         // Incorrect permutation type.
         let tin = array_type(vec![10], UINT64);
-        let i = graph.input(tin.clone())?;
+        let i = graph.input(tin)?;
         let p = graph.input(array_type(vec![10], INT32))?;
         let o = graph.apply_permutation(i, p)?;
         assert!(worker.process_node(o).is_err());
@@ -4843,11 +4833,11 @@ mod tests {
     #[test]
     fn test_sort() -> Result<()> {
         let context = create_unchecked_context()?;
-        let mut worker = create_type_inference_worker(context.clone());
+        let mut worker = create_type_inference_worker(&context);
         let graph = context.create_graph()?;
         let key = "random_name_of_key_column".to_string();
         let mut helper = |t: Type| {
-            let i = graph.input(t.clone())?;
+            let i = graph.input(t)?;
             let o = graph.sort(i, key.clone())?;
             worker.process_node(o)
         };
@@ -4868,23 +4858,23 @@ mod tests {
             ("v1".to_string(), array_type(vec![100], UINT64)),
             ("v2".to_string(), array_type(vec![100, 20, 2], INT32)),
         ]);
-        assert!(helper(tin.clone()).is_err());
+        assert!(helper(tin).is_err());
         // incompatible shapes.
         let tin = named_tuple_type(vec![
             ("v1".to_string(), array_type(vec![100], UINT64)),
             (key.clone(), array_type(vec![100, 32], BIT)),
             ("v2".to_string(), array_type(vec![101, 20, 2], INT32)),
         ]);
-        assert!(helper(tin.clone()).is_err());
+        assert!(helper(tin).is_err());
         // incorrect key type.
         let tin = named_tuple_type(vec![(key.clone(), array_type(vec![100], UINT64))]);
-        assert!(helper(tin.clone()).is_err());
+        assert!(helper(tin).is_err());
         // incorrect key shape.
         let tin = named_tuple_type(vec![(key.clone(), array_type(vec![100], BIT))]);
-        assert!(helper(tin.clone()).is_err());
+        assert!(helper(tin).is_err());
         // incorrect key type and shape.
         let tin = named_tuple_type(vec![(key.clone(), array_type(vec![100, 32], UINT64))]);
-        assert!(helper(tin.clone()).is_err());
+        assert!(helper(tin).is_err());
         Ok(())
     }
 }

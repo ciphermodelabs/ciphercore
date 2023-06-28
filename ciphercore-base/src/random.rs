@@ -372,8 +372,8 @@ mod tests {
     fn test_prng_fixed_seed() {
         let helper = |n: usize| -> Result<()> {
             let seed = b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F";
-            let mut prng1 = PRNG::new(Some(seed.clone()))?;
-            let mut prng2 = PRNG::new(Some(seed.clone()))?;
+            let mut prng1 = PRNG::new(Some(*seed))?;
+            let mut prng2 = PRNG::new(Some(*seed))?;
             let rand_bytes1 = prng1.get_random_bytes(n)?;
             let rand_bytes2 = prng2.get_random_bytes(n)?;
             assert_eq!(rand_bytes1, rand_bytes2);
@@ -430,7 +430,7 @@ mod tests {
     fn test_prng_random_value_flush() {
         let mut g = PRNG::new(None).unwrap();
         let mut helper = |t: Type, expected: u8| -> Result<()> {
-            let v = g.get_random_value(t.clone())?;
+            let v = g.get_random_value(t)?;
             v.access_bytes(|bytes| {
                 if !bytes.is_empty() {
                     assert!(bytes.last() < Some(&expected));
@@ -476,8 +476,8 @@ mod tests {
     fn test_prf_fixed_key() {
         || -> Result<()> {
             let key = b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F";
-            let mut prf1 = Prf::new(Some(key.clone()))?;
-            let mut prf2 = Prf::new(Some(key.clone()))?;
+            let mut prf1 = Prf::new(Some(*key))?;
+            let mut prf2 = Prf::new(Some(*key))?;
             for i in 0..100_000u64 {
                 assert_eq!(prf1.output_bytes(i, 1)?, prf2.output_bytes(i, 1)?);
                 assert_eq!(prf1.output_bytes(i, 5)?, prf2.output_bytes(i, 5)?);
@@ -501,7 +501,7 @@ mod tests {
                     counters[byte as usize] += 1;
                 }
             }
-            assert!(entropy_test(counters, n * k as u64));
+            assert!(entropy_test(counters, n * k));
             Ok(())
         }()
         .unwrap();
@@ -586,7 +586,7 @@ mod tests {
         .unwrap();
 
         let mut helper_flush = |t: Type, expected: u8| -> Result<()> {
-            let v = g.output_value(181, t.clone())?;
+            let v = g.output_value(181, t)?;
             v.access_bytes(|bytes| {
                 if !bytes.is_empty() {
                     assert!(bytes.last() < Some(&expected));
@@ -606,7 +606,7 @@ mod tests {
 
     #[test]
     fn test_generate_u32_in_range() -> Result<()> {
-        let mut prf = Prf::new(None)?;
+        let prf = Prf::new(None)?;
         // critical_value[i] is a precomputed critical value for the Chi-square test with
         // i degrees of freedom and significance level 10^(-6).
         let critical_value = [0f64, 23.9281, 27.6310, 30.6648, 33.3768, 35.8882];
@@ -616,7 +616,7 @@ mod tests {
             let runs = n * expected_count;
             let mut stats: HashMap<u32, u64> = HashMap::new();
             for _ in 0..runs {
-                let x = session.generate_u32_in_range(&mut prf.aes, n)?;
+                let x = session.generate_u32_in_range(&prf.aes, n)?;
                 assert!(x < n);
                 *stats.entry(x).or_default() += 1;
             }
@@ -657,7 +657,7 @@ mod tests {
             // Chi-square test with significance level 10^(-6)
             // <https://www.itl.nist.gov/div898/handbook/eda/section3/eda35f.htm>
             if n > 1 {
-                let counters: Vec<u64> = perm_statistics.values().map(|c| *c).collect();
+                let counters: Vec<u64> = perm_statistics.values().copied().collect();
                 let chi2 = chi_statistics(&counters, expected_count_per_perm);
                 // Critical value is computed with n!-1 degrees of freedom
                 if n == 4 {
@@ -680,9 +680,9 @@ mod tests {
         let mut helper = |n: u64| -> Result<()> {
             let result_type = array_type(vec![n], UINT64);
             let result_value = prf.output_permutation(0, n)?;
-            let perm = result_value.to_flattened_array_u64(result_type.clone())?;
+            let perm = result_value.to_flattened_array_u64(result_type)?;
 
-            let mut perm_sorted = perm.clone();
+            let mut perm_sorted = perm;
             perm_sorted.sort();
             let range_vec: Vec<u64> = (0..n).collect();
             assert_eq!(perm_sorted, range_vec);

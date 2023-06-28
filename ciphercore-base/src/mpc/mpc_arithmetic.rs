@@ -660,7 +660,7 @@ mod tests {
         };
 
         let mpc_c = prepare_for_mpc_evaluation(
-            c,
+            &c,
             vec![input_party_map],
             vec![output_parties],
             inline_config,
@@ -710,7 +710,7 @@ mod tests {
         dims: ArrayShape,
         output_parties: Vec<IOStatus>,
     ) -> Result<()> {
-        let output = random_evaluate(mpc_graph.clone(), inputs)?;
+        let output = random_evaluate(mpc_graph, inputs)?;
         let output_type = array_type(dims.clone(), st);
 
         let out = if output_parties.is_empty() {
@@ -1149,35 +1149,30 @@ mod tests {
 
         let instantiated_c = run_instantiation_pass(c)?.context;
         let inlined_c = inline_operations(
-            instantiated_c.clone(),
+            &instantiated_c,
             InlineConfig {
                 default_mode: InlineMode::Simple,
                 ..Default::default()
             },
         )?
         .get_context();
-        let result_class = generate_equivalence_class(
-            inlined_c.clone(),
-            vec![vec![IOStatus::Shared, IOStatus::Shared]],
-        )?;
+        let result_class =
+            generate_equivalence_class(&inlined_c, vec![vec![IOStatus::Shared, IOStatus::Shared]])?;
 
         let share0_12 = EquivalenceClasses::Atomic(vec![vec![0], vec![1, 2]]);
         let share1_02 = EquivalenceClasses::Atomic(vec![vec![1], vec![0, 2]]);
         let share2_01 = EquivalenceClasses::Atomic(vec![vec![2], vec![0, 1]]);
         let shared = EquivalenceClasses::Vector(vec![
-            Arc::new(share1_02.clone()),
-            Arc::new(share2_01.clone()),
-            Arc::new(share0_12.clone()),
+            Arc::new(share1_02),
+            Arc::new(share2_01),
+            Arc::new(share0_12),
         ]);
 
         let main_graph = inlined_c.get_main_graph()?;
         let output_node_id = main_graph.get_output_node()?.get_id();
 
         // Output should be shared. TODO: test other nodes
-        assert_eq!(
-            *result_class.get(&(0, output_node_id)).unwrap(),
-            shared.clone()
-        );
+        assert_eq!(*result_class.get(&(0, output_node_id)).unwrap(), shared);
 
         Ok(())
     }

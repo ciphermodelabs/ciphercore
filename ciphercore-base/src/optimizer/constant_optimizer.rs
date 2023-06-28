@@ -136,7 +136,7 @@ mod tests {
         evaluator.preprocess(c.clone())?;
         let new_c = create_context()?;
         let new_g = new_c.create_graph()?;
-        optimize_graph_constants(c.get_main_graph()?.clone(), new_g.clone(), &mut evaluator)?;
+        optimize_graph_constants(c.get_main_graph()?, new_g.clone(), &mut evaluator)?;
         new_g.finalize()?;
         new_g.set_as_main()?;
         new_c.finalize()?;
@@ -152,7 +152,7 @@ mod tests {
                 let n = i1.add(i2)?;
                 n.add(g.constant(scalar_type(UINT64), Value::from_scalar(1, UINT64)?)?)
             })?;
-            assert!(contexts_deep_equal(optimize_context(&c)?, c));
+            assert!(contexts_deep_equal(&optimize_context(&c)?, &c));
             Ok(())
         }()
         .unwrap();
@@ -172,7 +172,7 @@ mod tests {
                 let o1 = n.add(g.constant(scalar_type(UINT64), Value::from_scalar(1, UINT64)?)?)?;
                 g.create_tuple(vec![o1.add(r1)?, r3, r4])
             })?;
-            assert!(contexts_deep_equal(optimize_context(&c)?, c));
+            assert!(contexts_deep_equal(&optimize_context(&c)?, &c));
             Ok(())
         }()
         .unwrap();
@@ -182,7 +182,7 @@ mod tests {
     fn test_zeros() {
         || -> Result<()> {
             let c = simple_context(|g| g.zeros(array_type(vec![1000, 1000], UINT64)))?;
-            assert!(contexts_deep_equal(optimize_context(&c)?, c));
+            assert!(contexts_deep_equal(&optimize_context(&c)?, &c));
             Ok(())
         }()
         .unwrap();
@@ -192,7 +192,7 @@ mod tests {
     fn test_ones() {
         || -> Result<()> {
             let c = simple_context(|g| g.ones(array_type(vec![1000, 1000], UINT64)))?;
-            assert!(contexts_deep_equal(optimize_context(&c)?, c));
+            assert!(contexts_deep_equal(&optimize_context(&c)?, &c));
             Ok(())
         }()
         .unwrap();
@@ -217,7 +217,7 @@ mod tests {
             })?;
 
             let new_c = optimize_context(&c)?;
-            assert!(!contexts_deep_equal(new_c.clone(), c));
+            assert!(!contexts_deep_equal(&new_c, &c));
             let new_o = new_c.get_main_graph()?.get_output_node()?;
             let two1 = new_o.get_node_dependencies()[1].clone();
             let new_n4 = new_o.get_node_dependencies()[0].clone();
@@ -262,7 +262,7 @@ mod tests {
             })?;
 
             let new_c = optimize_context(&c)?;
-            assert!(!contexts_deep_equal(new_c.clone(), c));
+            assert!(!contexts_deep_equal(&new_c, &c));
             let new_o = new_c.get_main_graph()?.get_output_node()?;
             let four1 = new_o.get_node_dependencies()[1].clone();
             let new_n1 = new_o.get_node_dependencies()[0].clone();
@@ -295,7 +295,7 @@ mod tests {
             })?;
 
             let new_c = optimize_context(&c)?;
-            assert!(!contexts_deep_equal(new_c.clone(), c));
+            assert!(!contexts_deep_equal(&new_c, &c));
             let new_o = new_c.get_main_graph()?.get_output_node()?;
             let four1 = new_o.get_node_dependencies()[1].clone();
             let new_n = new_o.get_node_dependencies()[0].clone();

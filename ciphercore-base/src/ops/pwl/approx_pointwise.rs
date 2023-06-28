@@ -280,7 +280,7 @@ mod tests {
                 },
             )?;
             let expected = x * x;
-            if i < 5 || i > 45 {
+            if !(5..=45).contains(&i) {
                 // Edges.
                 assert!((expected - y).abs() < 0.2);
             } else {
@@ -304,7 +304,7 @@ mod tests {
                     flatten_right: true,
                 },
             )?;
-            if i >= 3 && i <= 45 {
+            if (3..=45).contains(&i) {
                 assert!((y - x * x).abs() < 0.1);
                 prev = None;
             } else {

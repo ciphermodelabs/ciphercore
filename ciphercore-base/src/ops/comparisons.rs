@@ -785,7 +785,7 @@ mod tests {
         let mapped_c = run_instantiation_pass(c)?;
         let v_a = Value::from_flattened_array(&a, BIT)?;
         let v_b = Value::from_flattened_array(&b, BIT)?;
-        Ok(random_evaluate(mapped_c.mappings.get_graph(g), vec![v_a, v_b])?.to_u8(BIT)?)
+        random_evaluate(mapped_c.mappings.get_graph(g), vec![v_a, v_b])?.to_u8(BIT)
     }
 
     fn test_signed_greater_than_cust_op_helper(a: Vec<u8>, b: Vec<u8>) -> Result<u8> {
@@ -824,7 +824,7 @@ mod tests {
         let mapped_c = run_instantiation_pass(c)?;
         let v_a = Value::from_flattened_array(&a, BIT)?;
         let v_b = Value::from_flattened_array(&b, BIT)?;
-        Ok(random_evaluate(mapped_c.mappings.get_graph(g), vec![v_a, v_b])?.to_u8(BIT)?)
+        random_evaluate(mapped_c.mappings.get_graph(g), vec![v_a, v_b])?.to_u8(BIT)
     }
 
     /// Given supported bit size returns unsigned ScalarType
@@ -871,7 +871,7 @@ mod tests {
         let g = c.create_graph()?;
         let i_va = g.input(array_type(shape_a.clone(), BIT))?;
         let i_vb = g.input(array_type(shape_b.clone(), BIT))?;
-        let o = g.custom_op(comparison_op.clone(), vec![i_va, i_vb])?;
+        let o = g.custom_op(comparison_op, vec![i_va, i_vb])?;
         g.set_output_node(o)?;
         g.finalize()?;
         c.set_main_graph(g.clone())?;
@@ -912,7 +912,7 @@ mod tests {
         let g = c.create_graph()?;
         let i_va = g.input(array_type(shape_a.clone(), BIT))?;
         let i_vb = g.input(array_type(shape_b.clone(), BIT))?;
-        let o = g.custom_op(comparison_op.clone(), vec![i_va, i_vb])?;
+        let o = g.custom_op(comparison_op, vec![i_va, i_vb])?;
         g.set_output_node(o)?;
         g.finalize()?;
         c.set_main_graph(g.clone())?;
@@ -949,7 +949,7 @@ mod tests {
         let mapped_c = run_instantiation_pass(c)?;
         let v_a = Value::from_flattened_array(&a, BIT)?;
         let v_b = Value::from_flattened_array(&b, BIT)?;
-        Ok(random_evaluate(mapped_c.mappings.get_graph(g), vec![v_a, v_b])?.to_u8(BIT)?)
+        random_evaluate(mapped_c.mappings.get_graph(g), vec![v_a, v_b])?.to_u8(BIT)
     }
 
     fn test_signed_less_than_cust_op_helper(a: Vec<u8>, b: Vec<u8>) -> Result<u8> {
@@ -970,7 +970,7 @@ mod tests {
         let mapped_c = run_instantiation_pass(c)?;
         let v_a = Value::from_flattened_array(&a, BIT)?;
         let v_b = Value::from_flattened_array(&b, BIT)?;
-        Ok(random_evaluate(mapped_c.mappings.get_graph(g), vec![v_a, v_b])?.to_u8(BIT)?)
+        random_evaluate(mapped_c.mappings.get_graph(g), vec![v_a, v_b])?.to_u8(BIT)
     }
 
     fn test_unsigned_less_than_equal_to_cust_op_helper(a: Vec<u8>, b: Vec<u8>) -> Result<u8> {
@@ -991,7 +991,7 @@ mod tests {
         let mapped_c = run_instantiation_pass(c)?;
         let v_a = Value::from_flattened_array(&a, BIT)?;
         let v_b = Value::from_flattened_array(&b, BIT)?;
-        Ok(random_evaluate(mapped_c.mappings.get_graph(g), vec![v_a, v_b])?.to_u8(BIT)?)
+        random_evaluate(mapped_c.mappings.get_graph(g), vec![v_a, v_b])?.to_u8(BIT)
     }
 
     fn test_signed_less_than_equal_to_cust_op_helper(a: Vec<u8>, b: Vec<u8>) -> Result<u8> {
@@ -1012,7 +1012,7 @@ mod tests {
         let mapped_c = run_instantiation_pass(c)?;
         let v_a = Value::from_flattened_array(&a, BIT)?;
         let v_b = Value::from_flattened_array(&b, BIT)?;
-        Ok(random_evaluate(mapped_c.mappings.get_graph(g), vec![v_a, v_b])?.to_u8(BIT)?)
+        random_evaluate(mapped_c.mappings.get_graph(g), vec![v_a, v_b])?.to_u8(BIT)
     }
 
     fn test_unsigned_greater_than_equal_to_cust_op_helper(a: Vec<u8>, b: Vec<u8>) -> Result<u8> {
@@ -1033,7 +1033,7 @@ mod tests {
         let mapped_c = run_instantiation_pass(c)?;
         let v_a = Value::from_flattened_array(&a, BIT)?;
         let v_b = Value::from_flattened_array(&b, BIT)?;
-        Ok(random_evaluate(mapped_c.mappings.get_graph(g), vec![v_a, v_b])?.to_u8(BIT)?)
+        random_evaluate(mapped_c.mappings.get_graph(g), vec![v_a, v_b])?.to_u8(BIT)
     }
 
     fn test_signed_greater_than_equal_to_cust_op_helper(a: Vec<u8>, b: Vec<u8>) -> Result<u8> {
@@ -1054,7 +1054,7 @@ mod tests {
         let mapped_c = run_instantiation_pass(c)?;
         let v_a = Value::from_flattened_array(&a, BIT)?;
         let v_b = Value::from_flattened_array(&b, BIT)?;
-        Ok(random_evaluate(mapped_c.mappings.get_graph(g), vec![v_a, v_b])?.to_u8(BIT)?)
+        random_evaluate(mapped_c.mappings.get_graph(g), vec![v_a, v_b])?.to_u8(BIT)
     }
 
     fn test_equal_to_cust_op_helper(a: Vec<u8>, b: Vec<u8>) -> Result<u8> {
@@ -1070,7 +1070,7 @@ mod tests {
         let mapped_c = run_instantiation_pass(c)?;
         let v_a = Value::from_flattened_array(&a, BIT)?;
         let v_b = Value::from_flattened_array(&b, BIT)?;
-        Ok(random_evaluate(mapped_c.mappings.get_graph(g), vec![v_a, v_b])?.to_u8(BIT)?)
+        random_evaluate(mapped_c.mappings.get_graph(g), vec![v_a, v_b])?.to_u8(BIT)
     }
 
     #[test]
@@ -1947,8 +1947,8 @@ mod tests {
                     CustomOperation::new(GreaterThanEqualTo {
                         signed_comparison: false
                     }),
-                    v_a.clone(),
-                    v_b.clone(),
+                    v_a,
+                    v_b,
                     vec![1, 64],
                     vec![1, 2, 64],
                 )?,
@@ -2092,8 +2092,8 @@ mod tests {
                     CustomOperation::new(GreaterThan {
                         signed_comparison: false
                     }),
-                    v_a.clone(),
-                    v_b.clone(),
+                    v_a,
+                    v_b,
                     vec![4, 1, 64],
                     vec![1, 4, 64],
                 )?,
@@ -2107,8 +2107,8 @@ mod tests {
                     CustomOperation::new(GreaterThanEqualTo {
                         signed_comparison: false
                     }),
-                    v_a.clone(),
-                    v_b.clone(),
+                    v_a,
+                    v_b,
                     vec![4, 1, 64],
                     vec![1, 4, 64],
                 )?,
@@ -2120,8 +2120,8 @@ mod tests {
             assert_eq!(
                 test_unsigned_comparison_cust_op_for_vec_helper(
                     CustomOperation::new(NotEqual {}),
-                    v_a.clone(),
-                    v_b.clone(),
+                    v_a,
+                    v_b,
                     vec![4, 1, 64],
                     vec![1, 4, 64],
                 )?,
@@ -2159,8 +2159,8 @@ mod tests {
                     CustomOperation::new(GreaterThan {
                         signed_comparison: true
                     }),
-                    v_a.clone(),
-                    v_b.clone(),
+                    v_a,
+                    v_b,
                     vec![7, 1, 64],
                     vec![1, 7, 64],
                 )?,
@@ -2193,8 +2193,8 @@ mod tests {
                     CustomOperation::new(GreaterThanEqualTo {
                         signed_comparison: true
                     }),
-                    v_a.clone(),
-                    v_b.clone(),
+                    v_a,
+                    v_b,
                     vec![7, 1, 64],
                     vec![1, 7, 64],
                 )?,
@@ -2305,8 +2305,8 @@ mod tests {
                     CustomOperation::new(GreaterThan {
                         signed_comparison: true
                     }),
-                    v_a.clone(),
-                    v_b.clone(),
+                    v_a,
+                    v_b,
                     vec![2, 2, 2, 8],
                     vec![1, 8],
                 )?,
@@ -2350,7 +2350,7 @@ mod tests {
             };
             let instantiated_context = run_instantiation_pass(c)?.get_context();
             let inlined_context =
-                inline_operations(instantiated_context, inline_config.clone())?.get_context();
+                inline_operations(&instantiated_context, inline_config.clone())?.get_context();
             let num_nodes = inlined_context.get_main_graph()?.get_num_nodes();
 
             assert!(num_nodes <= 200);

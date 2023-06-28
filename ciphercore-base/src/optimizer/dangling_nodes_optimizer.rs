@@ -70,11 +70,11 @@ mod tests {
 
             let new_c = create_context()?;
             let new_g = new_c.create_graph()?;
-            optimize_graph_dangling_nodes(c.get_main_graph()?.clone(), new_g.clone())?;
+            optimize_graph_dangling_nodes(c.get_main_graph()?, new_g.clone())?;
             new_g.finalize()?;
             new_g.set_as_main()?;
             new_c.finalize()?;
-            assert!(contexts_deep_equal(new_c, c));
+            assert!(contexts_deep_equal(&new_c, &c));
             Ok(())
         }()
         .unwrap();
@@ -97,12 +97,12 @@ mod tests {
 
             let new_c = create_context()?;
             let new_g = new_c.create_graph()?;
-            optimize_graph_dangling_nodes(c.get_main_graph()?.clone(), new_g.clone())?;
+            optimize_graph_dangling_nodes(c.get_main_graph()?, new_g.clone())?;
             new_g.finalize()?;
             new_g.set_as_main()?;
             new_c.finalize()?;
 
-            assert!(!contexts_deep_equal(new_c.clone(), c.clone()));
+            assert!(!contexts_deep_equal(&new_c, &c));
             assert_eq!(c.get_main_graph()?.get_nodes().len(), 8);
             assert_eq!(new_c.get_main_graph()?.get_nodes().len(), 5);
             // Check names

@@ -16,7 +16,7 @@ jobs:
       CARGO_INCREMENTAL: 0
       # It assumes it is already installed:
       # https://github.com/rui314/mold
-      RUSTFLAGS: -D warnings -C link-arg=-fuse-ld=mold
+      RUSTFLAGS: -D warnings -C link-arg=-fuse-ld=mold -Aclippy::needless_range_loop
       RUSTDOCFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v2
@@ -42,7 +42,7 @@ jobs:
       - name: Cargo fmt
         run: cargo fmt --check
       - name: Cargo clippy
-        run: cargo clippy --workspace
+        run: cargo clippy --workspace --tests --all-targets --all-features
       - name: Cargo docs
         run: cargo doc --no-deps
       - name: Cargo test

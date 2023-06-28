@@ -404,8 +404,13 @@ mod tests {
             g.sort(t, key.clone())?.named_tuple_get(key)
         })?;
         Ok(
-            prepare_for_mpc_evaluation(c, vec![input_status], vec![output_parties], inline_config)?
-                .get_context(),
+            prepare_for_mpc_evaluation(
+                &c,
+                vec![input_status],
+                vec![output_parties],
+                inline_config,
+            )?
+            .get_context(),
         )
     }
 
@@ -425,10 +430,10 @@ mod tests {
         output_parties: Vec<IOStatus>,
     ) -> Result<()> {
         let output = random_evaluate(
-            mpc_graph.clone(),
+            mpc_graph,
             vec![prepare_input(input.clone(), input_status[0].clone())?],
         )?;
-        let t = input.t.clone();
+        let t = input.t;
         let output = if !output_parties.is_empty() {
             output.to_flattened_array_u128(t.clone())
         } else {
@@ -448,7 +453,7 @@ mod tests {
             })
         }?;
         let n = t.get_shape()[0];
-        let input = input.value.to_flattened_array_u128(t.clone())?;
+        let input = input.value.to_flattened_array_u128(t)?;
         let mut input = input
             .chunks(input.len() / n as usize)
             .map(|x| x.to_vec())
@@ -494,7 +499,7 @@ mod tests {
             )?;
             helper(input.clone(), vec![IOStatus::Shared], vec![])?;
             helper(
-                input.clone(),
+                input,
                 vec![IOStatus::Shared],
                 vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
             )?;

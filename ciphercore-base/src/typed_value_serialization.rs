@@ -747,7 +747,7 @@ mod tests {
     #[test]
     fn test_ndarray() -> Result<()> {
         let s = r#"{"kind":"array","type":"i32","value":[[-123456,123456],[13579,-13579]]}"#;
-        let tv = serde_json::from_str::<TypedValue>(&s)?;
+        let tv = serde_json::from_str::<TypedValue>(s)?;
         assert_eq!(tv.t, array_type(vec![2, 2], INT32));
         tv.value.access_bytes(|b| {
             assert_eq!(
@@ -762,7 +762,7 @@ mod tests {
     #[test]
     fn test_tuple() -> Result<()> {
         let s = r#"{"kind":"tuple","value":[{"kind":"scalar","type":"i32","value":-123456},{"kind":"tuple","value":[]}]}"#;
-        let tv = serde_json::from_str::<TypedValue>(&s)?;
+        let tv = serde_json::from_str::<TypedValue>(s)?;
         assert_eq!(
             tv.t,
             tuple_type(vec![scalar_type(INT32), tuple_type(vec![])])
@@ -785,7 +785,7 @@ mod tests {
     #[test]
     fn test_named_tuple() -> Result<()> {
         let s = r#"{"kind":"named tuple","value":[{"name":"field1","value":{"kind":"scalar","type":"i32","value":-123456}},{"name":"field2","value":{"kind":"tuple","value":[]}}]}"#;
-        let tv = serde_json::from_str::<TypedValue>(&s)?;
+        let tv = serde_json::from_str::<TypedValue>(s)?;
         assert_eq!(
             tv.t,
             named_tuple_type(vec![
@@ -811,7 +811,7 @@ mod tests {
     #[test]
     fn test_vector() -> Result<()> {
         let s = r#"{"kind":"vector","value":[{"kind":"scalar","type":"i32","value":-123456},{"kind":"scalar","type":"i32","value":123456},{"kind":"scalar","type":"i32","value":-13579},{"kind":"scalar","type":"i32","value":13579}]}"#;
-        let tv = serde_json::from_str::<TypedValue>(&s)?;
+        let tv = serde_json::from_str::<TypedValue>(s)?;
         assert_eq!(tv.t, vector_type(4, scalar_type(INT32)));
         tv.value.access_vector(|v| {
             assert_eq!(v.len(), 4);
@@ -839,7 +839,7 @@ mod tests {
     #[test]
     fn test_empty() -> Result<()> {
         let s = r#"{"kind":"vector","value":[]}"#;
-        let tv = serde_json::from_str::<TypedValue>(&s)?;
+        let tv = serde_json::from_str::<TypedValue>(s)?;
         assert_eq!(tv.t, vector_type(0, tuple_type(vec![])));
         tv.value.access_vector(|v| {
             assert_eq!(v.len(), 0);
@@ -851,43 +851,43 @@ mod tests {
     #[test]
     fn test_err() -> Result<()> {
         let s = r#"[]"#;
-        assert!(serde_json::from_str::<TypedValue>(&s).is_err());
+        assert!(serde_json::from_str::<TypedValue>(s).is_err());
         let s = r#"{}"#;
-        assert!(serde_json::from_str::<TypedValue>(&s).is_err());
+        assert!(serde_json::from_str::<TypedValue>(s).is_err());
         let s = r#"{"kind":{}}"#;
-        assert!(serde_json::from_str::<TypedValue>(&s).is_err());
+        assert!(serde_json::from_str::<TypedValue>(s).is_err());
         let s = r#"{"kind":"wrongkind"}"#;
-        assert!(serde_json::from_str::<TypedValue>(&s).is_err());
+        assert!(serde_json::from_str::<TypedValue>(s).is_err());
         let s = r#"{"kind":"scalar","type":"i32","value":{}}"#;
-        assert!(serde_json::from_str::<TypedValue>(&s).is_err());
+        assert!(serde_json::from_str::<TypedValue>(s).is_err());
         let s = r#"{"kind":"scalar","type":"i32"}"#;
-        assert!(serde_json::from_str::<TypedValue>(&s).is_err());
+        assert!(serde_json::from_str::<TypedValue>(s).is_err());
         let s = r#"{"kind":"scalar","type":"bzz","value":123}"#;
-        assert!(serde_json::from_str::<TypedValue>(&s).is_err());
+        assert!(serde_json::from_str::<TypedValue>(s).is_err());
         let s = r#"{"kind":"scalar","type":[],"value":123}"#;
-        assert!(serde_json::from_str::<TypedValue>(&s).is_err());
+        assert!(serde_json::from_str::<TypedValue>(s).is_err());
         let s = r#"{"kind":"scalar","value":123}"#;
-        assert!(serde_json::from_str::<TypedValue>(&s).is_err());
+        assert!(serde_json::from_str::<TypedValue>(s).is_err());
         let s = r#"{"kind":"array","type":"i32","value":[[123,456],123]}"#;
-        assert!(serde_json::from_str::<TypedValue>(&s).is_err());
+        assert!(serde_json::from_str::<TypedValue>(s).is_err());
         let s = r#"{"kind":"tuple","value":{}}"#;
-        assert!(serde_json::from_str::<TypedValue>(&s).is_err());
+        assert!(serde_json::from_str::<TypedValue>(s).is_err());
         let s = r#"{"kind":"array","type":"i32","value":{}}"#;
-        assert!(serde_json::from_str::<TypedValue>(&s).is_err());
+        assert!(serde_json::from_str::<TypedValue>(s).is_err());
         let s = r#"{"kind":"vector","value":{}}"#;
-        assert!(serde_json::from_str::<TypedValue>(&s).is_err());
+        assert!(serde_json::from_str::<TypedValue>(s).is_err());
         let s = r#"{"kind":"vector","value":[{"kind":"scalar","type":"i32","value":123},{"kind":"tuple","value":{}}]}"#;
-        assert!(serde_json::from_str::<TypedValue>(&s).is_err());
+        assert!(serde_json::from_str::<TypedValue>(s).is_err());
         let s = r#"{"kind":"named tuple","value":{}}"#;
-        assert!(serde_json::from_str::<TypedValue>(&s).is_err());
+        assert!(serde_json::from_str::<TypedValue>(s).is_err());
         let s = r#"{"kind":"named tuple","value":[{}]}"#;
-        assert!(serde_json::from_str::<TypedValue>(&s).is_err());
+        assert!(serde_json::from_str::<TypedValue>(s).is_err());
         let s = r#"{"kind":"named tuple","value":[{"name":123,"value":{}}]}"#;
-        assert!(serde_json::from_str::<TypedValue>(&s).is_err());
+        assert!(serde_json::from_str::<TypedValue>(s).is_err());
         let s = r#"{"kind":"named tuple","value":[{"name":"field1"}]}"#;
-        assert!(serde_json::from_str::<TypedValue>(&s).is_err());
+        assert!(serde_json::from_str::<TypedValue>(s).is_err());
         let s = r#"{"kind":"named tuple","value":[{"name":"field1","value":123123}]}"#;
-        assert!(serde_json::from_str::<TypedValue>(&s).is_err());
+        assert!(serde_json::from_str::<TypedValue>(s).is_err());
         Ok(())
     }
 
@@ -912,7 +912,7 @@ mod tests {
     fn test_non_human_readable() -> Result<()> {
         // Complicated TypedValue.
         let s = r#"{"kind":"named tuple","value":[{"name":"field1","value":{"kind":"tuple","type":"i32","value":[{"kind":"scalar","type":"u8","value":128},{"kind":"scalar", "type": "bit", "value":true}]}},{"name":"field2","value":{"kind":"vector","value":[{"kind":"scalar","type":"i32","value":-123456},{"kind":"scalar","type":"i32","value":123456},{"kind":"scalar","type":"i32","value":-13579},{"kind":"scalar","type":"i32","value":13579}]}}]}"#;
-        let tv = serde_json::from_str::<TypedValue>(&s)?;
+        let tv = serde_json::from_str::<TypedValue>(s)?;
         let result = bincode::serialize(&tv).unwrap();
         assert_eq!(bincode::deserialize::<TypedValue>(&result).unwrap(), tv);
         Ok(())

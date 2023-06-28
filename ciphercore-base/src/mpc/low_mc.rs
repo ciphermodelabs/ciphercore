@@ -419,12 +419,11 @@ mod tests {
                 (*b"\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F\x10").to_vec(),
             );
             let mut input_bytes = vec![0u8; input_bytes_len as usize];
-            for i in 0..input_shape[0].clone() {
-                for j in 0..input_shape[1].clone() {
+            for i in 0..input_shape[0] {
+                for j in 0..input_shape[1] {
                     for k in 0..input_size / 8 {
-                        input_bytes
-                            [((i * input_shape[1].clone() + j) * input_size / 8 + k) as usize] =
-                            (i * input_shape[1].clone() + j) as u8;
+                        input_bytes[((i * input_shape[1] + j) * input_size / 8 + k) as usize] =
+                            (i * input_shape[1] + j) as u8;
                     }
                 }
             }

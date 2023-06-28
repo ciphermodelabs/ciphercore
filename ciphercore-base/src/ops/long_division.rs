@@ -404,7 +404,7 @@ mod tests {
             (0, -1, 0, 0),
             (0, 0, 0, 0), // Division by zero happens to evaluate to this value.
         ]);
-        let (q, r) = long_division_helper(dividends.clone(), divisors.clone(), INT32, INT8)?;
+        let (q, r) = long_division_helper(dividends, divisors, INT32, INT8)?;
         assert_eq!(q.value.to_flattened_array_i32(q.t)?, want_q);
         assert_eq!(r.value.to_flattened_array_i8(r.t)?, want_r);
         Ok(())
@@ -433,7 +433,7 @@ mod tests {
             (0, 1, 0, 0),
             (0, 0, 0, 0), // Division by zero happens to evaluate to this value.
         ]);
-        let (q, r) = long_division_helper(dividends.clone(), divisors.clone(), UINT8, UINT8)?;
+        let (q, r) = long_division_helper(dividends, divisors, UINT8, UINT8)?;
         assert_eq!(q.value.to_flattened_array_u8(q.t)?, want_q);
         assert_eq!(r.value.to_flattened_array_u8(r.t)?, want_r);
         Ok(())
@@ -453,7 +453,7 @@ mod tests {
             (-8836348637758589809, 111540404, -79221056415, 77301851),
             (-2780817202823147876, -882478846, 3151143186, -461104520),
         ]);
-        let (q, r) = long_division_helper(dividends.clone(), divisors.clone(), INT64, INT64)?;
+        let (q, r) = long_division_helper(dividends, divisors, INT64, INT64)?;
         assert_eq!(q.value.to_flattened_array_i64(q.t)?, want_q);
         assert_eq!(r.value.to_flattened_array_i64(r.t)?, want_r);
         Ok(())

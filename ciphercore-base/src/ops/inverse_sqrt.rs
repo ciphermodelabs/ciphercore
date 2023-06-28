@@ -160,7 +160,7 @@ mod tests {
         let c = simple_context(|g| {
             let i = g.input(scalar_type(st))?;
             if let Some(approx) = initial_approximation {
-                let approx_const = constant_scalar(&g, approx, st)?;
+                let approx_const = constant_scalar(g, approx, st)?;
                 g.custom_op(
                     CustomOperation::new(InverseSqrt {
                         iterations: 5,
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn test_inverse_sqrt_scalar() {
-        for i in vec![
+        for i in [
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 123, 255, 256, 257, 700, 1000, 10000, 100000, 1000000,
         ] {
             let expected = (1024.0 / (i as f64).powf(0.5)) as i64;
@@ -237,7 +237,7 @@ mod tests {
 
     #[test]
     fn test_inverse_sqrt_with_initial_guess() {
-        for i in vec![1, 2, 3, 123, 300, 500, 700] {
+        for i in [1, 2, 3, 123, 300, 500, 700] {
             let mut initial_guess = 1;
             while initial_guess * initial_guess * i * 4 < 1024 * 1024 {
                 initial_guess *= 2;
@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn test_inverse_sqrt_negative_values_nothing_bad() {
-        for i in vec![-1, -100, -1000] {
+        for i in [-1, -100, -1000] {
             scalar_helper(i as u64, None, INT64).unwrap();
         }
     }
@@ -279,9 +279,9 @@ mod tests {
         };
         let instantiated_context = run_instantiation_pass(c)?.get_context();
         let inlined_context =
-            inline_operations(instantiated_context, inline_config.clone())?.get_context();
+            inline_operations(&instantiated_context, inline_config.clone())?.get_context();
         let _unused = prepare_for_mpc_evaluation(
-            inlined_context,
+            &inlined_context,
             vec![vec![IOStatus::Shared]],
             vec![vec![]],
             inline_config,

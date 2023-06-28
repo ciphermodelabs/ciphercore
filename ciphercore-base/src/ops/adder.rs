@@ -454,8 +454,8 @@ mod tests {
             })?;
             let mapped_c = run_instantiation_pass(c)?;
             let inputs1 =
-                Value::from_flattened_array(&vec![0, 1023, -1023, i16::MIN, i16::MAX], INT16)?;
-            let inputs2 = Value::from_flattened_array(&vec![1024], INT16)?;
+                Value::from_flattened_array(&[0, 1023, -1023, i16::MIN, i16::MAX], INT16)?;
+            let inputs2 = Value::from_flattened_array(&[1024], INT16)?;
             let result_v = random_evaluate(
                 mapped_c.get_context().get_main_graph()?,
                 vec![inputs1, inputs2],
@@ -526,7 +526,7 @@ mod tests {
                 CustomOperation::new(BinaryAdd {
                     overflow_bit: false
                 }),
-                vec![i1.clone(), i.clone()]
+                vec![i1, i.clone()]
             )
             .is_err());
         assert!(g
@@ -542,7 +542,7 @@ mod tests {
                 CustomOperation::new(BinaryAdd {
                     overflow_bit: false
                 }),
-                vec![i.clone(), i3]
+                vec![i, i3]
             )
             .is_err());
         assert!(g

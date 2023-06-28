@@ -13,7 +13,7 @@ pub(super) struct MockInlineState {
 
 impl InlineState for MockInlineState {
     fn assign_input_nodes(&mut self, _graph: Graph, nodes: Vec<Node>) -> Result<()> {
-        self.inputs.push(nodes.clone());
+        self.inputs.push(nodes);
         Ok(())
     }
 
@@ -22,7 +22,7 @@ impl InlineState for MockInlineState {
     }
 
     fn recursively_inline_graph(&mut self, graph: Graph) -> Result<Node> {
-        self.inline_graph_calls.push(graph.clone());
+        self.inline_graph_calls.push(graph);
         let nodes = vec![
             constant_scalar(&self.fake_graph, 0, BIT)?,
             self.fake_graph.create_tuple(vec![])?,
@@ -37,7 +37,7 @@ impl InlineState for MockInlineState {
 }
 
 pub(super) fn build_test_data(
-    c: Context,
+    c: &Context,
     st: ScalarType,
 ) -> Result<(Graph, Node, Node, Vec<Node>)> {
     let g = c.create_graph()?;
@@ -53,12 +53,7 @@ pub(super) fn build_test_data(
         inputs.push(val.clone());
     }
     let inputs_node = g.create_vector(scalar_type(st), inputs.clone())?;
-    Ok((
-        g.clone(),
-        initial_state.clone(),
-        inputs_node.clone(),
-        inputs,
-    ))
+    Ok((g, initial_state, inputs_node, inputs))
 }
 
 pub(super) fn resolve_tuple_get(node: Node) -> Node {
@@ -68,5 +63,5 @@ pub(super) fn resolve_tuple_get(node: Node) -> Node {
         let elements = tuple.get_node_dependencies();
         return elements[index as usize].clone();
     }
-    return node.clone();
+    node
 }

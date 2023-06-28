@@ -486,7 +486,7 @@ mod tests {
             let g = c.create_graph()?;
             let initial_state = g.constant(
                 array_type(vec![10], BIT),
-                Value::from_flattened_array(&vec![0; 10], BIT)?,
+                Value::from_flattened_array(&[0; 10], BIT)?,
             )?;
             let input_vals = vec![1; 5];
             let mut inputs = vec![];
@@ -496,20 +496,20 @@ mod tests {
             }
             let inputs_node = g.create_vector(scalar_type(BIT), inputs.clone())?;
             let mut inliner = MockInlineState {
-                fake_graph: g.clone(),
+                fake_graph: g,
                 inputs: vec![],
                 inline_graph_calls: vec![],
                 returned_nodes: vec![],
             };
             let g_inline = c.create_graph()?;
             let empty = g_inline.create_tuple(vec![])?;
-            g_inline.set_output_node(g_inline.create_tuple(vec![empty.clone(), empty.clone()])?)?;
+            g_inline.set_output_node(g_inline.create_tuple(vec![empty.clone(), empty])?)?;
             let res = inline_iterate_small_state(
                 false,
                 DepthOptimizationLevel::Extreme,
-                g_inline.clone(),
-                initial_state.clone(),
-                inputs_node.clone(),
+                g_inline,
+                initial_state,
+                inputs_node,
                 &mut inliner,
             );
             assert!(res.is_err());
@@ -522,23 +522,22 @@ mod tests {
     fn test_small_state_iterate_nonempty_output() {
         || -> Result<()> {
             let c = create_context()?;
-            let (g, initial_state, inputs_node, _input_vals) = build_test_data(c.clone(), BIT)?;
+            let (g, initial_state, inputs_node, _input_vals) = build_test_data(&c, BIT)?;
             let mut inliner = MockInlineState {
-                fake_graph: g.clone(),
+                fake_graph: g,
                 inputs: vec![],
                 inline_graph_calls: vec![],
                 returned_nodes: vec![],
             };
             let g_inline = c.create_graph()?;
             let one_bit = g_inline.input(scalar_type(BIT))?;
-            g_inline
-                .set_output_node(g_inline.create_tuple(vec![one_bit.clone(), one_bit.clone()])?)?;
+            g_inline.set_output_node(g_inline.create_tuple(vec![one_bit.clone(), one_bit])?)?;
             inline_iterate_small_state(
                 true,
                 DepthOptimizationLevel::Extreme,
-                g_inline.clone(),
-                initial_state.clone(),
-                inputs_node.clone(),
+                g_inline,
+                initial_state,
+                inputs_node,
                 &mut inliner,
             )?;
             assert_eq!(inliner.inputs.len(), 15);
@@ -551,9 +550,9 @@ mod tests {
     fn test_small_state_iterate_valid_case() {
         || -> Result<()> {
             let c = create_context()?;
-            let (g, initial_state, inputs_node, _input_vals) = build_test_data(c.clone(), BIT)?;
+            let (g, initial_state, inputs_node, _input_vals) = build_test_data(&c, BIT)?;
             let mut inliner = MockInlineState {
-                fake_graph: g.clone(),
+                fake_graph: g,
                 inputs: vec![],
                 inline_graph_calls: vec![],
                 returned_nodes: vec![],
@@ -561,14 +560,13 @@ mod tests {
             let g_inline = c.create_graph()?;
             let one_bit = g_inline.input(scalar_type(BIT))?;
             let empty = g_inline.create_tuple(vec![])?;
-            g_inline
-                .set_output_node(g_inline.create_tuple(vec![one_bit.clone(), empty.clone()])?)?;
+            g_inline.set_output_node(g_inline.create_tuple(vec![one_bit, empty])?)?;
             inline_iterate_small_state(
                 true,
                 DepthOptimizationLevel::Extreme,
-                g_inline.clone(),
-                initial_state.clone(),
-                inputs_node.clone(),
+                g_inline,
+                initial_state,
+                inputs_node,
                 &mut inliner,
             )?;
             assert_eq!(inliner.inline_graph_calls.len(), 5 * 2);

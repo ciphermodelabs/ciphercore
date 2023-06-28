@@ -145,7 +145,7 @@ impl<'a> InlineState for InlineStateImpl<'a> {
 /// recursively processed with the same config.
 /// The inlining process preserves node annotations and names of nodes in the main graph.
 /// The name of a to-be-inlined Call/Iterate node is passed to a node containing its output.
-pub fn inline_operations(context: Context, config: InlineConfig) -> Result<MappedContext> {
+pub fn inline_operations(context: &Context, config: InlineConfig) -> Result<MappedContext> {
     context.check_finalized()?;
     // First, collect all graphs reachable from the main graph which won't be
     // inlined.
@@ -184,7 +184,7 @@ pub fn inline_operations(context: Context, config: InlineConfig) -> Result<Mappe
     output_context.set_main_graph(inlining_context.get_graph(main_graph))?;
     output_context.finalize()?;
     Ok(MappedContext::new_with_mappings(
-        context,
+        context.clone(),
         output_context,
         inlining_context.context_mapping,
     ))
@@ -520,23 +520,23 @@ mod tests {
             c.set_main_graph(g2)?;
             c.finalize()?;
             let c_out = inline_operations(
-                c.clone(),
+                &c,
                 InlineConfig {
                     default_mode: InlineMode::Noop,
                     ..Default::default()
                 },
             )?;
-            assert!(contexts_deep_equal(c.clone(), c_out.get_context().clone()));
-            assert_eq!(o2.clone().get_annotations()?.len(), 1);
+            assert!(contexts_deep_equal(&c, &c_out.get_context()));
+            assert_eq!(o2.get_annotations()?.len(), 1);
             Ok(())
         }()
         .unwrap();
     }
 
     fn verify_on_all_inputs(g1: Graph, g2: Graph) -> Result<()> {
-        for x in vec![0, 1] {
-            for y in vec![0, 1] {
-                for z in vec![0, 1] {
+        for x in [0, 1] {
+            for y in [0, 1] {
+                for z in [0, 1] {
                     let inputs = vec![
                         Value::from_scalar(x, BIT)?,
                         Value::from_scalar(y, BIT)?,
@@ -560,7 +560,7 @@ mod tests {
             i11.set_name("First input")?;
             let i12 = g1.input(scalar_type(BIT))?;
             i12.set_name("Second input")?;
-            let sum12 = g1.add(i11.clone(), i12.clone())?;
+            let sum12 = g1.add(i11, i12)?;
             sum12.set_name("Output of g1")?;
             g1.set_output_node(sum12)?;
             g1.finalize()?;
@@ -572,19 +572,19 @@ mod tests {
             let o1 = g2.call(g1, vec![i21, i22])?;
             o1.set_name("Output of calling g1")?;
             let o2 = g2.multiply(o1, i23)?;
-            g2.set_output_node(o2.clone())?;
+            g2.set_output_node(o2)?;
             g2.finalize()?;
             c.set_main_graph(g2.clone())?;
             c.finalize()?;
             let c_out = inline_operations(
-                c.clone(),
+                &c,
                 InlineConfig {
                     default_mode: InlineMode::Simple,
                     ..Default::default()
                 },
             )?
             .get_context();
-            assert!(!contexts_deep_equal(c.clone(), c_out.clone()));
+            assert!(!contexts_deep_equal(&c, &c_out));
             assert!(c_out.is_finalized());
             assert_eq!(c_out.get_graphs().len(), 1);
             let g_out = c_out.get_main_graph()?;
@@ -592,7 +592,7 @@ mod tests {
                 assert_eq!(node.get_graph_dependencies().len(), 0);
             }
             // Check that the graphs are equivalent as functions.
-            verify_on_all_inputs(g2.clone(), g_out.clone())?;
+            verify_on_all_inputs(g2, g_out)?;
             // Check names
             let inlined_g = c_out.get_main_graph()?;
             let named_call_result = c_out.retrieve_node(inlined_g.clone(), "Output of calling g1");
@@ -622,7 +622,7 @@ mod tests {
             {
                 let i01 = g0.input(scalar_type(BIT))?;
                 let i02 = g0.input(scalar_type(BIT))?;
-                let sum12 = g0.add(i01.clone(), i02.clone())?;
+                let sum12 = g0.add(i01, i02)?;
                 g0.set_output_node(sum12)?;
                 g0.finalize()?;
             }
@@ -644,21 +644,21 @@ mod tests {
                 let o1 = g2.call(g1.clone(), vec![i21, i22])?;
                 // Call g1 multiple times.
                 let o2 = g2.call(g1, vec![o1, i23])?;
-                g2.set_output_node(o2.clone())?;
+                g2.set_output_node(o2)?;
                 g2.finalize()?;
             }
 
             c.set_main_graph(g2.clone())?;
             c.finalize()?;
             let c_out = inline_operations(
-                c.clone(),
+                &c,
                 InlineConfig {
                     default_mode: InlineMode::Simple,
                     ..Default::default()
                 },
             )?
             .get_context();
-            verify_on_all_inputs(g2.clone(), c_out.get_main_graph()?)?;
+            verify_on_all_inputs(g2, c_out.get_main_graph()?)?;
             Ok(())
         }()
         .unwrap();
@@ -673,8 +673,8 @@ mod tests {
             {
                 let i01 = g0.input(scalar_type(BIT))?;
                 let i02 = g0.input(scalar_type(BIT))?;
-                let sum12 = g0.add(i01.clone(), i02.clone())?;
-                let out = g0.create_tuple(vec![sum12.clone(), sum12.clone()])?;
+                let sum12 = g0.add(i01, i02)?;
+                let out = g0.create_tuple(vec![sum12.clone(), sum12])?;
                 g0.set_output_node(out)?;
                 g0.finalize()?;
             }
@@ -686,14 +686,14 @@ mod tests {
                 let i23 = g1.input(scalar_type(BIT))?;
                 let o1 = g1.tuple_get(g1.call(g0.clone(), vec![i21, i22])?, 0)?;
                 let input_vec = g1.repeat(i23, 1)?;
-                let o2 = g1.tuple_get(g1.iterate(g0.clone(), o1, input_vec)?, 0)?;
-                g1.set_output_node(o2.clone())?;
+                let o2 = g1.tuple_get(g1.iterate(g0, o1, input_vec)?, 0)?;
+                g1.set_output_node(o2)?;
                 g1.finalize()?;
             }
             c.set_main_graph(g1.clone())?;
             c.finalize()?;
             let c_out = inline_operations(
-                c.clone(),
+                &c,
                 InlineConfig {
                     default_mode: InlineMode::Simple,
                     override_iterate_mode: Some(InlineMode::Noop),
@@ -701,7 +701,7 @@ mod tests {
                 },
             )?
             .get_context();
-            verify_on_all_inputs(g1.clone(), c_out.get_main_graph()?)?;
+            verify_on_all_inputs(g1, c_out.get_main_graph()?)?;
             Ok(())
         }()
         .unwrap();
@@ -716,8 +716,8 @@ mod tests {
             {
                 let i01 = g0.input(scalar_type(BIT))?;
                 let i02 = g0.input(scalar_type(BIT))?;
-                let sum12 = g0.add(i01.clone(), i02.clone())?;
-                let out = g0.create_tuple(vec![sum12.clone(), sum12.clone()])?;
+                let sum12 = g0.add(i01, i02)?;
+                let out = g0.create_tuple(vec![sum12.clone(), sum12])?;
                 out.set_name("CreateTuple output")?;
                 g0.set_output_node(out)?;
                 g0.finalize()?;
@@ -730,16 +730,16 @@ mod tests {
                 let i23 = g1.input(scalar_type(BIT))?;
                 let o1 = g1.tuple_get(g1.call(g0.clone(), vec![i21, i22])?, 0)?;
                 let input_vec = g1.repeat(i23, 5)?;
-                let o2 = g1.iterate(g0.clone(), o1, input_vec)?;
+                let o2 = g1.iterate(g0, o1, input_vec)?;
                 o2.set_name("Iterate output")?;
                 let o3 = g1.tuple_get(o2, 0)?;
-                g1.set_output_node(o3.clone())?;
+                g1.set_output_node(o3)?;
                 g1.finalize()?;
             }
             c.set_main_graph(g1.clone())?;
             c.finalize()?;
             let c_out = inline_operations(
-                c.clone(),
+                &c,
                 InlineConfig {
                     default_mode: mode,
                     ..Default::default()
@@ -747,10 +747,10 @@ mod tests {
             )?
             .get_context();
             assert_eq!(c_out.get_graphs().len(), 1);
-            verify_on_all_inputs(g1.clone(), c_out.get_main_graph()?)?;
+            verify_on_all_inputs(g1, c_out.get_main_graph()?)?;
             // Check names
             let inlined_g = c_out.get_main_graph()?;
-            let named_iterate_result = c_out.retrieve_node(inlined_g.clone(), "Iterate output");
+            let named_iterate_result = c_out.retrieve_node(inlined_g, "Iterate output");
             assert!(named_iterate_result.is_ok());
             let named_iterate = named_iterate_result?;
             assert_eq!(named_iterate.get_operation(), Operation::CreateTuple);
@@ -769,8 +769,8 @@ mod tests {
             {
                 let i01 = g0.input(scalar_type(BIT))?;
                 let i02 = g0.input(scalar_type(BIT))?;
-                let sum12 = g0.add(i01.clone(), i02.clone())?;
-                let out = g0.create_tuple(vec![sum12.clone(), sum12.clone()])?;
+                let sum12 = g0.add(i01, i02)?;
+                let out = g0.create_tuple(vec![sum12.clone(), sum12])?;
                 g0.set_output_node(out)?;
                 g0.finalize()?;
             }
@@ -782,7 +782,7 @@ mod tests {
                 let o1 = g1.tuple_get(g1.call(g0.clone(), vec![i21, i22])?, 0)?;
                 let input_vec = g1.repeat(i23, 5)?;
                 let o2 = g1.iterate(g0.clone(), o1, input_vec)?;
-                g1.set_output_node(o2.clone())?;
+                g1.set_output_node(o2)?;
                 g1.finalize()?;
             }
             let g2 = c.create_graph()?;
@@ -790,26 +790,19 @@ mod tests {
                 let i21 = g2.input(scalar_type(BIT))?;
                 let i22 = g2.input(scalar_type(BIT))?;
                 let i23 = g2.input(scalar_type(BIT))?;
-                let o1 = g2.tuple_get(g2.call(g0.clone(), vec![i21.clone(), i22.clone()])?, 0)?;
+                let o1 = g2.tuple_get(g2.call(g0, vec![i21.clone(), i22.clone()])?, 0)?;
                 let input_vec = g2.create_vector(
                     scalar_type(BIT),
-                    vec![
-                        i21.clone(),
-                        i22.clone(),
-                        i23.clone(),
-                        o1.clone(),
-                        o1.clone(),
-                        o1.clone(),
-                    ],
+                    vec![i21, i22, i23, o1.clone(), o1.clone(), o1.clone()],
                 )?;
-                let o2 = g2.iterate(g1.clone(), o1, input_vec)?;
-                g2.set_output_node(o2.clone())?;
+                let o2 = g2.iterate(g1, o1, input_vec)?;
+                g2.set_output_node(o2)?;
                 g2.finalize()?;
             }
             c.set_main_graph(g2.clone())?;
             c.finalize()?;
             let c_out = inline_operations(
-                c.clone(),
+                &c,
                 InlineConfig {
                     default_mode: mode,
                     ..Default::default()
@@ -817,7 +810,7 @@ mod tests {
             )?
             .get_context();
             assert_eq!(c_out.get_graphs().len(), 1);
-            verify_on_all_inputs(g2.clone(), c_out.get_main_graph()?)?;
+            verify_on_all_inputs(g2, c_out.get_main_graph()?)?;
             Ok(())
         };
         helper(InlineMode::Simple).unwrap();
@@ -857,7 +850,7 @@ mod tests {
                     g0.create_tuple(vec![output_state, g0.create_tuple(vec![])?])?
                 }
                 IterateOutput::State => {
-                    g0.create_tuple(vec![output_state.clone(), output_state.clone()])?
+                    g0.create_tuple(vec![output_state.clone(), output_state])?
                 }
             };
             g0.set_output_node(output)?;
@@ -871,11 +864,8 @@ mod tests {
             let i1 = g1.input(bit_type.clone())?;
             let i2 = g1.input(bit_type.clone())?;
             let i3 = g1.input(bit_type.clone())?;
-            let input_vec = g1.create_vector(
-                bit_type.clone(),
-                vec![i0.clone(), i1.clone(), i2.clone(), i3.clone()],
-            )?;
-            let iterate_out = g1.iterate(g0.clone(), i0, input_vec)?;
+            let input_vec = g1.create_vector(bit_type, vec![i0.clone(), i1, i2, i3])?;
+            let iterate_out = g1.iterate(g0, i0, input_vec)?;
             let output = match iterate_output {
                 IterateOutput::State => {
                     let mut output = g1.tuple_get(iterate_out.clone(), 0)?;
@@ -887,12 +877,12 @@ mod tests {
                     }
                     output
                 }
-                _ => g1.tuple_get(iterate_out.clone(), 0)?,
+                _ => g1.tuple_get(iterate_out, 0)?,
             };
-            g1.set_output_node(output.clone())?;
+            g1.set_output_node(output)?;
             g1.finalize()?;
         }
-        c.set_main_graph(g1.clone())?;
+        c.set_main_graph(g1)?;
         c.finalize()?;
         Ok(c)
     }
@@ -902,7 +892,7 @@ mod tests {
         let helper = |mode, inline_output| -> Result<()> {
             let c = generate_context_for_associative_iterate(inline_output)?;
             let c_out = inline_operations(
-                c.clone(),
+                &c,
                 InlineConfig {
                     default_mode: mode,
                     ..Default::default()
@@ -942,7 +932,7 @@ mod tests {
             {
                 let i01 = g0.input(tuple_type(vec![]))?;
                 let i02 = g0.input(scalar_type(BIT))?;
-                let out = g0.create_tuple(vec![i01.clone(), i02.clone()])?;
+                let out = g0.create_tuple(vec![i01, i02])?;
                 g0.set_output_node(out)?;
                 g0.finalize()?;
             }
@@ -952,29 +942,25 @@ mod tests {
                 let i21 = g1.input(scalar_type(BIT))?;
                 let i22 = g1.input(scalar_type(BIT))?;
                 let i23 = g1.input(scalar_type(BIT))?;
-                let input_vec =
-                    g1.create_vector(i21.get_type()?, vec![i21.clone(), i22.clone(), i23.clone()])?;
-                let o1 = g1.tuple_get(
-                    g1.iterate(g0.clone(), g1.create_tuple(vec![])?, input_vec)?,
-                    1,
-                )?;
+                let input_vec = g1.create_vector(i21.get_type()?, vec![i21, i22, i23])?;
+                let o1 = g1.tuple_get(g1.iterate(g0, g1.create_tuple(vec![])?, input_vec)?, 1)?;
                 let o2 = g1.add(
                     g1.vector_get(
                         o1.clone(),
                         g1.constant(scalar_type(UINT64), Value::from_scalar(0, UINT64)?)?,
                     )?,
                     g1.vector_get(
-                        o1.clone(),
+                        o1,
                         g1.constant(scalar_type(UINT64), Value::from_scalar(1, UINT64)?)?,
                     )?,
                 )?;
-                g1.set_output_node(o2.clone())?;
+                g1.set_output_node(o2)?;
                 g1.finalize()?;
             }
             c.set_main_graph(g1.clone())?;
             c.finalize()?;
             let c_out = inline_operations(
-                c.clone(),
+                &c,
                 InlineConfig {
                     default_mode: mode,
                     ..Default::default()
@@ -982,7 +968,7 @@ mod tests {
             )?
             .get_context();
             assert_eq!(c_out.get_graphs().len(), 1);
-            verify_on_all_inputs(g1.clone(), c_out.get_main_graph()?)?;
+            verify_on_all_inputs(g1, c_out.get_main_graph()?)?;
             Ok(())
         };
         helper(InlineMode::Simple).unwrap();
@@ -1052,11 +1038,8 @@ mod tests {
             let i1 = g1.input(bit_type.clone())?;
             let i2 = g1.input(bit_type.clone())?;
             let i3 = g1.input(bit_type.clone())?;
-            let input_vec = g1.create_vector(
-                bit_type.clone(),
-                vec![i0.clone(), i1.clone(), i2.clone(), i3.clone()],
-            )?;
-            let iterate_out = g1.iterate(g0.clone(), i0, input_vec)?;
+            let input_vec = g1.create_vector(bit_type, vec![i0.clone(), i1, i2, i3])?;
+            let iterate_out = g1.iterate(g0, i0, input_vec)?;
             let output = if nonempty_output {
                 let mut total = g1.tuple_get(iterate_out.clone(), 0)?;
                 let vec = g1.tuple_get(iterate_out, 1)?;
@@ -1069,10 +1052,10 @@ mod tests {
             } else {
                 g1.tuple_get(iterate_out, 0)?
             };
-            g1.set_output_node(output.clone())?;
+            g1.set_output_node(output)?;
             g1.finalize()?;
         }
-        c.set_main_graph(g1.clone())?;
+        c.set_main_graph(g1)?;
         c.finalize()?;
         Ok(c)
     }
@@ -1082,7 +1065,7 @@ mod tests {
         let helper = |mode, single_bit, shape| -> Result<()> {
             let c = generate_context_for_small_state(single_bit, false, shape)?;
             let c_out = inline_operations(
-                c.clone(),
+                &c,
                 InlineConfig {
                     default_mode: mode,
                     ..Default::default()
@@ -1144,7 +1127,7 @@ mod tests {
         let helper = |mode, single_bit, shape| -> Result<()> {
             let c = generate_context_for_small_state(single_bit, true, shape)?;
             let c_out = inline_operations(
-                c.clone(),
+                &c,
                 InlineConfig {
                     default_mode: mode,
                     ..Default::default()
@@ -1220,7 +1203,7 @@ mod tests {
             })?;
             let mapped_c = run_instantiation_pass(c)?.get_context();
             let c_out = inline_operations(
-                mapped_c.clone(),
+                &mapped_c,
                 InlineConfig {
                     default_mode: mode,
                     ..Default::default()
@@ -1231,7 +1214,7 @@ mod tests {
                 Value::from_flattened_array(&x1, UINT64)?,
                 Value::from_flattened_array(&x2, UINT64)?,
             ];
-            let result = random_evaluate(c_out.get_main_graph()?.clone(), inputs.clone())?;
+            let result = random_evaluate(c_out.get_main_graph()?, inputs)?;
             result.to_flattened_array_u64(array_type(vec![x1.len() as u64], BIT))
         };
         let res_less_than = helper(

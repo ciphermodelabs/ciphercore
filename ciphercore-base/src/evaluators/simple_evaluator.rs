@@ -1495,7 +1495,7 @@ mod tests {
                 prfs: HashMap::new(),
             };
             let v = evaluator.evaluate_context(c, Vec::new())?;
-            let ot = vector_type(3, t.clone());
+            let ot = vector_type(3, t);
             assert_eq!(evaluator.prfs.len(), 2);
             assert!(v.check_type(ot)?);
             Ok(())
@@ -1992,7 +1992,7 @@ mod tests {
         // Chi-square test with significance level 10^(-6)
         // <https://www.itl.nist.gov/div898/handbook/eda/section3/eda35f.htm>
         if n > 1 {
-            let counters: Vec<u64> = perm_statistics.values().map(|c| *c).collect();
+            let counters: Vec<u64> = perm_statistics.values().copied().collect();
             let chi2 = chi_statistics(&counters, expected_count_per_perm);
             // Critical value is computed with n!-1 degrees of freedom
             if n == 4 {
@@ -2124,7 +2124,7 @@ mod tests {
                 // Chi-square test with significance level 10^(-6)
                 // Critical value is computed with n!-1 degrees of freedom
                 // <https://www.itl.nist.gov/div898/handbook/eda/section3/eda35f.htm>
-                let counters: Vec<u64> = perm_statistics.values().map(|c| *c).collect();
+                let counters: Vec<u64> = perm_statistics.values().copied().collect();
                 let chi2 = chi_statistics(&counters, expected_count_per_perm);
 
                 assert!(chi2 < 70.5496_f64);
@@ -2134,6 +2134,8 @@ mod tests {
         .unwrap();
     }
 
+    // TODO: fix return type
+    #[allow(clippy::type_complexity)]
     fn decompose_switching_map_helper(
         shape: ArrayShape,
         n: u64,
@@ -2152,7 +2154,7 @@ mod tests {
         let dup_tuple = result_vector[1].to_vector()?;
         let dup_map = dup_tuple[0].to_flattened_array_u64(array_type(shape.clone(), UINT64))?;
         let dup_bits = dup_tuple[1].to_flattened_array_u64(array_type(shape, BIT))?;
-        let perm2 = result_vector[2].to_flattened_array_u64(input_type.clone())?;
+        let perm2 = result_vector[2].to_flattened_array_u64(input_type)?;
 
         Ok((perm1, dup_map, dup_bits, perm2))
     }
@@ -2316,7 +2318,7 @@ mod tests {
                 // Chi-square test with significance level 10^(-6)
                 // Critical value is computed with n!-1 degrees of freedom
                 // <https://www.itl.nist.gov/div898/handbook/eda/section3/eda35f.htm>
-                let counters: Vec<u64> = perm_statistics.values().map(|c| *c).collect();
+                let counters: Vec<u64> = perm_statistics.values().copied().collect();
                 let chi2 = chi_statistics(&counters, expected_count_per_perm);
 
                 assert!(chi2 < 70.5496_f64);
@@ -3418,7 +3420,7 @@ mod tests {
             gemm_true_false,
             gemm_true_true,
         ])?;
-        g.set_output_node(o.clone())?;
+        g.set_output_node(o)?;
         g.finalize()?;
         c.set_main_graph(g.clone())?;
         c.finalize()?;
@@ -3441,8 +3443,8 @@ mod tests {
 
         let c = create_context()?;
         let g = c.create_graph()?;
-        let i0 = g.random(t0.clone())?;
-        let i1 = g.random(t1.clone())?;
+        let i0 = g.random(t0)?;
+        let i1 = g.random(t1)?;
         let trans_i0 = i0.permute_axes(trans_perm0)?;
         let trans_i1 = i1.permute_axes(trans_perm1)?;
         let gemm_false_false = i0.gemm(trans_i1.clone(), false, false)?;
@@ -3458,7 +3460,7 @@ mod tests {
             gemm_true_false,
             gemm_true_true,
         ])?;
-        g.set_output_node(o.clone())?;
+        g.set_output_node(o)?;
         g.finalize()?;
         c.set_main_graph(g.clone())?;
         c.finalize()?;
@@ -3698,8 +3700,7 @@ mod tests {
         c.set_main_graph(g.clone())?;
         c.finalize()?;
 
-        let result =
-            evaluate_simple_evaluator(g, vec![flag.value.clone(), input.value.clone()], None);
+        let result = evaluate_simple_evaluator(g, vec![flag.value, input.value.clone()], None);
         if expect_success {
             assert!(result.is_ok());
             assert_eq!(result?, input.value);
@@ -3759,7 +3760,7 @@ mod tests {
                         SliceElement::SubArray(None, None, Some(-1)),
                     ])?
                     .b2a(inputs[0].t.get_scalar_type())?];
-                for i in (0..inputs.len()).into_iter().skip(1) {
+                for i in (0..inputs.len()).skip(1) {
                     values.push(result.named_tuple_get(format!("value_{}", i))?);
                 }
                 g.create_tuple(values)
@@ -3838,10 +3839,10 @@ mod tests {
             prfs: HashMap::new(),
         };
 
-        let result_value = evaluator.evaluate_context(c.clone(), Vec::new())?;
-        let perm = result_value.to_flattened_array_u64(result_type.clone())?;
+        let result_value = evaluator.evaluate_context(c, Vec::new())?;
+        let perm = result_value.to_flattened_array_u64(result_type)?;
 
-        let mut perm_sorted = perm.clone();
+        let mut perm_sorted = perm;
         perm_sorted.sort();
         let range_vec: Vec<u64> = (0..n).collect();
         assert_eq!(perm_sorted, range_vec);
@@ -3921,7 +3922,7 @@ mod tests {
             let o = g.get_output_node()?;
             TypedValue::new(o.get_type()?, random_evaluate(g, vec![tv.value])?)
         };
-        let tv = |arr, st| TypedValue::from_ndarray(arr, st);
+        let tv = TypedValue::from_ndarray;
         assert_eq!(
             cum_sum(tv(array![1, 1, 1, 1, 1].into_dyn(), UINT8)?, 0)?,
             tv(array![1, 2, 3, 4, 5].into_dyn(), UINT8)?

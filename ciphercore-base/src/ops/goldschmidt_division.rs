@@ -169,7 +169,7 @@ mod tests {
             let dividend_node = g.input(scalar_type(st))?;
             let divisor_node = g.input(scalar_type(st))?;
             if let Some(approx) = initial_approximation {
-                let approx_const = constant_scalar(&g, approx, st)?;
+                let approx_const = constant_scalar(g, approx, st)?;
                 g.custom_op(
                     CustomOperation::new(GoldschmidtDivision {
                         iterations: 5,
@@ -286,11 +286,11 @@ mod tests {
     fn test_goldschmidt_division_scalar() {
         let dividend = 123456;
         let div_v = vec![1, 2, 3, 123, 300, 500, 700];
-        for i in div_v.clone() {
+        for i in div_v {
             let result_int64 = scalar_division_helper(dividend, i, None, INT64, 10)
                 .unwrap()
                 .to_i64(INT64)
-                .unwrap() as i64;
+                .unwrap();
             let result_uint64 = scalar_division_helper(dividend, i, None, UINT64, 10)
                 .unwrap()
                 .to_u64(UINT64)
@@ -395,9 +395,9 @@ mod tests {
         };
         let instantiated_context = run_instantiation_pass(c)?.get_context();
         let inlined_context =
-            inline_operations(instantiated_context, inline_config.clone())?.get_context();
+            inline_operations(&instantiated_context, inline_config.clone())?.get_context();
         let _unused = prepare_for_mpc_evaluation(
-            inlined_context,
+            &inlined_context,
             vec![vec![IOStatus::Shared, IOStatus::Shared]],
             vec![vec![]],
             inline_config,

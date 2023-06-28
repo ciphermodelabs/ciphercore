@@ -3748,7 +3748,7 @@ impl fmt::Display for Context {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match serde_json::to_string(&self) {
             Ok(s) => write!(f, "{s}"),
-            Err(_err) => Err(fmt::Error::default()),
+            Err(_err) => Err(fmt::Error),
         }
     }
 }
@@ -3761,11 +3761,7 @@ impl fmt::Display for Graph {
 
 impl fmt::Display for Node {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "Node[type={}]",
-            self.get_type().map_err(|_| fmt::Error::default())?
-        )
+        write!(f, "Node[type={}]", self.get_type().map_err(|_| fmt::Error)?)
     }
 }
 
@@ -4367,7 +4363,7 @@ impl Context {
     ///
     /// `true` if the given contexts contain the same content, otherwise `false`
     pub fn deep_equal(&self, context2: Context) -> bool {
-        contexts_deep_equal(self.clone(), context2)
+        contexts_deep_equal(self, &context2)
     }
 }
 
@@ -4415,7 +4411,7 @@ impl Context {
                     "Type checker associated with the context already exists"
                 ));
             }
-            cell.type_checker = Some(create_type_inference_worker(self.clone()));
+            cell.type_checker = Some(create_type_inference_worker(self));
         }
         for graph in self.get_graphs() {
             for node in graph.get_nodes() {
@@ -4756,7 +4752,7 @@ fn graphs_deep_equal(graph1: Graph, graph2: Graph) -> bool {
 /// # Returns
 ///
 /// `true` if the given contexts contain the same content, otherwise `false`
-pub fn contexts_deep_equal(context1: Context, context2: Context) -> bool {
+pub fn contexts_deep_equal(context1: &Context, context2: &Context) -> bool {
     let body1 = context1.body.borrow();
     let body2 = context2.body.borrow();
     if body1.finalized != body2.finalized {
@@ -4905,11 +4901,9 @@ mod tests {
         graph
             .reshape(input3.clone(), array_type(vec![20, 300], BIT))
             .unwrap();
-        graph.nop(input3.clone()).unwrap();
+        graph.nop(input3).unwrap();
         let key = graph.random(array_type(vec![128], BIT)).unwrap();
-        graph
-            .prf(key.clone(), 0, array_type(vec![10, 10], UINT64))
-            .unwrap();
+        graph.prf(key, 0, array_type(vec![10, 10], UINT64)).unwrap();
         graph
             .stack(vec![input1.clone(), input2.clone()], vec![2, 1])
             .unwrap();
@@ -4917,8 +4911,8 @@ mod tests {
             .constant(scalar_type(BIT), Value::from_bytes(vec![1]))
             .unwrap();
         let input4 = graph.input(array_type(vec![10, 10], UINT64)).unwrap();
-        let bits = graph.a2b(input4.clone()).unwrap();
-        graph.b2a(bits.clone(), UINT64).unwrap();
+        let bits = graph.a2b(input4).unwrap();
+        graph.b2a(bits, UINT64).unwrap();
         let t = graph
             .create_tuple(vec![input1.clone(), input2.clone()])
             .unwrap();
@@ -4928,19 +4922,19 @@ mod tests {
         let nt = graph
             .create_named_tuple(vec![
                 ("Name".to_owned(), input1.clone()),
-                ("Gender".to_owned(), input2.clone()),
+                ("Gender".to_owned(), input2),
             ])
             .unwrap();
         graph.tuple_get(t, 1).unwrap();
         graph.named_tuple_get(nt, "Gender".to_owned()).unwrap();
-        let v = graph.repeat(c.clone(), 100).unwrap();
+        let v = graph.repeat(c, 100).unwrap();
         graph.zip(vec![v.clone(), v.clone(), v.clone()]).unwrap();
         let zero = graph
             .constant(scalar_type(UINT64), Value::from_bytes(vec![0; 8]))
             .unwrap();
         graph.vector_get(v, zero).unwrap();
         graph.array_to_vector(input1.clone()).unwrap();
-        graph.vector_to_array(input1.clone()).unwrap();
+        graph.vector_to_array(input1).unwrap();
     }
 
     #[test]
@@ -4953,18 +4947,15 @@ mod tests {
                 .input(tuple_type(vec![scalar_type(BIT), scalar_type(BIT)]))
                 .unwrap();
             let a = single_bit_adder.tuple_get(inputs.clone(), 0).unwrap();
-            let b = single_bit_adder.tuple_get(inputs.clone(), 1).unwrap();
-            let ac = single_bit_adder.add(carry.clone(), a.clone()).unwrap();
+            let b = single_bit_adder.tuple_get(inputs, 1).unwrap();
+            let ac = single_bit_adder.add(carry.clone(), a).unwrap();
             let bc = single_bit_adder.add(carry.clone(), b.clone()).unwrap();
-            let result = single_bit_adder.add(ac.clone(), b.clone()).unwrap();
+            let result = single_bit_adder.add(ac.clone(), b).unwrap();
             let result_carry = single_bit_adder
-                .add(
-                    single_bit_adder.multiply(ac.clone(), bc.clone()).unwrap(),
-                    carry,
-                )
+                .add(single_bit_adder.multiply(ac, bc).unwrap(), carry)
                 .unwrap();
             let output = single_bit_adder
-                .create_tuple(vec![result_carry.clone(), result.clone()])
+                .create_tuple(vec![result_carry, result])
                 .unwrap();
             single_bit_adder.set_output_node(output).unwrap();
             single_bit_adder.finalize().unwrap();
@@ -4986,11 +4977,11 @@ mod tests {
         let three_adder = context.create_graph().unwrap();
         let a = three_adder.input(v32.clone()).unwrap();
         let b = three_adder.input(v32.clone()).unwrap();
-        let c = three_adder.input(v32.clone()).unwrap();
+        let c = three_adder.input(v32).unwrap();
         let result = three_adder
             .call(
                 adder.clone(),
-                vec![three_adder.call(adder.clone(), vec![a, b]).unwrap(), c],
+                vec![three_adder.call(adder, vec![a, b]).unwrap(), c],
             )
             .unwrap();
         three_adder.set_output_node(result).unwrap();
@@ -5006,7 +4997,7 @@ mod tests {
         let graph2 = context.create_graph().unwrap();
         let input1 = graph.input(scalar_type(UINT64)).unwrap();
         let input2 = graph2.input(scalar_type(UINT64)).unwrap();
-        let e1 = graph.add(input1.clone(), input2.clone());
+        let e1 = graph.add(input1.clone(), input2);
         assert!(e1.is_err());
         let fake_node = Node {
             body: Arc::new(NodeBody {
@@ -5017,7 +5008,7 @@ mod tests {
                 id: 0,
             }),
         };
-        let e2 = graph.add(fake_node.clone(), input1.clone());
+        let e2 = graph.add(fake_node, input1.clone());
         assert!(e2.is_err());
         let fake_node_2 = Node {
             body: Arc::new(NodeBody {
@@ -5028,7 +5019,7 @@ mod tests {
                 id: 31337,
             }),
         };
-        let e3 = graph.add(fake_node_2.clone(), input1.clone());
+        let e3 = graph.add(fake_node_2, input1.clone());
         assert!(e3.is_err());
         graph.set_output_node(input1.clone()).unwrap();
         graph.finalize().unwrap();
@@ -5057,7 +5048,7 @@ mod tests {
         graph.finalize().unwrap();
         let e3 = context.finalize();
         assert!(e3.is_err());
-        context.set_main_graph(graph.clone()).unwrap();
+        context.set_main_graph(graph).unwrap();
         context.finalize().unwrap();
     }
 
@@ -5074,13 +5065,13 @@ mod tests {
         graph2.call(graph1.clone(), vec![]).unwrap();
         let context2 = create_unchecked_context().unwrap();
         let graph3 = context2.create_graph().unwrap();
-        let e2 = graph3.call(graph1.clone(), vec![]);
+        let e2 = graph3.call(graph1, vec![]);
         assert!(e2.is_err());
         let graph4 = context1.create_graph().unwrap();
         graph4.input(tuple_type(vec![])).unwrap();
         graph4.input(tuple_type(vec![])).unwrap();
         let t = graph4.create_tuple(vec![]).unwrap();
-        let tt = graph4.create_tuple(vec![t.clone(), t.clone()]).unwrap();
+        let tt = graph4.create_tuple(vec![t.clone(), t]).unwrap();
         graph4.set_output_node(tt).unwrap();
         let graph5 = context1.create_graph().unwrap();
         let es = graph5.create_tuple(vec![]).unwrap();
@@ -5090,15 +5081,13 @@ mod tests {
         let e3 = graph5.iterate(graph4.clone(), es.clone(), v.clone());
         assert!(e3.is_err());
         graph4.finalize().unwrap();
-        graph5
-            .iterate(graph4.clone(), es.clone(), v.clone())
-            .unwrap();
+        graph5.iterate(graph4.clone(), es, v).unwrap();
         let graph6 = context2.create_graph().unwrap();
         let es = graph6.create_tuple(vec![]).unwrap();
         let v = graph6
             .repeat(graph6.create_tuple(vec![]).unwrap(), 10)
             .unwrap();
-        let e4 = graph6.iterate(graph4.clone(), es.clone(), v.clone());
+        let e4 = graph6.iterate(graph4, es, v);
         assert!(e4.is_err());
     }
 
@@ -5108,8 +5097,8 @@ mod tests {
         let graph = context.create_graph().unwrap();
         let input1 = graph.input(scalar_type(BIT)).unwrap();
         let input2 = graph.input(scalar_type(BIT)).unwrap();
-        graph.add(input1.clone(), input2.clone()).unwrap();
-        graph.set_output_node(input1.clone()).unwrap();
+        graph.add(input1.clone(), input2).unwrap();
+        graph.set_output_node(input1).unwrap();
         graph.finalize().unwrap();
         for (i, node) in graph.get_nodes().iter().enumerate() {
             assert_eq!(node.get_id(), i as u64);
@@ -5172,10 +5161,7 @@ mod tests {
     }
 
     fn context_generators() -> Vec<Box<dyn Fn() -> Context>> {
-        let context1 = || {
-            let context = create_unchecked_context().unwrap();
-            context
-        };
+        let context1 = || create_unchecked_context().unwrap();
         let context2 = || {
             let context = create_unchecked_context().unwrap();
             let graph = context.create_graph().unwrap();
@@ -5326,23 +5312,23 @@ mod tests {
             graph.finalize().unwrap();
             context
         };
-        let mut closures: Vec<Box<dyn Fn() -> Context>> = vec![];
-        closures.push(Box::new(context1));
-        closures.push(Box::new(context2));
-        closures.push(Box::new(context3));
-        closures.push(Box::new(context4));
-        closures.push(Box::new(context5));
-        closures.push(Box::new(context6));
-        closures.push(Box::new(context7));
-        closures.push(Box::new(context8));
-        closures.push(Box::new(context9));
-        closures.push(Box::new(context10));
-        closures.push(Box::new(context11));
-        closures.push(Box::new(context12));
-        closures.push(Box::new(context13));
-        closures.push(Box::new(context14));
-        closures.push(Box::new(context15));
-        closures
+        vec![
+            Box::new(context1),
+            Box::new(context2),
+            Box::new(context3),
+            Box::new(context4),
+            Box::new(context5),
+            Box::new(context6),
+            Box::new(context7),
+            Box::new(context8),
+            Box::new(context9),
+            Box::new(context10),
+            Box::new(context11),
+            Box::new(context12),
+            Box::new(context13),
+            Box::new(context14),
+            Box::new(context15),
+        ]
     }
 
     fn test_context_deep_equal_helper_equal<F>(f: F)
@@ -5352,7 +5338,7 @@ mod tests {
         let context1 = f();
         let context2 = f();
         assert!(context1 != context2);
-        assert!(contexts_deep_equal(context1, context2));
+        assert!(contexts_deep_equal(&context1, &context2));
     }
 
     fn test_context_deep_equal_helper_nonequal<F1, F2>(f1: F1, f2: F2)
@@ -5363,7 +5349,7 @@ mod tests {
         let context1 = f1();
         let context2 = f2();
         assert!(context1 != context2);
-        assert!(!contexts_deep_equal(context1, context2));
+        assert!(!contexts_deep_equal(&context1, &context2));
     }
 
     #[test]
@@ -5429,10 +5415,7 @@ mod tests {
         assert_eq!(contexts.len(), deserialized_contexts.len());
         for i in 0..contexts.len() {
             assert!(contexts[i] != deserialized_contexts[i]);
-            assert!(contexts_deep_equal(
-                contexts[i].clone(),
-                deserialized_contexts[i].clone()
-            ));
+            assert!(contexts_deep_equal(&contexts[i], &deserialized_contexts[i]));
             assert_eq!(
                 serialized_contexts[i],
                 serde_json::to_string(&deserialized_contexts[i]).unwrap()
@@ -5484,7 +5467,7 @@ mod tests {
             let input_a = graph.input(scalar_type(INT32))?;
             let input_b = graph.input(scalar_type(INT32))?;
             let output = graph.add(input_a.clone(), input_b.clone())?;
-            graph.set_output_node(output.clone())?;
+            graph.set_output_node(output)?;
             graph.finalize()?;
             context.set_main_graph(graph.clone())?;
             assert!(context.get_graph_name(graph.clone()).is_err());
@@ -5501,11 +5484,8 @@ mod tests {
                 context.get_node_name(input_a.clone())?,
                 Some("a".to_owned())
             );
-            assert_eq!(
-                context.get_node_name(input_b.clone())?,
-                Some("b".to_owned())
-            );
-            assert!(context.retrieve_node(graph.clone(), "a")? == input_a.clone());
+            assert_eq!(context.get_node_name(input_b)?, Some("b".to_owned()));
+            assert!(context.retrieve_node(graph, "a")? == input_a);
             Ok(context)
         };
         let context = helper().unwrap();
@@ -5547,7 +5527,7 @@ mod tests {
             let result = random_evaluate(
                 g.clone(),
                 context.prepare_input_values(
-                    g.clone(),
+                    g,
                     HashMap::from_iter([
                         ("a", Value::from_scalar(123, INT32)?),
                         ("b", Value::from_scalar(456, INT32)?),
@@ -5569,8 +5549,8 @@ mod tests {
             assert!(context
                 .set_node_name(other_node.clone(), "outside")
                 .is_err());
-            assert!(context.get_node_name(other_node.clone()).is_err());
-            assert!(context.retrieve_node(other_graph.clone(), "a").is_err());
+            assert!(context.get_node_name(other_node).is_err());
+            assert!(context.retrieve_node(other_graph, "a").is_err());
             Ok(())
         };
         helper3(helper().unwrap()).unwrap();
@@ -5610,7 +5590,7 @@ mod tests {
             let context = create_context()?;
             let g = context.create_graph()?;
             let i = g.input(tuple_type(vec![]))?;
-            assert!(g.add(i.clone(), i.clone()).is_err());
+            assert!(g.add(i.clone(), i).is_err());
             // Now checking that the node actually have not gotten added by accident
             assert_eq!(g.get_nodes().len(), 1);
             Ok(())
@@ -5692,7 +5672,7 @@ mod tests {
             g.vector_get(i1.clone(), i2)?;
             g.array_to_vector(i1.clone())?;
             g.vector_to_array(i1.clone())?;
-            g.repeat(i1.clone(), 123)?;
+            g.repeat(i1, 123)?;
             Ok(context)
         }()
         .unwrap();
@@ -5737,7 +5717,7 @@ mod tests {
     fn test_node_graph_helpers() {
         let pairs_of_contexts = generate_pair_of_equal_contexts();
         for (context1, context2) in pairs_of_contexts {
-            assert!(contexts_deep_equal(context1, context2));
+            assert!(contexts_deep_equal(&context1, &context2));
         }
         || -> Result<()> {
             let context = create_context()?;
@@ -5819,7 +5799,7 @@ mod tests {
     }
 
     async fn parallel_prepare_for_mpc_evaluation(
-        context: Context,
+        context: &Context,
         input_party_map: Vec<Vec<IOStatus>>,
         output_parties: Vec<Vec<IOStatus>>,
         inline_config: InlineConfig,
@@ -5866,7 +5846,7 @@ mod tests {
         let mut get_mpc_eval_futures = vec![];
         for _ in 0..PAR_ITERS {
             get_mpc_eval_futures.push(parallel_prepare_for_mpc_evaluation(
-                context.clone(),
+                &context,
                 vec![input_parties.clone()],
                 vec![output_parties.clone()],
                 InlineConfig::default(),

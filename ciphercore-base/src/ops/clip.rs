@@ -141,7 +141,7 @@ mod tests {
             })?;
             let mapped_c = run_instantiation_pass(c)?;
             let inputs = Value::from_flattened_array(
-                &vec![
+                &[
                     0,
                     1,
                     -1,

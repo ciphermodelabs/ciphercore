@@ -2412,11 +2412,11 @@ mod tests {
                     let keys_vec = generate_prf_key_triple(g.clone())?;
                     let keys = g.create_tuple(keys_vec)?;
                     // PRF key known only to Sender.
-                    let key_s = g.random(key_t.clone())?;
+                    let key_s = g.random(key_t)?;
                     // Split input into two shares between Sender and Programmer
                     // Sender generates Programmer's shares
                     let column_a_programmer_share = g.prf(key_s.clone(), 0, a_type.clone())?;
-                    let column_b_programmer_share = g.prf(key_s.clone(), 0, b_type.clone())?;
+                    let column_b_programmer_share = g.prf(key_s, 0, b_type.clone())?;
                     // Sender computes its shares
                     let column_a_sender_share =
                         column_a.subtract(column_a_programmer_share.clone())?;
@@ -2469,7 +2469,7 @@ mod tests {
 
                 let instantiated_c = run_instantiation_pass(c)?.context;
                 let inlined_c = inline_operations(
-                    instantiated_c,
+                    &instantiated_c,
                     InlineConfig {
                         default_mode: InlineMode::Simple,
                         ..Default::default()
@@ -2478,7 +2478,7 @@ mod tests {
                 .get_context();
 
                 let result_hashmap = generate_equivalence_class(
-                    inlined_c.clone(),
+                    &inlined_c,
                     vec![vec![
                         IOStatus::Party(sender_id),
                         IOStatus::Party(sender_id),
@@ -2527,11 +2527,7 @@ mod tests {
                     private_class.clone(),
                     share_0_12.clone(),
                     // All PRF keys
-                    vector_class(vec![
-                        share_1_20.clone(),
-                        share_2_01.clone(),
-                        share_0_12.clone(),
-                    ]),
+                    vector_class(vec![share_1_20, share_2_01, share_0_12]),
                     // PRF key known to Sender
                     private_class.clone(),
                     // Programmer's input shares
@@ -2566,7 +2562,7 @@ mod tests {
                     // Sender's share
                     private_pair.clone(),
                     // Programmer's share
-                    programmers_share_class.clone(),
+                    programmers_share_class,
                     // Sender's share of the first column
                     private_class.clone(),
                     // Permuted Sender's share of the first column
@@ -2602,11 +2598,11 @@ mod tests {
                     // Masked permuted Sender's share of the second column
                     private_class.clone(),
                     // Masked permuted Sender's share of the second column sent to Receiver
-                    share_p_rs.clone(),
+                    share_p_rs,
                     // Receiver permutes the above share
                     private_class.clone(),
                     // Random mask known to Receiver and Programmer
-                    share_s_rp.clone(),
+                    share_s_rp,
                     // Receiver's resulting share of the permuted second column
                     private_class.clone(),
                     // Programmer's share of the second column (since Sender shared data)
@@ -2618,13 +2614,13 @@ mod tests {
                     // Permutation of Programmer's share of the second column
                     private_class.clone(),
                     // Programmer's resulting share of the permuted second column
-                    private_class.clone(),
+                    private_class,
                     // Receiver's result share of the named tuple
                     private_pair.clone(),
                     // Programmer's result share of the named tuple
                     private_pair.clone(),
                     // Both shares combined (the output of the protocol)
-                    vector_class(vec![private_pair.clone(); 2]),
+                    vector_class(vec![private_pair; 2]),
                 ];
                 let mut result_classes = vec![];
                 for i in 0..expected_classes.len() as u64 {
@@ -2636,9 +2632,9 @@ mod tests {
                 let result = random_evaluate(
                     inlined_c.get_main_graph()?,
                     vec![
-                        Value::from_flattened_array(a_values.clone(), a_type.get_scalar_type())?,
-                        Value::from_flattened_array(b_values.clone(), b_type.get_scalar_type())?,
-                        Value::from_flattened_array(permutation_values.clone(), UINT64)?,
+                        Value::from_flattened_array(a_values, a_type.get_scalar_type())?,
+                        Value::from_flattened_array(b_values, b_type.get_scalar_type())?,
+                        Value::from_flattened_array(permutation_values, UINT64)?,
                     ],
                 )?;
                 let mut result_a_shape = a_type.get_shape();
@@ -2649,12 +2645,10 @@ mod tests {
                 result_b_shape[0] = permutation_values.len() as u64;
                 let result_b_type = array_type(result_b_shape, b_type.get_scalar_type());
 
-                let result_a =
-                    result.to_vector()?[0].to_flattened_array_u64(result_a_type.clone())?;
-                let result_b =
-                    result.to_vector()?[1].to_flattened_array_u64(result_b_type.clone())?;
-                assert_eq!(&result_a, a_expected.clone());
-                assert_eq!(&result_b, b_expected.clone());
+                let result_a = result.to_vector()?[0].to_flattened_array_u64(result_a_type)?;
+                let result_b = result.to_vector()?[1].to_flattened_array_u64(result_b_type)?;
+                assert_eq!(&result_a, a_expected);
+                assert_eq!(&result_b, b_expected);
                 Ok(())
             };
             roles_helper(1, 0)?;
@@ -2721,11 +2715,11 @@ mod tests {
                     let keys_vec = generate_prf_key_triple(g.clone())?;
                     let keys = g.create_tuple(keys_vec)?;
                     // PRF key known only to Sender.
-                    let key_s = g.random(key_t.clone())?;
+                    let key_s = g.random(key_t)?;
                     // Split input into two shares between Sender and Programmer
                     // Sender generates Programmer's shares
                     let column_a_programmer_share = g.prf(key_s.clone(), 0, a_type.clone())?;
-                    let column_b_programmer_share = g.prf(key_s.clone(), 0, b_type.clone())?;
+                    let column_b_programmer_share = g.prf(key_s, 0, b_type.clone())?;
                     // Sender computes its shares
                     let column_a_sender_share =
                         column_a.subtract(column_a_programmer_share.clone())?;
@@ -2782,7 +2776,7 @@ mod tests {
 
                 let instantiated_c = run_instantiation_pass(c)?.context;
                 let inlined_c = inline_operations(
-                    instantiated_c,
+                    &instantiated_c,
                     InlineConfig {
                         default_mode: InlineMode::Simple,
                         ..Default::default()
@@ -2791,7 +2785,7 @@ mod tests {
                 .get_context();
 
                 let result_hashmap = generate_equivalence_class(
-                    inlined_c.clone(),
+                    &inlined_c,
                     vec![vec![
                         IOStatus::Party(sender_id),
                         IOStatus::Party(sender_id),
@@ -3030,7 +3024,7 @@ mod tests {
                     .get_global_id();
                 assert_eq!(
                     result_hashmap.get(&output_node_id).unwrap(),
-                    &vector_class(vec![private_pair.clone(); 2])
+                    &vector_class(vec![private_pair; 2])
                 );
 
                 // Check evaluation
@@ -3043,10 +3037,10 @@ mod tests {
                 let result = random_evaluate(
                     inlined_c.get_main_graph()?,
                     vec![
-                        Value::from_flattened_array(a_values.clone(), a_type.get_scalar_type())?,
-                        Value::from_flattened_array(b_values.clone(), b_type.get_scalar_type())?,
+                        Value::from_flattened_array(a_values, a_type.get_scalar_type())?,
+                        Value::from_flattened_array(b_values, b_type.get_scalar_type())?,
                         Value::from_vector(vec![
-                            Value::from_flattened_array(duplication_indices.clone(), UINT64)?,
+                            Value::from_flattened_array(duplication_indices, UINT64)?,
                             Value::from_flattened_array(&duplication_bits, BIT)?,
                         ]),
                     ],
@@ -3059,12 +3053,10 @@ mod tests {
                 result_b_shape[0] = num_entries as u64;
                 let result_b_type = array_type(result_b_shape, b_type.get_scalar_type());
 
-                let result_a =
-                    result.to_vector()?[0].to_flattened_array_u64(result_a_type.clone())?;
-                let result_b =
-                    result.to_vector()?[1].to_flattened_array_u64(result_b_type.clone())?;
-                assert_eq!(&result_a, a_expected.clone());
-                assert_eq!(&result_b, b_expected.clone());
+                let result_a = result.to_vector()?[0].to_flattened_array_u64(result_a_type)?;
+                let result_b = result.to_vector()?[1].to_flattened_array_u64(result_b_type)?;
+                assert_eq!(&result_a, a_expected);
+                assert_eq!(&result_b, b_expected);
                 Ok(())
             };
             roles_helper(1, 0)?;
@@ -3200,7 +3192,7 @@ mod tests {
         }
 
         Ok(prepare_for_mpc_evaluation(
-            c,
+            &c,
             vec![input_parties],
             vec![vec![IOStatus::Party(0)]],
             InlineConfig {
@@ -4499,8 +4491,8 @@ mod tests {
     }
 
     fn semi_private_join_helper(join_t: JoinType, has_column_masks: bool) -> Result<()> {
-        for is_x_private in vec![false, true] {
-            for is_y_private in vec![false, true] {
+        for is_x_private in [false, true] {
+            for is_y_private in [false, true] {
                 if !(is_x_private && is_y_private) {
                     deterministic_join_helper(
                         join_t,

@@ -200,7 +200,7 @@ mod tests {
                             CustomOperation::new(Max {
                                 signed_comparison: true,
                             }),
-                            vec![i1.clone(), i2.clone()],
+                            vec![i1, i2],
                         )?,
                     ])
                 })?;
@@ -245,7 +245,7 @@ mod tests {
                     CustomOperation::new(Max {
                         signed_comparison: false
                     }),
-                    vec![i1.clone()]
+                    vec![i1]
                 )
                 .is_err());
             Ok(())
@@ -271,7 +271,7 @@ mod tests {
                             CustomOperation::new(Max {
                                 signed_comparison: false,
                             }),
-                            vec![i1.clone(), i2.clone()],
+                            vec![i1, i2],
                         )?,
                     ])
                 })?;

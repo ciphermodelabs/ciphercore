@@ -298,12 +298,12 @@ mod tests {
             let shared_nodes = propagate_private_annotations(g.clone(), vec![false, true])?.0;
             let reshared_nodes = get_nodes_to_reshare(&g, &shared_nodes)?;
 
-            assert!(reshared_nodes.len() == 0);
+            assert!(reshared_nodes.is_empty());
 
             let shared_nodes = propagate_private_annotations(g.clone(), vec![false, false])?.0;
             let reshared_nodes = get_nodes_to_reshare(&g, &shared_nodes)?;
 
-            assert!(reshared_nodes.len() == 0);
+            assert!(reshared_nodes.is_empty());
         }
 
         {

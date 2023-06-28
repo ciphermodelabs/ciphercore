@@ -858,13 +858,13 @@ mod tests {
             c.set_main_graph(g.clone())?;
             c.finalize()?;
             let mapped_c = run_instantiation_pass(c)?;
-            for x in vec![0, 1] {
+            for x in [0, 1] {
                 let result = random_evaluate(
                     mapped_c.mappings.get_graph(g.clone()),
                     vec![Value::from_scalar(x, BIT)?],
                 )?;
                 let result = result.to_u8(BIT)?;
-                assert_eq!(result, !(x != 0) as u8);
+                assert_eq!(result, (x == 0) as u8);
             }
             Ok(())
         }()
@@ -881,9 +881,9 @@ mod tests {
             c.finalize()?;
             let mapped_c = run_instantiation_pass(c)?;
             let result = random_evaluate(
-                mapped_c.mappings.get_graph(g.clone()),
+                mapped_c.mappings.get_graph(g),
                 vec![Value::from_flattened_array(
-                    &vec![0, 1, 1, 0, 1, 0, 0, 1, 1],
+                    &[0, 1, 1, 0, 1, 0, 0, 1, 1],
                     BIT,
                 )?],
             )?;
@@ -907,8 +907,8 @@ mod tests {
             c.set_main_graph(g.clone())?;
             c.finalize()?;
             let mapped_c = run_instantiation_pass(c)?;
-            for x in vec![0, 1] {
-                for y in vec![0, 1] {
+            for x in [0, 1] {
+                for y in [0, 1] {
                     let result = random_evaluate(
                         mapped_c.mappings.get_graph(g.clone()),
                         vec![Value::from_scalar(x, BIT)?, Value::from_scalar(y, BIT)?],
@@ -1038,7 +1038,7 @@ mod tests {
             g4.finalize()?;
             expected_c.set_main_graph(g4)?;
             expected_c.finalize()?;
-            assert!(contexts_deep_equal(expected_c, processed_c));
+            assert!(contexts_deep_equal(&expected_c, &processed_c));
             Ok(())
         }()
         .unwrap();
@@ -1084,7 +1084,7 @@ mod tests {
             g4.finalize()?;
             expected_c.set_main_graph(g4)?;
             expected_c.finalize()?;
-            assert!(contexts_deep_equal(expected_c, processed_c));
+            assert!(contexts_deep_equal(&expected_c, &processed_c));
             Ok(())
         }()
         .unwrap();
@@ -1110,8 +1110,8 @@ mod tests {
             }
             for i in 0..instantiated_contexts.len() {
                 assert!(contexts_deep_equal(
-                    instantiated_contexts[0].clone(),
-                    instantiated_contexts[i].clone()
+                    &instantiated_contexts[0],
+                    &instantiated_contexts[i]
                 ));
             }
             Ok(())
@@ -1160,7 +1160,7 @@ mod tests {
             g.finalize()?;
             expected_c.set_main_graph(g)?;
             expected_c.finalize()?;
-            assert!(contexts_deep_equal(mapped_c.context, expected_c));
+            assert!(contexts_deep_equal(&mapped_c.context, &expected_c));
             Ok(())
         }()
         .unwrap();
@@ -1206,7 +1206,7 @@ mod tests {
             g.finalize()?;
             expected_c.set_main_graph(g)?;
             expected_c.finalize()?;
-            assert!(contexts_deep_equal(mapped_c.context, expected_c));
+            assert!(contexts_deep_equal(&mapped_c.context, &expected_c));
             Ok(())
         }()
         .unwrap();

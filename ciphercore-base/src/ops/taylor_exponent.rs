@@ -230,9 +230,9 @@ mod tests {
 
     #[test]
     fn test_exp_scalar() {
-        for i in vec![-10000, -1000, -100, -1, 0, 1, 100, 1000, 10000] {
-            let expected = (((i as f64) / 1024.0).exp() * 1024.0) as i64;
-            let actual = scalar_helper(i, 10).unwrap();
+        for i in &[-10000, -1000, -100, -1, 0, 1, 100, 1000, 10000] {
+            let expected = (((*i as f64) / 1024.0).exp() * 1024.0) as i64;
+            let actual = scalar_helper(*i, 10).unwrap();
             let relative_error = ((expected - actual).abs() as f64)
                 / (1.0 + f64::max(expected as f64, actual as f64));
             assert!(relative_error <= 0.01);
@@ -254,10 +254,10 @@ mod tests {
 
     #[test]
     fn test_exp_integer() {
-        for i in vec![0, 1, 2, 3, 5] {
+        for i in &[0, 1, 2, 3, 5] {
             // With zero precision, ln(2) = 1, so it'll compute 2**i instead of exp(i).
             let expected = 1 << i;
-            let actual = scalar_helper(i, 0).unwrap();
+            let actual = scalar_helper(*i, 0).unwrap();
             let absolute_error = (expected - actual).abs();
             assert!(absolute_error == 0);
         }

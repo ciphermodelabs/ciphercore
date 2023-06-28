@@ -342,17 +342,17 @@ mod tests {
                 g.input(t.clone())?
             };
             if input_status[1] == IOStatus::Shared {
-                let p = g.input(tuple_type(vec![p_t.clone(); PARTIES]))?;
+                let p = g.input(tuple_type(vec![p_t; PARTIES]))?;
                 let keys_vec = generate_prf_key_triple(g.clone())?;
                 let keys = g.create_tuple(keys_vec)?;
                 g.custom_op(custom_op, vec![i, p, keys])
             } else {
-                let p = g.input(p_t.clone())?;
+                let p = g.input(p_t)?;
                 g.custom_op(custom_op, vec![i, p])
             }
         })?;
         let instantiated_context = run_instantiation_pass(c)?.get_context();
-        Ok(inline_operations(instantiated_context, inline_config)?.get_context())
+        Ok(inline_operations(&instantiated_context, inline_config)?.get_context())
     }
 
     fn prepare_input(input: TypedValue, input_status: IOStatus) -> Result<Value> {
@@ -415,13 +415,13 @@ mod tests {
     ) -> Result<()> {
         let permutations = prepare_permutation(permutation, input_status[1].clone())?;
         let output = random_evaluate(
-            mpc_graph.clone(),
+            mpc_graph,
             vec![
                 prepare_input(input.clone(), input_status[0].clone())?,
                 convert_to_value(permutations.clone())?,
             ],
         )?;
-        let t = input.t.clone();
+        let t = input.t;
 
         let output = if !output_parties.is_empty() {
             output.to_flattened_array_u128(t.clone())
@@ -435,7 +435,7 @@ mod tests {
                     for val in v {
                         let arr = val.to_flattened_array_u128(t.clone())?;
                         for i in 0..arr.len() {
-                            res[i as usize] = u128::wrapping_add(res[i as usize], arr[i as usize]);
+                            res[i] = u128::wrapping_add(res[i], arr[i]);
                         }
                     }
                     Ok(res)
@@ -565,10 +565,10 @@ mod tests {
                 false,
             )?;
             helper(
-                input.clone(),
-                permutation.clone(),
-                input_status.clone(),
-                output_parties.clone(),
+                input,
+                permutation,
+                input_status,
+                output_parties,
                 inverse_permutation,
                 true,
             )?;
@@ -587,13 +587,7 @@ mod tests {
                 output_parties.clone(),
                 false,
             )?;
-            helper_nd(
-                input.clone(),
-                permutation.clone(),
-                input_status.clone(),
-                output_parties.clone(),
-                true,
-            )?;
+            helper_nd(input, permutation, input_status, output_parties, true)?;
 
             Ok(())
         };
@@ -627,11 +621,7 @@ mod tests {
                 vec![input_status.clone(), IOStatus::Public],
                 output_parties.clone(),
             )?;
-            helper_permutation_type(
-                input.clone(),
-                vec![input_status.clone(), IOStatus::Shared],
-                output_parties.clone(),
-            )?;
+            helper_permutation_type(input, vec![input_status, IOStatus::Shared], output_parties)?;
             Ok(())
         };
         let helper_runs = |inputs: Vec<i32>| -> Result<()> {
@@ -647,7 +637,7 @@ mod tests {
             )?;
             helper_permutation_status(inputs.clone(), IOStatus::Shared, vec![])?;
             helper_permutation_status(
-                inputs.clone(),
+                inputs,
                 IOStatus::Shared,
                 vec![IOStatus::Party(0), IOStatus::Party(1), IOStatus::Party(2)],
             )?;
@@ -676,8 +666,7 @@ mod tests {
             false,
         )?;
 
-        let result_hashmap =
-            generate_equivalence_class(mpc_context.clone(), vec![input_status.clone()])?;
+        let result_hashmap = generate_equivalence_class(&mpc_context, vec![input_status.clone()])?;
 
         let share0_12 = EquivalenceClasses::Atomic(vec![vec![0], vec![1, 2]]);
         let share1_02 = EquivalenceClasses::Atomic(vec![vec![1], vec![0, 2]]);
@@ -761,22 +750,22 @@ mod tests {
             // 8. Party 2 computes d2 = p2(c2):
             private.clone(),
             // 9. Parties 0 and 1 compute beta01 = PRF(k01):
-            share2_01.clone(),
+            share2_01,
             // 10. Parties 0 and 2 compute beta02 = PRF(k02):
-            share1_02.clone(),
+            share1_02,
             // 11. Party 1 computes t1 = d1 - beta01 and sends it to party 2:
             // t1 = d1 - beta01
             private.clone(),
             // Send
             share0_12.clone(),
             // 12. Party 2 computes t2 = d2 - beta02 and sends it to party 1:
-            private.clone(),
+            private,
             // Send
             share0_12.clone(),
             // 13. Parties 1 and 2 compute beta12 = t1 + t2:
-            share0_12.clone(),
+            share0_12,
             // Create secret shared output.
-            shared.clone(),
+            shared,
         ];
 
         for (i, classes) in expected_classes.iter().enumerate() {
@@ -785,14 +774,13 @@ mod tests {
 
         let mpc_context = prepare_context(
             input_status.clone(),
-            output_parties.clone(),
+            output_parties,
             array_type(vec![2], INT32),
-            inline_config.clone(),
+            inline_config,
             true,
         )?;
 
-        let result_hashmap =
-            generate_equivalence_class(mpc_context.clone(), vec![input_status.clone()])?;
+        let result_hashmap = generate_equivalence_class(&mpc_context, vec![input_status])?;
 
         // For inverse case classes should be the same except:
         // 1. There are 3 extra operations to apply inverse permutation.
@@ -822,7 +810,7 @@ mod tests {
         if classes == share1_02 {
             return share0_12;
         }
-        return classes;
+        classes
     }
 
     #[test]
@@ -841,8 +829,7 @@ mod tests {
             false,
         )?;
 
-        let result_hashmap =
-            generate_equivalence_class(mpc_context.clone(), vec![input_status.clone()])?;
+        let result_hashmap = generate_equivalence_class(&mpc_context, vec![input_status.clone()])?;
 
         let share0_12 = EquivalenceClasses::Atomic(vec![vec![0], vec![1, 2]]);
         let share1_02 = EquivalenceClasses::Atomic(vec![vec![1], vec![0, 2]]);
@@ -852,7 +839,7 @@ mod tests {
 
         let expected_classes = vec![
             // 1. Parties 0 and 2 compute alpha02 = PRF(k02):
-            share1_02.clone(),
+            share1_02,
             // 2. Party 0 computes b1 = p0(x0 + x1) - alpha02 and sends it to party 1:
             // x0 + x1
             private.clone(),
@@ -868,18 +855,18 @@ mod tests {
             // b2 = p0(x2) + alpha02
             private.clone(),
             // Send
-            share0_12.clone(),
+            share0_12,
             // 4. Party 1 computes c = p2(p1(b1 + b2)) and sends it to party 0 and 2.
             // b1 + b2
             private.clone(),
             // p1(b1 + b2)
             private.clone(),
             // p2(p1(b1 + b2))
-            private.clone(),
+            private,
             // Send
-            share2_01.clone(),
+            share2_01,
             // Send
-            public.clone(),
+            public,
         ];
 
         // Skip first 18 steps as a preparation for the protocol.
@@ -889,14 +876,13 @@ mod tests {
 
         let mpc_context = prepare_context(
             input_status.clone(),
-            output_parties.clone(),
+            output_parties,
             array_type(vec![2], INT32),
-            inline_config.clone(),
+            inline_config,
             true,
         )?;
 
-        let result_hashmap =
-            generate_equivalence_class(mpc_context.clone(), vec![input_status.clone()])?;
+        let result_hashmap = generate_equivalence_class(&mpc_context, vec![input_status])?;
 
         // For inverse case classes should be the same except:
         // 1. There are 3 extra operations to apply inverse permutation.

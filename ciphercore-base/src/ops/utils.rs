@@ -666,7 +666,7 @@ mod tests {
         for n in 1..=32 {
             let data: Vec<u32> = (1..=n).collect();
             let input = TypedValue::from_ndarray(Array::from(data).into_dyn(), UINT32)?;
-            let result = custom_reduce_helper(input, |first, second| Ok(first.add(second)?))?;
+            let result = custom_reduce_helper(input, |first, second| first.add(second))?;
             let output = result.to_flattened_array_u64(array_type(vec![1], UINT32))?;
             assert_eq!(output, [(n * (n + 1) / 2) as u64]);
         }
@@ -694,7 +694,7 @@ mod tests {
     fn test_precise_goldschmidt_division() -> Result<()> {
         let dividend = 1234567890;
         let div_v = vec![1, 2, 3, 123, 300, 500, 700];
-        for i in div_v.clone() {
+        for i in div_v {
             for st in [ScalarType::I64, ScalarType::U64] {
                 let result = scalar_division_helper(dividend, i, st)?.to_i128(st)?;
                 let expected = dividend / i;
@@ -704,7 +704,7 @@ mod tests {
         let dividend = -1234567890;
         let div_v = vec![1, 2, 3, 123, 300, 500, 700];
         let st = ScalarType::I64;
-        for i in div_v.clone() {
+        for i in div_v {
             let result = scalar_division_helper(dividend, i, st)?.to_i128(st)?;
             let expected = dividend / i;
             assert!(((result - expected).abs() * 100) / expected <= 1);

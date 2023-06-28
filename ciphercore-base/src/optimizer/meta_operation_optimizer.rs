@@ -340,13 +340,13 @@ mod tests {
     fn optimize_helper(c: Context) -> Result<Context> {
         let new_c1 = create_context()?;
         let new_g1 = new_c1.create_graph()?;
-        optimize_graph_meta_operations(c.get_main_graph()?.clone(), new_g1.clone())?;
+        optimize_graph_meta_operations(c.get_main_graph()?, new_g1.clone())?;
         new_g1.finalize()?;
         new_g1.set_as_main()?;
         new_c1.finalize()?;
         let new_c2 = create_context()?;
         let new_g2 = new_c2.create_graph()?;
-        optimize_graph_dangling_nodes(new_c1.get_main_graph()?.clone(), new_g2.clone())?;
+        optimize_graph_dangling_nodes(new_c1.get_main_graph()?, new_g2.clone())?;
         new_g2.finalize()?;
         new_g2.set_as_main()?;
         new_c2.finalize()?;
@@ -364,7 +364,7 @@ mod tests {
             })?;
 
             let new_c = optimize_helper(c.clone())?;
-            assert!(contexts_deep_equal(new_c, c));
+            assert!(contexts_deep_equal(&new_c, &c));
             Ok(())
         }()
         .unwrap();
@@ -382,14 +382,14 @@ mod tests {
                 o.set_name("TupleGet")?;
                 Ok(o)
             })?;
-            let new_c = optimize_helper(c.clone())?;
+            let new_c = optimize_helper(c)?;
 
             let expected_c = simple_context(|g| {
                 let i1 = g.input(scalar_type(UINT64))?;
                 let _i2 = g.input(scalar_type(UINT64))?;
                 Ok(i1)
             })?;
-            assert!(contexts_deep_equal(new_c, expected_c));
+            assert!(contexts_deep_equal(&new_c, &expected_c));
             Ok(())
         }()
         .unwrap();
@@ -409,14 +409,14 @@ mod tests {
                 o.set_name("Second TupleGet")?;
                 Ok(o)
             })?;
-            let new_c = optimize_helper(c.clone())?;
+            let new_c = optimize_helper(c)?;
 
             let expected_c = simple_context(|g| {
                 let _i1 = g.input(scalar_type(UINT64))?;
                 let i2 = g.input(scalar_type(UINT64))?;
                 Ok(i2)
             })?;
-            assert!(contexts_deep_equal(new_c, expected_c));
+            assert!(contexts_deep_equal(&new_c, &expected_c));
             Ok(())
         }()
         .unwrap();
@@ -436,14 +436,14 @@ mod tests {
                 o.set_name("NamedTupleGet")?;
                 Ok(o)
             })?;
-            let new_c = optimize_helper(c.clone())?;
+            let new_c = optimize_helper(c)?;
 
             let expected_c = simple_context(|g| {
                 let i1 = g.input(scalar_type(UINT64))?;
                 let _i2 = g.input(scalar_type(UINT64))?;
                 Ok(i1)
             })?;
-            assert!(contexts_deep_equal(new_c, expected_c));
+            assert!(contexts_deep_equal(&new_c, &expected_c));
             Ok(())
         }()
         .unwrap();
@@ -466,14 +466,14 @@ mod tests {
                 o.set_name("Second NamedTupleGet")?;
                 Ok(o)
             })?;
-            let new_c = optimize_helper(c.clone())?;
+            let new_c = optimize_helper(c)?;
 
             let expected_c = simple_context(|g| {
                 let _i1 = g.input(scalar_type(UINT64))?;
                 let i2 = g.input(scalar_type(UINT64))?;
                 Ok(i2)
             })?;
-            assert!(contexts_deep_equal(new_c, expected_c));
+            assert!(contexts_deep_equal(&new_c, &expected_c));
             Ok(())
         }()
         .unwrap();
@@ -493,7 +493,7 @@ mod tests {
                 o.set_name("VectorGet")?;
                 Ok(o)
             })?;
-            let new_c = optimize_helper(c.clone())?;
+            let new_c = optimize_helper(c)?;
 
             let expected_c = simple_context(|g| {
                 let i1 = g.input(scalar_type(UINT64))?;
@@ -502,7 +502,7 @@ mod tests {
                 o.set_name("Input")?;
                 Ok(o)
             })?;
-            assert!(contexts_deep_equal(new_c, expected_c));
+            assert!(contexts_deep_equal(&new_c, &expected_c));
             Ok(())
         }()
         .unwrap();
@@ -519,8 +519,8 @@ mod tests {
                 v1.set_name("CreateVector1")?;
                 let v2 = g.create_vector(v1.get_type()?, vec![v1.clone(), v1.clone()])?;
                 v2.set_name("CreateVector2")?;
-                let t1 = g.create_tuple(vec![i1.clone(), v1.clone(), i2.clone(), v1.clone()])?;
-                let t2 = g.create_tuple(vec![t1.clone(), v2.clone()])?;
+                let t1 = g.create_tuple(vec![i1, v1.clone(), i2, v1])?;
+                let t2 = g.create_tuple(vec![t1, v2.clone()])?;
                 let o1 = t2
                     .tuple_get(0)?
                     .tuple_get(1)?
@@ -532,7 +532,7 @@ mod tests {
                 o.set_name("CreateTuple")?;
                 Ok(o)
             })?;
-            let new_c = optimize_helper(c.clone())?;
+            let new_c = optimize_helper(c)?;
 
             let expected_c = simple_context(|g| {
                 let i1 = g.input(scalar_type(UINT64))?;
@@ -545,7 +545,7 @@ mod tests {
                 o.set_name("CreateTuple")?;
                 Ok(o)
             })?;
-            assert!(contexts_deep_equal(new_c, expected_c));
+            assert!(contexts_deep_equal(&new_c, &expected_c));
             Ok(())
         }()
         .unwrap();
@@ -564,14 +564,14 @@ mod tests {
                 o.set_name("VectorGet")?;
                 Ok(o)
             })?;
-            let new_c = optimize_helper(c.clone())?;
+            let new_c = optimize_helper(c)?;
 
             let expected_c = simple_context(|g| {
                 let i = g.input(array_type(vec![10], UINT64))?;
                 i.set_name("Input")?;
                 i.get(vec![0])
             })?;
-            assert!(contexts_deep_equal(new_c, expected_c));
+            assert!(contexts_deep_equal(&new_c, &expected_c));
             Ok(())
         }()
         .unwrap();
@@ -590,14 +590,14 @@ mod tests {
                 o.set_name("VectorGet")?;
                 Ok(o)
             })?;
-            let new_c = optimize_helper(c.clone())?;
+            let new_c = optimize_helper(c)?;
 
             let expected_c = simple_context(|g| {
                 let i = g.input(array_type(vec![10, 2], UINT64))?;
                 i.set_name("Input")?;
                 i.get_slice(vec![SliceElement::SingleIndex(0), SliceElement::Ellipsis])
             })?;
-            assert!(contexts_deep_equal(new_c, expected_c));
+            assert!(contexts_deep_equal(&new_c, &expected_c));
             Ok(())
         }()
         .unwrap();
@@ -624,7 +624,7 @@ mod tests {
                 o.set_name("TupleGet")?;
                 Ok(o)
             })?;
-            let new_c = optimize_helper(c.clone())?;
+            let new_c = optimize_helper(c)?;
 
             let expected_c = simple_context(|g| {
                 let _i1 = g.input(array_type(vec![10], UINT64))?;
@@ -633,7 +633,7 @@ mod tests {
                 i2.set_name("Input2")?;
                 i2.get(vec![2])
             })?;
-            assert!(contexts_deep_equal(new_c, expected_c));
+            assert!(contexts_deep_equal(&new_c, &expected_c));
             Ok(())
         }()
         .unwrap();
@@ -664,7 +664,7 @@ mod tests {
                 o.set_name("TupleGet")?;
                 Ok(o)
             })?;
-            let new_c = optimize_helper(c.clone())?;
+            let new_c = optimize_helper(c)?;
 
             let expected_c = simple_context(|g| {
                 let _i1 = g.input(array_type(vec![10], UINT64))?;
@@ -677,7 +677,7 @@ mod tests {
                 v2.set_name("Reshape2")?;
                 v2.vector_get(g.constant(scalar_type(UINT64), Value::from_scalar(2, UINT64)?)?)
             })?;
-            assert!(contexts_deep_equal(new_c, expected_c));
+            assert!(contexts_deep_equal(&new_c, &expected_c));
             Ok(())
         }()
         .unwrap();
@@ -692,14 +692,14 @@ mod tests {
                 let a = i.b2a(UINT64)?;
                 a.a2b()
             })?;
-            let new_c = optimize_helper(c.clone())?;
+            let new_c = optimize_helper(c)?;
 
             let expected_c = simple_context(|g| {
                 let i = g.input(array_type(vec![16, 64], BIT))?;
                 i.set_name("Input")?;
                 Ok(i)
             })?;
-            assert!(contexts_deep_equal(new_c, expected_c));
+            assert!(contexts_deep_equal(&new_c, &expected_c));
             Ok(())
         }()
         .unwrap();
@@ -714,14 +714,14 @@ mod tests {
                 let a = i.a2b()?;
                 a.b2a(UINT64)
             })?;
-            let new_c = optimize_helper(c.clone())?;
+            let new_c = optimize_helper(c)?;
 
             let expected_c = simple_context(|g| {
                 let i = g.input(array_type(vec![16], UINT64))?;
                 i.set_name("Input")?;
                 Ok(i)
             })?;
-            assert!(contexts_deep_equal(new_c, expected_c));
+            assert!(contexts_deep_equal(&new_c, &expected_c));
             Ok(())
         }()
         .unwrap();
@@ -738,7 +738,7 @@ mod tests {
             })?;
             let new_c = optimize_helper(c.clone())?;
 
-            assert!(contexts_deep_equal(new_c, c));
+            assert!(contexts_deep_equal(&new_c, &c));
             Ok(())
         }()
         .unwrap();

@@ -140,7 +140,7 @@ mod tests {
         let c = simple_context(|g| {
             let i = g.input(scalar_type(st))?;
             if let Some(approx) = initial_approximation {
-                let approx_const = constant_scalar(&g, approx, st)?;
+                let approx_const = constant_scalar(g, approx, st)?;
                 g.custom_op(
                     CustomOperation::new(NewtonInversion {
                         iterations: 5,
@@ -189,7 +189,7 @@ mod tests {
     #[test]
     fn test_newton_division_scalar() {
         let div_v = vec![1, 2, 3, 123, 300, 500, 700];
-        for i in div_v.clone() {
+        for i in div_v {
             assert!(
                 (scalar_division_helper(i, None, UINT64)
                     .unwrap()
@@ -204,7 +204,7 @@ mod tests {
                 (scalar_division_helper(i, None, INT64)
                     .unwrap()
                     .to_i64(INT64)
-                    .unwrap() as i64
+                    .unwrap()
                     - 1024 / i as i64)
                     .abs()
                     <= 1
@@ -225,7 +225,7 @@ mod tests {
 
     #[test]
     fn test_newton_division_with_initial_guess() {
-        for i in vec![1, 2, 3, 123, 300, 500, 700] {
+        for i in [1, 2, 3, 123, 300, 500, 700] {
             let mut initial_guess = 1;
             while initial_guess * i * 2 < 1024 {
                 initial_guess *= 2;
@@ -243,7 +243,7 @@ mod tests {
                 (scalar_division_helper(i, Some(initial_guess), INT64)
                     .unwrap()
                     .to_i64(INT64)
-                    .unwrap() as i64
+                    .unwrap()
                     - 1024 / i as i64)
                     .abs()
                     <= 1
@@ -269,9 +269,9 @@ mod tests {
         };
         let instantiated_context = run_instantiation_pass(c)?.get_context();
         let inlined_context =
-            inline_operations(instantiated_context, inline_config.clone())?.get_context();
+            inline_operations(&instantiated_context, inline_config.clone())?.get_context();
         let _unused = prepare_for_mpc_evaluation(
-            inlined_context,
+            &inlined_context,
             vec![vec![IOStatus::Shared]],
             vec![vec![]],
             inline_config,

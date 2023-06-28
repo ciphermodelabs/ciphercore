@@ -477,7 +477,7 @@ mod tests {
         })?;
 
         Ok(prepare_for_mpc_evaluation(
-            c,
+            &c,
             vec![vec![party_id]],
             vec![output_parties],
             inline_config,
@@ -569,7 +569,7 @@ mod tests {
         output_parties: Vec<IOStatus>,
         t: Type,
     ) -> Result<()> {
-        let output = random_evaluate(mpc_graph.clone(), inputs)?;
+        let output = random_evaluate(mpc_graph, inputs)?;
         let st = t.get_scalar_type();
 
         if output_parties.is_empty() {
@@ -595,9 +595,9 @@ mod tests {
             compare_truncate_output(&out, &expected, true, st)?;
         } else {
             assert!(output.check_type(t.clone())?);
-            let out = match t.clone() {
+            let out = match t {
                 Type::Scalar(_) => vec![output.to_u128(st)?],
-                Type::Array(_, _) => output.to_flattened_array_u128(t.clone())?,
+                Type::Array(_, _) => output.to_flattened_array_u128(t)?,
                 _ => {
                     panic!("Shouldn't be here");
                 }
@@ -624,7 +624,7 @@ mod tests {
             )?;
             let mpc_graph = mpc_context.get_main_graph()?;
 
-            let mpc_input = prepare_input(input.clone(), input_status.clone(), t.clone())?;
+            let mpc_input = prepare_input(input.clone(), input_status, t.clone())?;
 
             let expected = if t.get_scalar_type().is_signed() {
                 input
@@ -640,12 +640,12 @@ mod tests {
                     .iter()
                     .map(|x| {
                         let val = *x;
-                        let res = val / (scale as u128);
-                        res
+
+                        val / scale
                     })
                     .collect()
             };
-            check_output(mpc_graph, mpc_input, expected, output_parties, t.clone())?;
+            check_output(mpc_graph, mpc_input, expected, output_parties, t)?;
 
             Ok(())
         };
@@ -690,8 +690,8 @@ mod tests {
                 inline_config_simple.clone(),
             )?;
             helper(
-                t.clone(),
-                inputs.clone(),
+                t,
+                inputs,
                 IOStatus::Public,
                 vec![],
                 inline_config_simple.clone(),

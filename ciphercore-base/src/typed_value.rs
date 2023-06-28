@@ -1394,10 +1394,10 @@ mod tests {
         // Ok cases:
         assert!(TypedValue::new(t0.clone(), Value::zero_of_type(t0.clone())).is_ok());
         assert!(TypedValue::new(t0.clone(), Value::zero_of_type(t1.clone())).is_ok());
-        assert!(TypedValue::new(t1.clone(), Value::zero_of_type(t0.clone())).is_ok());
+        assert!(TypedValue::new(t1, Value::zero_of_type(t0.clone())).is_ok());
         // Err cases:
         assert!(TypedValue::new(t0.clone(), Value::zero_of_type(t2.clone())).is_err());
-        assert!(TypedValue::new(t2.clone(), Value::zero_of_type(t0.clone())).is_err());
+        assert!(TypedValue::new(t2, Value::zero_of_type(t0)).is_err());
     }
     #[test]
     fn test_zero_of_type() {
@@ -1614,13 +1614,13 @@ mod tests {
             let t0 = scalar_type(UINT8);
             let mut zero0 = TypedValue::zero_of_type(t0);
             let to_insert = TypedValue::from_scalar(20, UINT8)?;
-            let res_err = zero0.insert(to_insert.clone(), 1);
+            let res_err = zero0.insert(to_insert, 1);
             assert!(res_err.is_err());
             //insert to array
             let t0 = array_type(vec![2, 2], UINT8);
             let mut zero0 = TypedValue::zero_of_type(t0);
             let to_insert = TypedValue::from_scalar(20, UINT8)?;
-            let res_err = zero0.insert(to_insert.clone(), 1);
+            let res_err = zero0.insert(to_insert, 1);
             assert!(res_err.is_err());
             Ok(())
         }()
@@ -1633,7 +1633,7 @@ mod tests {
             let t0 = tuple_type(vec![scalar_type(UINT8), scalar_type(UINT16)]);
             let mut zero0 = TypedValue::zero_of_type(t0);
             let to_insert = TypedValue::from_scalar(20, UINT32)?;
-            let res_ok = zero0.push(to_insert.clone());
+            let res_ok = zero0.push(to_insert);
             //ok case
             assert!(res_ok.is_ok());
             let tv_expected = TypedValue::from_vector(
@@ -1655,7 +1655,7 @@ mod tests {
             let mut zero0 = TypedValue::zero_of_type(t0);
             let mut to_insert = TypedValue::from_scalar(20, UINT32)?;
             to_insert.name = Some("name".to_owned());
-            let res_ok = zero0.push(to_insert.clone());
+            let res_ok = zero0.push(to_insert);
             //err case
             assert!(res_ok.is_err());
             Ok(())
@@ -1677,7 +1677,7 @@ mod tests {
             tv1.name = Some("name1".to_owned());
             let mut tv2 = TypedValue::from_scalar(0, UINT16).unwrap();
             tv2.name = Some("name2".to_owned());
-            let tv3 = to_insert.clone();
+            let tv3 = to_insert;
             let tv_expected =
                 TypedValue::from_vector(vec![tv1, tv2, tv3], FromVectorMode::Tuple).unwrap();
             assert!(tv_expected.is_equal(&zero0)?);

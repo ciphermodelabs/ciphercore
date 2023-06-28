@@ -1094,13 +1094,13 @@ mod tests {
             let tv_expected = TypedValue::new(t_expected, value_expected)?;
             assert!(tv_expected.is_equal(&revealed)?);
             // out of bound insert case
-            let res_err = zero0_shared.insert(to_insert_shared.clone(), 4);
+            let res_err = zero0_shared.insert(to_insert_shared, 4);
             assert!(res_err.is_err());
             // wrong type insert case
             let to_insert = TypedValue::from_scalar(20, UINT16)?;
             let to_insert_shared =
                 ReplicatedShares::secret_share_for_local_evaluation(to_insert, &mut prng)?;
-            let res_err = zero0_shared.insert(to_insert_shared.clone(), 1);
+            let res_err = zero0_shared.insert(to_insert_shared, 1);
             assert!(res_err.is_err());
 
             Ok(())
@@ -1117,7 +1117,7 @@ mod tests {
             let to_insert = TypedValue::from_scalar(20, UINT8)?;
             let to_insert_shared =
                 ReplicatedShares::secret_share_for_local_evaluation(to_insert, &mut prng)?;
-            let res_err = zero0_shared.insert(to_insert_shared.clone(), 1);
+            let res_err = zero0_shared.insert(to_insert_shared, 1);
             assert!(res_err.is_err());
             //insert to array
             let t0 = array_type(vec![2, 2], UINT8);
@@ -1127,7 +1127,7 @@ mod tests {
             let to_insert = TypedValue::from_scalar(20, UINT8)?;
             let to_insert_shared =
                 ReplicatedShares::secret_share_for_local_evaluation(to_insert, &mut prng)?;
-            let res_err = zero0_shared.insert(to_insert_shared.clone(), 1);
+            let res_err = zero0_shared.insert(to_insert_shared, 1);
             assert!(res_err.is_err());
             Ok(())
         }()
@@ -1145,7 +1145,7 @@ mod tests {
             let to_insert = TypedValue::from_scalar(20, UINT32)?;
             let to_insert_shared =
                 ReplicatedShares::secret_share_for_local_evaluation(to_insert, &mut prng)?;
-            let res_ok = zero0_shared.push(to_insert_shared.clone());
+            let res_ok = zero0_shared.push(to_insert_shared);
             //ok case
             assert!(res_ok.is_ok());
             let revealed = zero0_shared.reveal()?;
@@ -1173,7 +1173,7 @@ mod tests {
             to_insert.name = Some("name".to_owned());
             let to_insert_shared =
                 ReplicatedShares::secret_share_for_local_evaluation(to_insert, &mut prng)?;
-            let res_ok = zero0_shared.push(to_insert_shared.clone());
+            let res_ok = zero0_shared.push(to_insert_shared);
             //err case
             assert!(res_ok.is_err());
             Ok(())
@@ -1193,7 +1193,7 @@ mod tests {
             to_insert.name = Some("name".to_owned());
             let to_insert_shared =
                 ReplicatedShares::secret_share_for_local_evaluation(to_insert.clone(), &mut prng)?;
-            let res_ok = zero0_shared.push(to_insert_shared.clone());
+            let res_ok = zero0_shared.push(to_insert_shared);
             //ok case
             assert!(res_ok.is_ok());
             let revealed = zero0_shared.reveal()?;
@@ -1201,7 +1201,7 @@ mod tests {
             tv1.name = Some("name1".to_owned());
             let mut tv2 = TypedValue::from_scalar(0, UINT16).unwrap();
             tv2.name = Some("name2".to_owned());
-            let tv3 = to_insert.clone();
+            let tv3 = to_insert;
             let tv_expected =
                 TypedValue::from_vector(vec![tv1, tv2, tv3], FromVectorMode::Tuple).unwrap();
             assert!(tv_expected.is_equal(&revealed)?);
@@ -1444,7 +1444,7 @@ mod tests {
         || -> Result<()> {
             let mut prng = PRNG::new(None)?;
             let t = array_type(vec![2, 5], INT32);
-            let tv = TypedValue::new(t.clone(), prng.get_random_value(t.clone())?)?;
+            let tv = TypedValue::new(t.clone(), prng.get_random_value(t)?)?;
             let shared_tv =
                 ReplicatedShares::secret_share_for_local_evaluation(tv.clone(), &mut prng)?;
             let arr_shared = ToNdarray::<i32>::to_ndarray(&shared_tv)?;

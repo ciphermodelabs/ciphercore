@@ -1423,11 +1423,13 @@ mod tests {
     #[test]
     fn test_clone() {
         let t = array_type(vec![10, 10], UINT32);
+        // Seems like a bug in clippy?
+        #[allow(clippy::redundant_clone)]
         let t1 = t.clone();
         assert_eq!(format!("{:?}", t), "Array([10, 10], u32)");
         assert_eq!(format!("{:?}", t1), "Array([10, 10], u32)");
         let t2 = named_tuple_type(vec![("Name".to_owned(), array_type(vec![100], BIT))]);
-        let t3 = t2.clone();
+        let t3 = t2;
         assert_eq!(
             format!("{:?}", t3),
             "NamedTuple([(\"Name\", Array([100], bit))])"

@@ -101,7 +101,7 @@ mod tests {
         let mapped_c = run_instantiation_pass(graph.get_context())?;
 
         let seed = b"\xB6\xD7\x1A\x2F\x88\xC1\x12\xBA\x3F\x2E\x17\xAB\xB7\x46\x15\x9A";
-        let mut prng = PRNG::new(Some(seed.clone()))?;
+        let mut prng = PRNG::new(Some(*seed))?;
         let array_t = array_type(vec![n], st);
         let data = prng.get_random_value(array_t.clone())?;
         if st.is_signed() {
@@ -160,13 +160,13 @@ mod tests {
         test_sort_graph_helper(4, UINT16, data.clone())?;
 
         let data = vec![548890456, 402403639693304868, u64::MAX, 999790788];
-        test_sort_graph_helper(4, UINT64, data.clone())?;
+        test_sort_graph_helper(4, UINT64, data)?;
 
         let data = vec![643082556];
-        test_sort_graph_helper(1, UINT32, data.clone())?;
+        test_sort_graph_helper(1, UINT32, data)?;
 
         let data = vec![1, 0, 0, 1];
-        test_sort_graph_helper(4, BIT, data.clone())?;
+        test_sort_graph_helper(4, BIT, data)?;
 
         test_large_vec_sort(1000, BIT)?;
         test_large_vec_sort(1000, UINT64)?;

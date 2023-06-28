@@ -170,7 +170,7 @@ impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match serde_json::to_string(&self) {
             Ok(s) => write!(f, "{s}"),
-            Err(_err) => Err(fmt::Error::default()),
+            Err(_err) => Err(fmt::Error),
         }
     }
 }
@@ -1777,33 +1777,33 @@ mod tests {
             187263
         );
         assert_eq!(
-            Value::from_flattened_array(&vec![0, 0, 0, 0, 0, 0, 0, 0], BIT)
+            Value::from_flattened_array(&[0, 0, 0, 0, 0, 0, 0, 0], BIT)
                 .unwrap()
                 .to_u64(BIT)
                 .unwrap(),
             0
         );
         assert_eq!(
-            Value::from_flattened_array(&vec![1, 0, 0, 0, 0, 0, 0, 0], BIT)
+            Value::from_flattened_array(&[1, 0, 0, 0, 0, 0, 0, 0], BIT)
                 .unwrap()
                 .to_u64(BIT)
                 .unwrap(),
             1
         );
         assert_eq!(
-            Value::from_flattened_array(&vec![1, 0, 0, 1, 0, 1, 0, 0], BIT)
+            Value::from_flattened_array(&[1, 0, 0, 1, 0, 1, 0, 0], BIT)
                 .unwrap()
                 .to_u64(BIT)
                 .unwrap(),
             1
         );
         assert!(
-            Value::from_flattened_array(&vec![0, 0, 0, 0, 0, 0, 0, 0, 0], BIT)
+            Value::from_flattened_array(&[0, 0, 0, 0, 0, 0, 0, 0, 0], BIT)
                 .unwrap()
                 .to_u64(BIT)
                 .is_err()
         );
-        assert!(Value::from_flattened_array(&vec![123, 456], UINT32)
+        assert!(Value::from_flattened_array(&[123, 456], UINT32)
             .unwrap()
             .to_u64(UINT32)
             .is_err());
@@ -1826,79 +1826,79 @@ mod tests {
     fn test_create_extract_array() {
         let t = array_type(vec![1], BIT);
         assert_eq!(
-            Value::from_flattened_array(&vec![0], t.get_scalar_type())
+            Value::from_flattened_array(&[0], t.get_scalar_type())
                 .unwrap()
                 .to_flattened_array_u64(t.clone())
                 .unwrap(),
             vec![0]
         );
         assert_eq!(
-            Value::from_flattened_array(&vec![1], t.get_scalar_type())
+            Value::from_flattened_array(&[1], t.get_scalar_type())
                 .unwrap()
                 .to_flattened_array_u64(t.clone())
                 .unwrap(),
             vec![1]
         );
         assert_eq!(
-            Value::from_flattened_array(&vec![1, 0, 0, 1], t.get_scalar_type())
+            Value::from_flattened_array(&[1, 0, 0, 1], t.get_scalar_type())
                 .unwrap()
                 .to_flattened_array_u64(t.clone())
                 .unwrap(),
             vec![1]
         );
         assert_eq!(
-            Value::from_flattened_array(&vec![0, 0, 0, 1, 0, 0, 0, 0], t.get_scalar_type())
+            Value::from_flattened_array(&[0, 0, 0, 1, 0, 0, 0, 0], t.get_scalar_type())
                 .unwrap()
                 .to_flattened_array_u64(t.clone())
                 .unwrap(),
             vec![0]
         );
         assert!(Value::from_flattened_array(
-            &vec![0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1],
+            &[0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1],
             t.get_scalar_type()
         )
         .unwrap()
-        .to_flattened_array_u64(t.clone())
+        .to_flattened_array_u64(t)
         .is_err());
         let t = array_type(vec![3, 3], BIT);
         assert_eq!(
-            Value::from_flattened_array(&vec![0, 1, 1, 0, 1, 0, 0, 1, 0], t.get_scalar_type())
+            Value::from_flattened_array(&[0, 1, 1, 0, 1, 0, 0, 1, 0], t.get_scalar_type())
                 .unwrap()
                 .to_flattened_array_u64(t.clone())
                 .unwrap(),
             vec![0, 1, 1, 0, 1, 0, 0, 1, 0]
         );
         assert!(
-            Value::from_flattened_array(&vec![0, 1, 1, 0, 1, 0, 0, 1], t.get_scalar_type())
+            Value::from_flattened_array(&[0, 1, 1, 0, 1, 0, 0, 1], t.get_scalar_type())
                 .unwrap()
                 .to_flattened_array_u64(t.clone())
                 .is_err()
         );
         assert!(Value::from_flattened_array(
-            &vec![0, 1, 1, 0, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0],
+            &[0, 1, 1, 0, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0],
             t.get_scalar_type()
         )
         .unwrap()
-        .to_flattened_array_u64(t.clone())
+        .to_flattened_array_u64(t)
         .is_err());
         let t = array_type(vec![2, 3], INT32);
         assert_eq!(
-            Value::from_flattened_array(&vec![1, 2, 3, 4, 5, 6], t.get_scalar_type())
+            Value::from_flattened_array(&[1, 2, 3, 4, 5, 6], t.get_scalar_type())
                 .unwrap()
                 .to_flattened_array_u64(t.clone())
                 .unwrap(),
             vec![1, 2, 3, 4, 5, 6]
         );
         assert!(
-            Value::from_flattened_array(&vec![1, 2, 3, 4, 5, 6, 7], t.get_scalar_type())
+            Value::from_flattened_array(&[1, 2, 3, 4, 5, 6, 7], t.get_scalar_type())
                 .unwrap()
                 .to_flattened_array_u64(t.clone())
                 .is_err()
         );
         assert!(
-            Value::from_flattened_array(&vec![1, 2, 3, 4, 5], t.get_scalar_type())
+            Value::from_flattened_array(&[1, 2, 3, 4, 5], t.get_scalar_type())
                 .unwrap()
-                .to_flattened_array_u64(t.clone())
+                .to_flattened_array_u64(t)
                 .is_err()
         );
     }
@@ -2025,12 +2025,12 @@ mod tests {
             assert_eq!(v.to_u16(INT32)?, (-123456i32) as u16);
             assert_eq!(v.to_i16(INT32)?, (-123456i32) as i16);
             assert_eq!(v.to_u32(INT32)?, (-123456i32) as u32);
-            assert_eq!(v.to_i32(INT32)?, (-123456i32) as i32);
+            assert_eq!(v.to_i32(INT32)?, { -123456i32 });
             assert_eq!(v.to_u64(INT32)?, (-123456i32) as u64);
             assert_eq!(v.to_i64(INT32)?, (-123456i32) as i64);
 
-            assert_eq!(Value::from_scalar(156, UINT8)?.to_bit()?, false);
-            assert_eq!(Value::from_scalar(157, UINT8)?.to_bit()?, true);
+            assert!(!(Value::from_scalar(156, UINT8)?.to_bit()?));
+            assert!(Value::from_scalar(157, UINT8)?.to_bit()?);
             Ok(())
         }()
         .unwrap();
@@ -2062,7 +2062,7 @@ mod tests {
             );
             assert_eq!(
                 v.to_flattened_array_i32(array_type(vec![1], INT32))?,
-                &[(-123456i32) as i32]
+                &[(-123456i32)]
             );
             assert_eq!(
                 v.to_flattened_array_u64(array_type(vec![1], INT32))?,
@@ -2084,13 +2084,13 @@ mod tests {
                 let v = Value::from_scalar(1, BIT)?;
                 let a = ToNdarray::<bool>::to_ndarray(&v, array_type(vec![1], BIT))?;
                 assert_eq!(a.shape(), &[1]);
-                assert_eq!(a[[0]], true);
+                assert!(a[[0]]);
             }
             {
                 let v = Value::from_scalar(0, BIT)?;
                 let a = ToNdarray::<bool>::to_ndarray(&v, array_type(vec![1], BIT))?;
                 assert_eq!(a.shape(), &[1]);
-                assert_eq!(a[[0]], false);
+                assert!(!a[[0]]);
             }
             let v = Value::from_scalar(-123456, INT32)?;
             {
@@ -2121,7 +2121,7 @@ mod tests {
             {
                 let a = ToNdarray::<i32>::to_ndarray(&v, array_type(vec![1], INT32))?;
                 assert_eq!(a.shape(), &[1]);
-                assert_eq!(a[[0]], -123456i32 as i32);
+                assert_eq!(a[[0]], -123456_i32);
             }
             {
                 let a = ToNdarray::<u64>::to_ndarray(&v, array_type(vec![1], INT32))?;

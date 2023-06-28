@@ -358,7 +358,7 @@ fn get_binary_adder_graph(context: Context, bits_t: Type) -> Result<Graph> {
     })?;
     let instantiated_adder_context = run_instantiation_pass(adder_context)?.get_context();
     let inlined_adder_context = inline_operations(
-        instantiated_adder_context,
+        &instantiated_adder_context,
         InlineConfig {
             default_mode: InlineMode::DepthOptimized(DepthOptimizationLevel::Default),
             ..Default::default()
@@ -430,9 +430,9 @@ mod tests {
         inline_config: InlineConfig,
     ) -> Result<Context> {
         let input_t = if op == Operation::A2B {
-            t.clone()
+            t
         } else {
-            a2b_type_inference(t.clone())?
+            a2b_type_inference(t)?
         };
         let c = simple_context(|g| {
             let i = g.input(input_t)?;
@@ -440,7 +440,7 @@ mod tests {
         })?;
 
         Ok(prepare_for_mpc_evaluation(
-            c,
+            &c,
             vec![vec![party_id]],
             vec![output_parties],
             inline_config,
@@ -503,7 +503,7 @@ mod tests {
                     data_input.push(Value::from_scalar(first_share, st)?);
                 } else {
                     // shares of input = (input-3, 1, 1)
-                    let first_share = subtract_vectors_u128(&input, &vec![3], st.get_modulus())?;
+                    let first_share = subtract_vectors_u128(&input, &[3], st.get_modulus())?;
                     data_input.push(Value::from_scalar(first_share[0], st)?);
                 }
                 for i in 1..PARTIES {
@@ -528,7 +528,7 @@ mod tests {
         output_parties: Vec<IOStatus>,
         t: Type,
     ) -> Result<()> {
-        let output = random_evaluate(mpc_graph.clone(), inputs)?;
+        let output = random_evaluate(mpc_graph, inputs)?;
         let st = t.get_scalar_type();
 
         let out = if output_parties.is_empty() {
@@ -556,9 +556,9 @@ mod tests {
             })?
         } else {
             assert!(output.check_type(t.clone())?);
-            match t.clone() {
+            match t {
                 Type::Scalar(_) => vec![output.to_u128(st)?],
-                Type::Array(_, _) => output.to_flattened_array_u128(t.clone())?,
+                Type::Array(_, _) => output.to_flattened_array_u128(t)?,
                 _ => {
                     panic!("Shouldn't be here");
                 }
@@ -597,16 +597,9 @@ mod tests {
             )?;
             let mpc_graph = mpc_context.get_main_graph()?;
 
-            let inputs = prepare_input(op.clone(), input.clone(), input_status.clone(), t.clone())?;
+            let inputs = prepare_input(op.clone(), input.clone(), input_status, t.clone())?;
 
-            check_output(
-                op.clone(),
-                mpc_graph,
-                inputs,
-                input.clone(),
-                output_parties,
-                t.clone(),
-            )?;
+            check_output(op.clone(), mpc_graph, inputs, input, output_parties, t)?;
 
             Ok(())
         };
@@ -651,17 +644,17 @@ mod tests {
                 t.clone(),
             )?;
             helper(
-                inputs.clone(),
+                inputs,
                 IOStatus::Public,
                 vec![],
                 inline_config_simple.clone(),
-                t.clone(),
+                t,
             )?;
             Ok(())
         };
         helper_runs(vec![85], scalar_type(st))?;
         helper_runs(vec![(-1233425456713636117134i128) as u128], scalar_type(st))?;
-        helper_runs(vec![1234531312235111221677134 as u128], scalar_type(st))?;
+        helper_runs(vec![1234531312235111221677134_u128], scalar_type(st))?;
         helper_runs(vec![2, 85], array_type(vec![2], st))?;
         helper_runs(vec![0, 255], array_type(vec![2], st))?;
         helper_runs(

@@ -232,7 +232,7 @@ pub(super) fn convert_main_graph_to_mpc(
 ) -> Result<Graph> {
     let instantiated_context = run_instantiation_pass(in_context)?.get_context();
     let inlined_context = inline_operations(
-        instantiated_context,
+        &instantiated_context,
         InlineConfig {
             default_mode: InlineMode::DepthOptimized(DepthOptimizationLevel::Default),
             ..Default::default()
@@ -300,7 +300,7 @@ mod tests {
             let t = array_type(vec![3], UINT32);
             let v0 = shares0[0].to_flattened_array_u128(t.clone())?;
             let v1 = shares1[1].to_flattened_array_u128(t.clone())?;
-            let v2 = shares2[2].to_flattened_array_u128(t.clone())?;
+            let v2 = shares2[2].to_flattened_array_u128(t)?;
             let new_data = add_vectors_u128(
                 &add_vectors_u128(&v0, &v1, UINT32.get_modulus())?,
                 &v2,
@@ -322,18 +322,18 @@ mod tests {
                 let bit_type = array_type(vec![2], BIT);
 
                 let i0 = g.input(input_type.clone())?;
-                let i1 = g.input(input_type.clone())?;
+                let i1 = g.input(input_type)?;
 
                 // Generate a selecting bit known by parties 0 and 2
                 let b = g
-                    .input(bit_type.clone())?
+                    .input(bit_type)?
                     .nop()?
                     .add_annotation(NodeAnnotation::Send(receiver_id, helper_id))?;
 
                 // Generate a PRF key known to the sender and helper
                 let key_t = array_type(vec![KEY_LENGTH], BIT);
                 let key = g
-                    .random(key_t.clone())?
+                    .random(key_t)?
                     .nop()?
                     .add_annotation(NodeAnnotation::Send(helper_id, sender_id))?;
 
@@ -349,7 +349,7 @@ mod tests {
 
             let instantiated_c = run_instantiation_pass(c)?.context;
             let inlined_c = inline_operations(
-                instantiated_c,
+                &instantiated_c,
                 InlineConfig {
                     default_mode: InlineMode::Simple,
                     ..Default::default()
@@ -358,7 +358,7 @@ mod tests {
             .get_context();
 
             let result_class = generate_equivalence_class(
-                inlined_c.clone(),
+                &inlined_c,
                 vec![vec![
                     IOStatus::Party(1),
                     IOStatus::Party(1),
@@ -378,41 +378,41 @@ mod tests {
                 EquivalenceClasses::Atomic(vec![vec![helper_id], vec![receiver_id, sender_id]]);
 
             // both inputs should be known only to the sender
-            assert_eq!(*result_class.get(&(0, 0)).unwrap(), private_class.clone());
-            assert_eq!(*result_class.get(&(0, 1)).unwrap(), private_class.clone());
+            assert_eq!(*result_class.get(&(0, 0)).unwrap(), private_class);
+            assert_eq!(*result_class.get(&(0, 1)).unwrap(), private_class);
             // b must be known to the receiver and helper
-            assert_eq!(*result_class.get(&(0, 2)).unwrap(), private_class.clone());
-            assert_eq!(*result_class.get(&(0, 3)).unwrap(), share_s_rh.clone());
+            assert_eq!(*result_class.get(&(0, 2)).unwrap(), private_class);
+            assert_eq!(*result_class.get(&(0, 3)).unwrap(), share_s_rh);
             // PRF key shared by the sender and helper
-            assert_eq!(*result_class.get(&(0, 4)).unwrap(), private_class.clone());
-            assert_eq!(*result_class.get(&(0, 5)).unwrap(), share_r_sh.clone());
+            assert_eq!(*result_class.get(&(0, 4)).unwrap(), private_class);
+            assert_eq!(*result_class.get(&(0, 5)).unwrap(), share_r_sh);
             // Random masks should be known to the sender and helper
-            assert_eq!(*result_class.get(&(0, 6)).unwrap(), share_r_sh.clone());
-            assert_eq!(*result_class.get(&(0, 7)).unwrap(), share_r_sh.clone());
+            assert_eq!(*result_class.get(&(0, 6)).unwrap(), share_r_sh);
+            assert_eq!(*result_class.get(&(0, 7)).unwrap(), share_r_sh);
             // Masked input i0 should be known only to the sender
-            assert_eq!(*result_class.get(&(0, 8)).unwrap(), private_class.clone());
+            assert_eq!(*result_class.get(&(0, 8)).unwrap(), private_class);
             // The sender sends masked i0 to the receiver
-            assert_eq!(*result_class.get(&(0, 9)).unwrap(), share_h_rs.clone());
+            assert_eq!(*result_class.get(&(0, 9)).unwrap(), share_h_rs);
             // Masked input i1 should be known only to the sender
-            assert_eq!(*result_class.get(&(0, 10)).unwrap(), private_class.clone());
+            assert_eq!(*result_class.get(&(0, 10)).unwrap(), private_class);
             // The sender sends masked i1 to the receiver
-            assert_eq!(*result_class.get(&(0, 11)).unwrap(), share_h_rs.clone());
+            assert_eq!(*result_class.get(&(0, 11)).unwrap(), share_h_rs);
             // r1 - r0 is known to the sender and receiver
-            assert_eq!(*result_class.get(&(0, 12)).unwrap(), share_r_sh.clone());
+            assert_eq!(*result_class.get(&(0, 12)).unwrap(), share_r_sh);
             // (r1 - r0) * b is known only to the helper
-            assert_eq!(*result_class.get(&(0, 13)).unwrap(), private_class.clone());
+            assert_eq!(*result_class.get(&(0, 13)).unwrap(), private_class);
             // rb = (r1 - r0) * b + r0 is known only to the helper
-            assert_eq!(*result_class.get(&(0, 14)).unwrap(), private_class.clone());
+            assert_eq!(*result_class.get(&(0, 14)).unwrap(), private_class);
             // rb is sent to the receiver
-            assert_eq!(*result_class.get(&(0, 15)).unwrap(), share_s_rh.clone());
+            assert_eq!(*result_class.get(&(0, 15)).unwrap(), share_s_rh);
             // (i1 + r1) - (i0 + r0) is known to the receiver and sender
-            assert_eq!(*result_class.get(&(0, 16)).unwrap(), share_h_rs.clone());
+            assert_eq!(*result_class.get(&(0, 16)).unwrap(), share_h_rs);
             // ((i1 + r1) - (i0 + r0)) * b is known only to the receiver
-            assert_eq!(*result_class.get(&(0, 17)).unwrap(), private_class.clone());
+            assert_eq!(*result_class.get(&(0, 17)).unwrap(), private_class);
             // ib + rb = ((i1 + r1) - (i0 + r0)) * b + (i0 + r0) is known only to the receiver
-            assert_eq!(*result_class.get(&(0, 18)).unwrap(), private_class.clone());
+            assert_eq!(*result_class.get(&(0, 18)).unwrap(), private_class);
             // ib is known only to the receiver
-            assert_eq!(*result_class.get(&(0, 19)).unwrap(), private_class.clone());
+            assert_eq!(*result_class.get(&(0, 19)).unwrap(), private_class);
 
             // No more nodes should be
             assert!(result_class.get(&(0, 20)).is_none());
@@ -421,9 +421,9 @@ mod tests {
             let result = random_evaluate(
                 inlined_c.get_main_graph()?,
                 vec![
-                    Value::from_flattened_array(&vec![10, 20], INT32)?,
-                    Value::from_flattened_array(&vec![-10, -20], INT32)?,
-                    Value::from_flattened_array(&vec![0, 1], BIT)?,
+                    Value::from_flattened_array(&[10, 20], INT32)?,
+                    Value::from_flattened_array(&[-10, -20], INT32)?,
+                    Value::from_flattened_array(&[0, 1], BIT)?,
                 ],
             )?;
             assert_eq!(

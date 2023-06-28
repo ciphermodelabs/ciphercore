@@ -360,10 +360,7 @@ mod tests {
         let two_to_fifty = TypedValue::from_scalar(1_i64 << 50, INT64)?;
         let large_number = TypedValue::from_scalar(2363897937439121_i64, INT64)?;
         let minus_two_to_thirty = TypedValue::from_scalar(-1 << 30, INT64)?;
-        assert!(!overflow_helper(
-            two_to_twenty_five.clone(),
-            two_to_fifty.clone()
-        )?);
+        assert!(!overflow_helper(two_to_twenty_five, two_to_fifty.clone())?);
         assert!(!overflow_helper(
             two_to_thirty.clone(),
             two_to_thirty.clone()
@@ -385,10 +382,10 @@ mod tests {
     fn test_overflow_check_success_arrays() -> Result<()> {
         let x = TypedValue::from_ndarray(array![1 << 15, 2 << 15, 3 << 15].into_dyn(), INT64)?;
         let y = TypedValue::from_scalar(2, INT64)?;
-        assert!(overflow_helper(x.clone(), y.clone())?);
+        assert!(overflow_helper(x, y)?);
         let x = TypedValue::from_ndarray(array![1 << 15, 2 << 15, 3 << 15].into_dyn(), INT64)?;
         let y = TypedValue::from_ndarray(array![10 << 15, 20 << 15, 30 << 15].into_dyn(), INT64)?;
-        assert!(overflow_helper(x.clone(), y.clone())?);
+        assert!(overflow_helper(x, y)?);
         Ok(())
     }
 
@@ -396,10 +393,10 @@ mod tests {
     fn test_overflow_check_fail_arrays() -> Result<()> {
         let x = TypedValue::from_ndarray(array![1 << 25, 1 << 26, 1 << 27].into_dyn(), INT64)?;
         let y = TypedValue::from_scalar(1 << 30, INT64)?;
-        assert!(!overflow_helper(x.clone(), y.clone())?);
+        assert!(!overflow_helper(x, y)?);
         let x = TypedValue::from_ndarray(array![1 << 25, 1 << 26, 1 << 27].into_dyn(), INT64)?;
         let y = TypedValue::from_ndarray(array![1 << 28, 1 << 29, 1 << 30].into_dyn(), INT64)?;
-        assert!(!overflow_helper(x.clone(), y.clone())?);
+        assert!(!overflow_helper(x, y)?);
         Ok(())
     }
 }
