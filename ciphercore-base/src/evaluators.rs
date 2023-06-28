@@ -11,7 +11,7 @@ use crate::graphs::{Graph, Node};
 use crate::random::SEED_SIZE;
 
 pub trait Evaluator {
-    fn preprocess(&mut self, context: Context) -> Result<()> {
+    fn preprocess(&mut self, context: &Context) -> Result<()> {
         context.check_finalized()?;
         for graph in context.get_graphs() {
             for node in graph.get_nodes() {
@@ -151,7 +151,7 @@ pub fn evaluate_simple_evaluator(
     prng_seed: Option<[u8; SEED_SIZE]>,
 ) -> Result<Value> {
     let mut evaluator = simple_evaluator::SimpleEvaluator::new(prng_seed)?;
-    evaluator.preprocess(graph.get_context())?;
+    evaluator.preprocess(&graph.get_context())?;
     evaluator.evaluate_graph(graph, inputs)
 }
 

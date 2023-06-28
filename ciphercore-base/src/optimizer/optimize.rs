@@ -13,9 +13,12 @@ use super::duplicates_optimizer::optimize_graph_duplicates;
 /// The graphs must be fully inlined.
 /// The primary targets of the optimizations here are to remove inefficiencies
 /// which happen because of the boilerplate from Iterate inlining.
-pub fn optimize_context<T: Evaluator>(context: Context, mut evaluator: T) -> Result<MappedContext> {
+pub fn optimize_context<T: Evaluator>(
+    context: &Context,
+    mut evaluator: T,
+) -> Result<MappedContext> {
     context.check_finalized()?;
-    evaluator.preprocess(context.clone())?;
+    evaluator.preprocess(context)?;
     let mut mappings = ContextMappings::default();
     let output_context = create_context()?;
     for graph in context.get_graphs() {
@@ -52,7 +55,7 @@ pub fn optimize_context<T: Evaluator>(context: Context, mut evaluator: T) -> Res
     output_context.finalize()?;
 
     Ok(MappedContext::new_with_mappings(
-        context,
+        context.clone(),
         output_context,
         mappings,
     ))
@@ -82,9 +85,9 @@ pub fn stress_test<T: Evaluator>(
     let seed = b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F";
     let mut prng = PRNG::new(Some(*seed)).unwrap();
     let mut evaluator1 = ip_evaluator1;
-    evaluator1.preprocess(c1.clone()).unwrap();
+    evaluator1.preprocess(&c1).unwrap();
     let mut evaluator2 = ip_evaluator2;
-    evaluator2.preprocess(c2.clone()).unwrap();
+    evaluator2.preprocess(&c2).unwrap();
     for _ in 0..10 {
         let mut inputs = vec![];
         for node in c1.get_main_graph().unwrap().get_nodes() {
@@ -122,8 +125,7 @@ mod tests {
                 n.add(g.constant(scalar_type(UINT64), Value::from_scalar(1, UINT64)?)?)
             })?;
 
-            let optimized_c =
-                optimize_context(c.clone(), SimpleEvaluator::new(None)?)?.get_context();
+            let optimized_c = optimize_context(&c, SimpleEvaluator::new(None)?)?.get_context();
             stress_test(
                 c,
                 optimized_c,

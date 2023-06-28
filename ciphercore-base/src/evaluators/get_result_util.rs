@@ -127,7 +127,7 @@ pub fn get_evaluator_result<T: Evaluator>(
         }
     }
 
-    evaluator.preprocess(context.clone())?;
+    evaluator.preprocess(&context)?;
     let mut result = TypedValue::new(
         context.get_main_graph()?.get_output_node()?.get_type()?,
         evaluator.evaluate_graph(context.get_main_graph()?, input_values)?,

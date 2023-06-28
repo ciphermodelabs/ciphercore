@@ -133,7 +133,7 @@ mod tests {
 
     fn optimize_context(c: &Context) -> Result<Context> {
         let mut evaluator = SimpleEvaluator::new(None)?;
-        evaluator.preprocess(c.clone())?;
+        evaluator.preprocess(c)?;
         let new_c = create_context()?;
         let new_g = new_c.create_graph()?;
         optimize_graph_constants(c.get_main_graph()?, new_g.clone(), &mut evaluator)?;

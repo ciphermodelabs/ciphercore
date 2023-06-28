@@ -1219,7 +1219,7 @@ where
         print_stats(mapped_context3.get_context().get_main_graph()?)?;
     }
     eprintln_or_log!("Optimizing...");
-    let mapped_context4 = optimize_context(mapped_context3.get_context(), evaluator)?;
+    let mapped_context4 = optimize_context(&mapped_context3.get_context(), evaluator)?;
 
     let mut res = MappedContext::new(context, mapped_context4.get_context());
     res.mappings = ContextMappings::new_from_chain(&[
@@ -1270,7 +1270,7 @@ where
     print_stats(compiled_context0.get_context().get_main_graph()?)?;
 
     let evaluator1 = get_evaluator()?;
-    let compiled_context = optimize_context(compiled_context0.get_context(), evaluator1)?;
+    let compiled_context = optimize_context(&compiled_context0.get_context(), evaluator1)?;
     print_stats(compiled_context.get_context().get_main_graph()?)?;
     Ok(MappedContext::new_with_mappings(
         context,
