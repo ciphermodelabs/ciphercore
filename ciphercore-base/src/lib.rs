@@ -896,6 +896,8 @@ pub mod broadcast;
 #[doc(hidden)]
 pub mod bytes;
 mod constants;
+#[doc(hidden)]
+pub mod csv;
 pub mod custom_ops;
 pub mod data_types;
 pub mod data_values;
