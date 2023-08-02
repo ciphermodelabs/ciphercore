@@ -2450,20 +2450,7 @@ impl Graph {
     /// Adds a node that computes sharding of a given table according to a given sharding config.
     /// Sharding config contains names of the columns whose hashed values are used for sharding.
     /// The size of each shard (i.e., the number of rows) and the number of shards is given in the sharding config.
-    /// The number of shards should be smaller than 700.
-    ///
-    ///
-    /// If some resulting shards don't have `shard_size` elements, they're padded with zeros to reach this size.
-    /// If the size of some shards exceeds `shard_size`, sharding fails.
-    ///
-    /// To choose these parameters, consult [the following paper](http://wwwmayr.informatik.tu-muenchen.de/personen/raab/publ/balls.pdf).
-    /// Note that for large shard sizes and small number of shards, it holds that
-    ///
-    /// `shard_size = num_input_rows / num_shards + alpha * sqrt(2 * num_input_rows / num_shards * log(num_shards))`.
-    ///
-    /// With `alpha = 2`, it is possible to achieve failure probability 2^(-40) if `num_shards < 700` and `shard_size > 2^17`.
-    ///
-    ///
+
     /// Each shard is accompanied by a Boolean mask indicating whether a corresponding row stems from the input table or padded (1 if a row comes from input).
     /// The output is given in the form of a tuple of `(mask, shard)`, where `mask` is a binary array and `shard` is a table, i.e., named tuple.
     ///

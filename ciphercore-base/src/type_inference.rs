@@ -1574,13 +1574,6 @@ impl TypeInferenceWorker {
                     check_table_and_extract_column_types(input_t.clone(), false, false)?;
                 let headers: Vec<String> = headers_types.keys().cloned().collect();
 
-                if shard_config.num_shards > 700 {
-                    return Err(runtime_error!(
-                        "No more than 700 shards can be handled, {} provided",
-                        shard_config.num_shards
-                    ));
-                }
-
                 let num_elements_in_all_shards = shard_config.shard_size * shard_config.num_shards;
                 if num_entries > num_elements_in_all_shards {
                     return Err(runtime_error!("Input elements can't fit given shards. Shards can contain {} elements, while input has {}", num_elements_in_all_shards, num_entries));
@@ -4769,17 +4762,6 @@ mod tests {
                 num_shards: 4,
                 shard_size: 10,
                 shard_headers: vec!["ID".to_owned(), "ID".to_owned()],
-            },
-        )?;
-        test_shard_fail(
-            named_tuple_type(vec![
-                ("Income".to_owned(), array_type(vec![20], UINT64)),
-                ("ID".to_owned(), array_type(vec![20], UINT64)),
-            ]),
-            ShardConfig {
-                num_shards: 800,
-                shard_size: 10,
-                shard_headers: vec!["ID".to_owned()],
             },
         )?;
 
