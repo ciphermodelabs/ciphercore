@@ -159,6 +159,7 @@ pub enum Operation {
     DecomposeSwitchingMap(u64),
     SegmentCumSum,
     Shard(ShardConfig),
+    ShardWithColumnMasks(ShardConfig),
     // SQL joins
     Join(JoinType, HashMap<String, String>),
     JoinWithColumnMasks(JoinType, HashMap<String, String>),
@@ -326,7 +327,8 @@ impl Operation {
             | Operation::Join(_, _)
             | Operation::JoinWithColumnMasks(_, _)
             | Operation::Print(_)
-            | Operation::Shard(_) => Ok(false),
+            | Operation::Shard(_)
+            | Operation::ShardWithColumnMasks(_) => Ok(false),
             Operation::Call | Operation::Iterate => Err(runtime_error!(
                 "The status of operations calling other graphs cannot be defined"
             )),
@@ -1246,6 +1248,17 @@ impl Node {
     #[doc(hidden)]
     pub fn shard(&self, shard_config: ShardConfig) -> Result<Node> {
         self.get_graph().shard(self.clone(), shard_config)
+    }
+
+    /// Adds a node that computes sharding of a given table according to a given sharding config.
+    /// Masked values are ignored.
+    /// Sharding config contains names of the columns whose hashed values are used for sharding.
+    ///
+    /// Applies [Graph::shard_with_column_masks] to the parent graph, `this` node and `shard_config`.
+    #[doc(hidden)]
+    pub fn shard_with_column_masks(&self, shard_config: ShardConfig) -> Result<Node> {
+        self.get_graph()
+            .shard_with_column_masks(self.clone(), shard_config)
     }
 
     /// Adds a node that converts a switching map array into a tuple of the following components:
@@ -2467,6 +2480,36 @@ impl Graph {
     #[doc(hidden)]
     pub fn shard(&self, input_table: Node, shard_config: ShardConfig) -> Result<Node> {
         self.add_node(vec![input_table], vec![], Operation::Shard(shard_config))
+    }
+
+    /// Adds a node that computes sharding of a given table according to a given sharding config.
+    /// Masked values are ignored.
+    /// Sharding config contains names of the columns whose hashed values are used for sharding.
+    /// The size of each shard (i.e., the number of rows) and the number of shards is given in the sharding config.
+    ///
+    /// The output is given in the form of a tuple of `shards`, where `shard` is a table, i.e., named tuple.
+    ///
+    /// **WARNING**: this function cannot be compiled to an MPC protocol.
+    ///
+    /// # Arguments
+    ///
+    /// - `input_table` - named tuple of tuples (mask, array) containing data for sharding
+    /// - `shard_config` - parameters of sharding: number of shards, shard size and names of columns that are hashed in sharding
+    ///
+    /// # Returns
+    ///
+    /// New Shard node containing a tuple of shards
+    #[doc(hidden)]
+    pub fn shard_with_column_masks(
+        &self,
+        input_table: Node,
+        shard_config: ShardConfig,
+    ) -> Result<Node> {
+        self.add_node(
+            vec![input_table],
+            vec![],
+            Operation::ShardWithColumnMasks(shard_config),
+        )
     }
 
     /// Adds a node that converts a switching map array into a random tuple of the following components:

@@ -1,11 +1,11 @@
 use crate::broadcast::{broadcast_arrays, broadcast_shapes};
 use crate::custom_ops::Instantiation;
 use crate::data_types::{
-    array_type, get_named_types, is_valid_shape, named_tuple_type, scalar_size_in_bits,
-    scalar_type, tuple_type, vector_type, ArrayShape, ScalarType, Type, BIT, UINT32, UINT64,
+    array_type, is_valid_shape, named_tuple_type, scalar_size_in_bits, scalar_type, tuple_type,
+    vector_type, ArrayShape, ScalarType, Type, BIT, UINT32, UINT64,
 };
 use crate::errors::Result;
-use crate::graphs::{create_context, Context, JoinType, Node, Operation, WeakContext};
+use crate::graphs::{create_context, Context, JoinType, Node, Operation, ShardConfig, WeakContext};
 use crate::join_utils::check_table_and_extract_column_types;
 use crate::slices::get_slice_shape;
 use std::collections::{HashMap, HashSet};
@@ -360,6 +360,66 @@ fn join_inference(
     Ok(named_tuple_type(result_types_vec))
 }
 
+fn check_shard_config(
+    shard_config: ShardConfig,
+    num_entries: u64,
+    headers: &[String],
+) -> Result<()> {
+    let num_elements_in_all_shards = shard_config.shard_size * shard_config.num_shards;
+    if num_entries > num_elements_in_all_shards {
+        return Err(runtime_error!("Input elements can't fit given shards. Shards can contain {} elements, while input has {}", num_elements_in_all_shards, num_entries));
+    }
+    if shard_config.shard_headers.is_empty() {
+        return Err(runtime_error!(
+            "At least one shard header should be provided"
+        ));
+    }
+    let mut shard_headers_dedup = shard_config.shard_headers.clone();
+    shard_headers_dedup.sort_unstable();
+    shard_headers_dedup.dedup();
+    if shard_headers_dedup.len() != shard_config.shard_headers.len() {
+        return Err(runtime_error!("Sharding headers contain duplicates"));
+    }
+    for h in &shard_config.shard_headers {
+        if !headers.contains(h) {
+            return Err(runtime_error!(
+                "Sharding can't be done along the column {h}.  There is no such input column."
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn shard_inference(input_t: Type, shard_config: ShardConfig, has_columns: bool) -> Result<Type> {
+    let (headers_column_types, num_entries) =
+        check_table_and_extract_column_types(input_t.clone(), false, has_columns)?;
+    let headers: Vec<String> = headers_column_types.keys().cloned().collect();
+
+    check_shard_config(shard_config.clone(), num_entries, &headers)?;
+
+    let mut shard_data_t_vec = vec![];
+    let ordered_headers = input_t.get_names()?;
+    for h in ordered_headers {
+        let column_type = headers_column_types[&h].clone();
+        let res_column_type = column_type.clone_with_number_of_entries(shard_config.shard_size);
+        shard_data_t_vec.push((h.clone(), res_column_type.into()));
+    }
+    let shard_data_t = named_tuple_type(shard_data_t_vec);
+
+    if has_columns {
+        Ok(tuple_type(vec![
+            shard_data_t;
+            shard_config.num_shards as usize
+        ]))
+    } else {
+        let shard_mask_t = array_type(vec![shard_config.shard_size], BIT);
+        let result_tuple_vector =
+            vec![tuple_type(vec![shard_mask_t, shard_data_t]); shard_config.num_shards as usize];
+        Ok(tuple_type(result_tuple_vector))
+    }
+}
+
 /// Returns Some(n) if a given operation requires n node dependencies.
 /// None means the number can be variable.
 fn get_number_of_node_dependencies(operation: Operation) -> Option<u64> {
@@ -392,7 +452,8 @@ fn get_number_of_node_dependencies(operation: Operation) -> Option<u64> {
         | Operation::VectorToArray
         | Operation::DecomposeSwitchingMap(_)
         | Operation::Print(_)
-        | Operation::Shard(_) => Some(1),
+        | Operation::Shard(_)
+        | Operation::ShardWithColumnMasks(_) => Some(1),
         Operation::Add
         | Operation::Subtract
         | Operation::Multiply
@@ -1570,50 +1631,13 @@ impl TypeInferenceWorker {
             }
             Operation::Shard(shard_config) => {
                 let input_t = node_dependencies_types[0].clone();
-                let (headers_types, num_entries) =
-                    check_table_and_extract_column_types(input_t.clone(), false, false)?;
-                let headers: Vec<String> = headers_types.keys().cloned().collect();
-
-                let num_elements_in_all_shards = shard_config.shard_size * shard_config.num_shards;
-                if num_entries > num_elements_in_all_shards {
-                    return Err(runtime_error!("Input elements can't fit given shards. Shards can contain {} elements, while input has {}", num_elements_in_all_shards, num_entries));
-                }
-                if shard_config.shard_headers.is_empty() {
-                    return Err(runtime_error!(
-                        "At least one shard header should be provided"
-                    ));
-                }
-                let mut shard_headers_dedup = shard_config.shard_headers.clone();
-                shard_headers_dedup.sort_unstable();
-                shard_headers_dedup.dedup();
-                if shard_headers_dedup.len() != shard_config.shard_headers.len() {
-                    return Err(runtime_error!("Sharding headers contain duplicates"));
-                }
-                for h in &shard_config.shard_headers {
-                    if !headers.contains(h) {
-                        return Err(runtime_error!("Sharding can't be done along the column {}.  There is no such input column.", h));
-                    }
-                }
-
-                let shard_mask_t = array_type(vec![shard_config.shard_size], BIT);
-
-                let mut shard_data_t_vec = vec![];
-                let headers_types = get_named_types(&input_t)?;
-                for (h, sub_t) in headers_types {
-                    let mut shape = sub_t.get_shape();
-                    shape[0] = shard_config.shard_size;
-                    let st = sub_t.get_scalar_type();
-                    let res_sub_t = array_type(shape, st);
-                    shard_data_t_vec.push((h.clone(), res_sub_t));
-                }
-                let shard_data_t = named_tuple_type(shard_data_t_vec);
-
-                let mut result_tuple_vector = vec![];
-                for _ in 0..shard_config.num_shards {
-                    result_tuple_vector
-                        .push(tuple_type(vec![shard_mask_t.clone(), shard_data_t.clone()]));
-                }
-                let result_t = tuple_type(result_tuple_vector);
+                let result_t = shard_inference(input_t, shard_config, false)?;
+                self.register_result(node, result_t.clone())?;
+                Ok(result_t)
+            }
+            Operation::ShardWithColumnMasks(shard_config) => {
+                let input_t = node_dependencies_types[0].clone();
+                let result_t = shard_inference(input_t, shard_config, true)?;
                 self.register_result(node, result_t.clone())?;
                 Ok(result_t)
             }
@@ -1664,7 +1688,9 @@ impl TypeInferenceWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data_types::{ArrayShape, Type, BIT, INT32, INT8, UINT128, UINT16, UINT32, UINT8};
+    use crate::data_types::{
+        get_named_types, ArrayShape, Type, BIT, INT32, INT8, UINT128, UINT16, UINT32, UINT8,
+    };
     use crate::data_values::Value;
     use crate::graphs::{
         create_unchecked_context, Graph, JoinType, ShardConfig, Slice, SliceElement,
@@ -4623,22 +4649,34 @@ mod tests {
         test_assert_worker_fail(array_type(vec![10], BIT), tuple_type(vec![]));
     }
 
-    fn expected_sharding(headers_types: Vec<(&str, Type)>, shard_config: &ShardConfig) -> Type {
+    fn expected_sharding(
+        headers_types: Vec<(&str, Type)>,
+        shard_config: &ShardConfig,
+        has_column_masks: bool,
+    ) -> Result<Type> {
         let mut shard_data_vec = vec![];
         for (h, t) in headers_types {
-            let mut shape = t.get_shape();
-            shape[0] = shard_config.shard_size;
-            shard_data_vec.push((h.to_owned(), array_type(shape, t.get_scalar_type())));
+            let mut col_t = ColumnType::new(t, false, h)?;
+            if has_column_masks {
+                col_t = col_t.clone_with_mask();
+            };
+            let res_col_t = col_t.clone_with_number_of_entries(shard_config.shard_size);
+            shard_data_vec.push((h.to_owned(), res_col_t.into()));
         }
         let shard_data = named_tuple_type(shard_data_vec);
-        let shard_mask = array_type(vec![shard_config.shard_size], BIT);
-        let shard = tuple_type(vec![shard_mask, shard_data]);
-        tuple_type(vec![shard; shard_config.num_shards as usize])
+        let shard = if has_column_masks {
+            shard_data
+        } else {
+            let shard_mask = array_type(vec![shard_config.shard_size], BIT);
+            tuple_type(vec![shard_mask, shard_data])
+        };
+        Ok(tuple_type(vec![shard; shard_config.num_shards as usize]))
     }
 
-    fn test_shard_worker(
+    fn shard_worker(
         headers_types: Vec<(&str, Type)>,
         shard_config: ShardConfig,
+        has_column_masks: bool,
     ) -> Result<()> {
         let context = create_unchecked_context()?;
         let graph = context.create_graph()?;
@@ -4646,16 +4684,34 @@ mod tests {
         let i = graph.input(named_tuple_type(
             headers_types
                 .iter()
-                .map(|(h, t)| ((*h).to_owned(), t.clone()))
+                .map(|(h, t)| {
+                    let mut col_t = ColumnType::new((*t).clone(), false, h).unwrap();
+                    if has_column_masks {
+                        col_t = col_t.clone_with_mask();
+                    }
+                    ((*h).to_owned(), col_t.into())
+                })
                 .collect(),
         ))?;
-        let o = graph.shard(i, shard_config.clone())?;
+        let o = if has_column_masks {
+            graph.shard_with_column_masks(i, shard_config.clone())?
+        } else {
+            graph.shard(i, shard_config.clone())?
+        };
         let t = worker.process_node(o)?;
 
-        let expected_t = expected_sharding(headers_types, &shard_config);
+        let expected_t = expected_sharding(headers_types, &shard_config, has_column_masks)?;
         assert_eq!(t, expected_t);
 
         Ok(())
+    }
+
+    fn test_shard_worker(
+        headers_types: Vec<(&str, Type)>,
+        shard_config: ShardConfig,
+    ) -> Result<()> {
+        shard_worker(headers_types.clone(), shard_config.clone(), false)?;
+        shard_worker(headers_types, shard_config, true)
     }
 
     fn test_shard_fail(input_t: Type, shard_config: ShardConfig) -> Result<()> {
@@ -4664,6 +4720,18 @@ mod tests {
         let mut worker = create_type_inference_worker(&context);
         let i = graph.input(input_t)?;
         let o = graph.shard(i, shard_config)?;
+        let t = worker.process_node(o);
+        assert!(t.is_err());
+
+        Ok(())
+    }
+
+    fn test_shard_with_masks_fail(input_t: Type, shard_config: ShardConfig) -> Result<()> {
+        let context = create_unchecked_context()?;
+        let graph = context.create_graph()?;
+        let mut worker = create_type_inference_worker(&context);
+        let i = graph.input(input_t)?;
+        let o = graph.shard_with_column_masks(i, shard_config)?;
         let t = worker.process_node(o);
         assert!(t.is_err());
 
@@ -4762,6 +4830,42 @@ mod tests {
                 num_shards: 4,
                 shard_size: 10,
                 shard_headers: vec!["ID".to_owned(), "ID".to_owned()],
+            },
+        )?;
+
+        test_shard_with_masks_fail(
+            named_tuple_type(vec![
+                ("Income".to_owned(), array_type(vec![20], UINT64)),
+                ("ID".to_owned(), array_type(vec![20], UINT64)),
+            ]),
+            ShardConfig {
+                num_shards: 4,
+                shard_size: 10,
+                shard_headers: vec!["ID".to_owned()],
+            },
+        )?;
+
+        test_shard_with_masks_fail(
+            named_tuple_type(vec![
+                (
+                    "Income".to_owned(),
+                    tuple_type(vec![
+                        array_type(vec![20], BIT),
+                        array_type(vec![20], UINT64),
+                    ]),
+                ),
+                (
+                    "ID".to_owned(),
+                    tuple_type(vec![
+                        array_type(vec![21], BIT),
+                        array_type(vec![20], UINT64),
+                    ]),
+                ),
+            ]),
+            ShardConfig {
+                num_shards: 4,
+                shard_size: 10,
+                shard_headers: vec!["ID".to_owned()],
             },
         )?;
 
